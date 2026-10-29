@@ -283,7 +283,7 @@ export class Creation {
             if (
               grant.maxPerDay !== null &&
               c.store
-                .all("command")
+                .commandBudgetRecords()
                 .filter(
                   (r) =>
                     r.owner === owner &&

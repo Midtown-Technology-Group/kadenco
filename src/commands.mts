@@ -6,6 +6,7 @@ import { subscriptionActive } from "./subscription-state.mjs";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { nativeSession } from "./native-session.mjs";
+import { ThreadSettings } from "./thread-settings.mjs";
 import { scrub } from "./fleet-read.mjs";
 import { readReason } from "./read-errors.mjs";
 import { Creation } from "./creation.mjs";
@@ -91,10 +92,12 @@ export class Commands {
   declare session: typeof nativeSession;
   declare now: () => number;
   declare creation: Creation;
+  declare settings: ThreadSettings;
 
   constructor({ policy, store, reader, session = nativeSession, now = Date.now }) {
     Object.assign(this, { policy, store, reader, session, now });
     this.creation = new Creation(this);
+    this.settings = new ThreadSettings(this);
   }
   grant(owner, host, projectId = undefined) {
     const p = this.policy(),
@@ -198,7 +201,7 @@ export class Commands {
               : null;
           const day = new Date(this.now()).toISOString().slice(0, 10),
             commands = this.store
-              .all("command")
+              .commandBudgetRecords()
               .filter(
                 (r) =>
                   r.owner === owner &&
@@ -364,7 +367,7 @@ export class Commands {
       if (
         grant.maxPerDay !== null &&
         this.store
-          .all("command")
+          .commandBudgetRecords()
           .filter(
             (r) =>
               r.owner === owner &&
@@ -377,7 +380,7 @@ export class Commands {
         exception &&
         exception.maxPerDay !== null &&
         this.store
-          .all("command")
+          .commandBudgetRecords()
           .filter(
             (r) =>
               r.owner === owner &&

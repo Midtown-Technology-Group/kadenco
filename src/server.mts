@@ -18,6 +18,7 @@ import {
   localhostOriginValidation,
 } from "@modelcontextprotocol/node";
 import { z } from "zod";
+import { threadOptionsArgs, standardSpeedArgs, speedReceiptArgs } from "./thread-settings.mjs";
 import {
   exchangeEvent,
   inboxArgs,
@@ -574,6 +575,29 @@ export function makeMcp(bridge: Bridge, owner: string) {
     true,
     () => ({ sessions: bridge.sessions(owner) }),
   );
+  if (bridge.commands && principal?.commandHosts?.length) {
+    register(
+      "get_thread_speed_receipt",
+      "Read a stored speed mutation receipt bound to owner/host/thread/UUID under current grants, without native I/O. Historical receipt is not current state or permission to resend.",
+      speedReceiptArgs,
+      true,
+      (p) => bridge.commands.settings.receipt(owner, p),
+    );
+    register(
+      "read_thread_options",
+      "Read exact native thread selection and live provider speed options under existing read/command grants. No settings changes.",
+      threadOptionsArgs,
+      true,
+      (p) => bridge.commands.settings.read(owner, p),
+    );
+    register(
+      "set_thread_speed_standard",
+      "Change only explicit Fast serviceTier priority to Standard default. Requires exact fingerprint and stable request UUID; preserves other settings. Reconcile uncertain receipts with the same request; never blindly resend. Native CAS and native idempotency are unavailable. No task send or interruption.",
+      standardSpeedArgs,
+      false,
+      (p) => bridge.commands.settings.standard(owner, p),
+    );
+  }
   if (bridge.commands && principal?.commandHosts?.length)
     register(
       "get_fleet_event_status",

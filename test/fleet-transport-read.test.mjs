@@ -215,3 +215,60 @@ test("native JSON-RPC/tool errors keep categorized read diagnostics and never su
     }
   }
 });
+
+test("settings handles require existing operate credentials and remain separate from read handles", async () => {
+  let operate = false;
+  const calls = [];
+  const transport = new T3FleetTransport({
+    hostsProvider: () => ({ hosts: [{ name: "h", url: "http://127.0.0.1:1234/mcp" }] }),
+    cacheProvider: () => ({
+      "h|mcp-client|cached": {
+        host: "h",
+        base: "http://127.0.0.1:1234",
+        access: "approval-required",
+        token: "dummy",
+        scopes: operate ? ["orchestration:read", "orchestration:operate"] : ["orchestration:read"],
+        expiresAt: Date.now() + 600000,
+      },
+    }),
+    fetchImpl: async (_u, o) => {
+      if (o.method === "DELETE") return new Response(null, { status: 204 });
+      const b = JSON.parse(o.body);
+      if (!b.id) return new Response(null, { status: 204 });
+      calls.push(b);
+      let result;
+      if (b.method === "initialize") result = { protocolVersion: "2025-06-18" };
+      else if (b.method === "tools/list")
+        result = {
+          tools: [
+            {
+              name: "t3_thread_configure",
+              inputSchema: { type: "object", properties: { modelSelection: { type: "object" } } },
+            },
+            { name: "orchestrator_capabilities" },
+            { name: "t3_thread_read" },
+          ],
+        };
+      else result = { structuredContent: { threadId: "t" } };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: b.id, result }), {
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  try {
+    await assert.rejects(transport.connectSettings("h"), /no unexpired existing settings/);
+    assert.equal(calls.length, 0);
+    operate = true;
+    const handle = await transport.connectSettings("h");
+    assert.equal(handle.sendThreadMessage, undefined);
+    assert.equal(handle.readOnlyCall, undefined);
+    await handle.currentOptions("t");
+    await handle.providerOptions("model");
+    assert.deepEqual(
+      calls.filter((c) => c.method === "tools/call").map((c) => c.params.name),
+      ["t3_thread_configure", "orchestrator_capabilities"],
+    );
+  } finally {
+    await transport.close();
+  }
+});

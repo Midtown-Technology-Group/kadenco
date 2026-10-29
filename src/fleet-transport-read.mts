@@ -19,12 +19,15 @@ const execFile = promisify(execFileCb);
 const PROTOCOL_VERSION = "2025-06-18";
 const REQUIRED = {
   read: ["orchestration:read"],
+  settings: ["orchestration:read", "orchestration:operate"],
 };
 const TOOL_NAMES = Object.freeze({
   search: "t3_thread_search",
   read: "t3_thread_read",
   projects: "t3_project_list",
   threads: "t3_thread_list",
+  configure: "t3_thread_configure",
+  capabilities: "orchestrator_capabilities",
 });
 const SAFE_SSH_OPTIONS = [
   "-T",
@@ -263,6 +266,7 @@ export function selectExistingSession(
 }
 
 class McpClient {
+  #definitions = new Map<string, NativeRecord>();
   declare url: string;
   #token;
   #fetch;
@@ -372,6 +376,7 @@ class McpClient {
     if (!Array.isArray(list?.tools))
       throw new FleetTransportError("MCP tools/list returned no tool list");
     this.#available = new Set(list.tools.map((tool) => tool.name));
+    this.#definitions = new Map(list.tools.map((tool) => [tool.name, tool]));
   }
 
   async #callAllowed(name, args) {
@@ -416,6 +421,31 @@ class McpClient {
       dispose: async () => {
         await this.dispose();
       },
+    });
+  }
+
+  settingsSession(metadata) {
+    const schema = this.#definitions.get(TOOL_NAMES.configure)?.inputSchema;
+    if (!schema?.properties?.modelSelection || schema.required?.includes("modelSelection"))
+      throw new FleetTransportError(
+        "native current-options read unavailable",
+        "settings_unsupported",
+      );
+    return Object.freeze({
+      ...metadata,
+      readThread: (threadId: string) =>
+        this.#callAllowed(TOOL_NAMES.read, {
+          threadId,
+          limit: 1,
+          runLimit: 20,
+          maxCharsPerItem: 1,
+        }),
+      currentOptions: (threadId: string) => this.#callAllowed(TOOL_NAMES.configure, { threadId }),
+      providerOptions: (model: string) =>
+        this.#callAllowed(TOOL_NAMES.capabilities, { search: model }),
+      // Kept private to the settings broker; never returned by connect(read).
+      configure: (threadId: string, modelSelection) =>
+        this.#callAllowed(TOOL_NAMES.configure, { threadId, modelSelection }),
     });
   }
 
@@ -730,6 +760,12 @@ export class T3FleetTransport {
   async connect(hostName, scope = "read", minimumAccess = "read-only") {
     if (scope !== "read")
       throw new FleetTransportError("read-only transport rejects execution scopes");
+    return this.#connect(hostName, scope, minimumAccess);
+  }
+  async connectSettings(hostName) {
+    return this.#connect(hostName, "settings", "read-only");
+  }
+  async #connect(hostName, scope, minimumAccess) {
     const host = safeHostEntry(this.#hosts(), hostName);
     const base = this.#origin(host);
     const selected = await diagnose(
@@ -773,6 +809,7 @@ export class T3FleetTransport {
       throw error;
     }
     this.clients.add(client);
+    if (scope === "settings") return client.settingsSession({ host: host.name, base });
     const handle = client.readSession(scope, {
       host: host.name,
       base,

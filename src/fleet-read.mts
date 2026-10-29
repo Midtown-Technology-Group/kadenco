@@ -241,7 +241,7 @@ export class FleetReader {
       throw failure(reason);
     });
   }
-  async withHost(owner, host, projectId, fn) {
+  async withHost(owner, host, projectId, fn, settings = false) {
     this.grant(owner, host, projectId);
     if (this.stopped) throw failure("source_unavailable");
     const previous = this.tails.get(host) ?? Promise.resolve();
@@ -253,7 +253,7 @@ export class FleetReader {
         this.active.add(t);
         try {
           return await diagnose(this.diagnostic ?? (() => {}), host, "host_read", async () => {
-            const client = await t.connect(host, "read");
+            const client = settings ? await t.connectSettings(host) : await t.connect(host, "read");
             return await fn(client);
           });
         } finally {
