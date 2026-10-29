@@ -27,6 +27,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Format, lint and both compiler checks
         run: npm exec -- vp run check
+      - run: npm run release:check
       - run: npm audit
   test:
     name: test / ${{ matrix.os }} / node-${{ matrix.node }}

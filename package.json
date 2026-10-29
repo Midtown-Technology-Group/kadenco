@@ -1,6 +1,6 @@
 {
   "name": "kadenco",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "private": true,
   "description": "Experimental MCP tools, durable events and receipts for T3 Code",
   "license": "AGPL-3.0-or-later",
@@ -18,7 +18,9 @@
     "COMPATIBILITY.md",
     "EXPORT-MANIFEST.json",
     "vite.config.ts",
-    "tsconfig.json"
+    "tsconfig.json",
+    "RELEASE.md",
+    "CHANGELOG.md"
   ],
   "type": "module",
   "exports": {
@@ -35,7 +37,8 @@
     "format": "vp fmt --write",
     "test:browser": "node scripts/verify-collaboration-ui.mjs",
     "build": "node scripts/build.mjs",
-    "typecheck": "tsrs -p tsconfig.json --noEmit --fast && tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsrs -p tsconfig.json --noEmit --fast && tsc -p tsconfig.json --noEmit",
+    "release:check": "node scripts/release-check.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.3.1",

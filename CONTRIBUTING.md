@@ -23,3 +23,7 @@ run third-party install scripts or use privileged pull-request workflows.
 Security reports belong in private vulnerability reporting linked in SECURITY.md.
 Contributions are under AGPL-3.0-or-later; retain third-party notices. No CLA or
 copyright transfer is requested.
+
+Release cadence, version identity, artifact qualification and rollback evidence
+are defined in [RELEASE.md](RELEASE.md). Run `npm run release:check` before
+publishing a version change; source merge and runtime deployment remain distinct.
