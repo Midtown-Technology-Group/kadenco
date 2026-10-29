@@ -68,14 +68,14 @@ function parseResponse(response, text) {
     }
   }
   const messages = [];
-  for (const block of text.split(/\r?\n\r?\n/)) {
+  // SSE joins data fields with newlines, never by concatenating JSON tokens.
+  for (const block of text.replace(/\r\n?/g, "\n").split("\n\n")) {
     const data = block
-      .split(/\r?\n/)
+      .split("\n")
       .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trim())
-      .filter(Boolean)
-      .join("");
-    if (data) {
+      .map((line) => line.slice(5).replace(/^ /, ""))
+      .join("\n");
+    if (data.trim()) {
       try {
         messages.push(JSON.parse(data));
       } catch {
@@ -422,7 +422,7 @@ class McpClient {
   async dispose() {
     if (!this.#sessionId) return;
     try {
-      await this.#fetch(this.url, {
+      const response = await this.#fetch(this.url, {
         method: "DELETE",
         redirect: "error",
         signal: AbortSignal.timeout(5000),
@@ -432,6 +432,8 @@ class McpClient {
           "MCP-Protocol-Version": this.#protocol,
         },
       });
+      // Cleanup needs only the headers. Do not retain an unread or endless body.
+      void response.body?.cancel().catch(() => {});
     } catch {
       /* Closing the SSH forward still tears down the task-owned transport. */
     }
