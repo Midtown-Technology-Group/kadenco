@@ -2,10 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { Store } from "../src/store.mjs";
-import { Bridge } from "../src/bridge.mjs";
-import { configSchema } from "../src/config.mjs";
-import { withFleetSessions } from "../src/fleet-source.mjs";
+import { Store } from "../dist/store.mjs";
+import { Bridge } from "../dist/bridge.mjs";
+import { configSchema } from "../dist/config.mjs";
+import { withFleetSessions } from "../dist/fleet-source.mjs";
 
 function fixture(t) {
   const store = new Store(":memory:", randomBytes(32));

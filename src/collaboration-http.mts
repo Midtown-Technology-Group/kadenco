@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { ServerResponse } from "node:http";
+import type { JWTVerifyGetKey } from "jose";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { createRemoteJWKSet, jwtVerify } from "jose";
@@ -34,9 +36,15 @@ async function boundedJson(response, max = 65536) {
   return JSON.parse(Buffer.concat(chunks).toString());
 }
 
-export function accessIdentity({ keySet, fetchImpl = fetch } = {}) {
+export function accessIdentity({
+  keySet,
+  fetchImpl = fetch,
+}: { keySet?: JWTVerifyGetKey; fetchImpl?: typeof fetch } = {}) {
   const keys = new Map();
-  return async (token, c) => {
+  return async (
+    token,
+    c,
+  ): Promise<{ subject: string; email: string; expiresAt: number; identity_scope?: string }> => {
     try {
       if (typeof token !== "string" || token.length > 16384) throw fail("authentication_required");
       let jwks = keySet ?? keys.get(c.issuer);
@@ -92,8 +100,9 @@ export function collaborationServer(
     commands: bridge.commands,
   });
   const host = localhostHostValidation(),
-    streams = new Set(),
+    streams = new Set<ServerResponse>(),
     perUser = new Map();
+  let stopping = false;
   const json = (res, status, data) => {
     res.writeHead(status, { ...security, "content-type": "application/json" });
     res.end(JSON.stringify(data));
@@ -106,7 +115,12 @@ export function collaborationServer(
       if (!url.pathname.startsWith("/collaborate/")) return json(res, 404, { reason: "not_found" });
       if (req.headers["sec-fetch-site"] === "cross-site") throw fail("forbidden");
       const user = await authenticate(req.headers["cf-access-jwt-assertion"], c);
+      if (stopping) {
+        res.destroy();
+        return;
+      }
       const live = () => {
+        if (stopping) throw fail("server_stopping");
         const next = service.config();
         if (
           user.expiresAt <= Date.now() ||
@@ -168,7 +182,7 @@ export function collaborationServer(
           };
           res.on("close", stop);
           const tick = async () => {
-            if (ended) return;
+            if (ended || stopping || res.writableEnded || res.destroyed) return stop();
             try {
               live();
               service.grant(user, target);
@@ -182,7 +196,7 @@ export function collaborationServer(
                   "\n\n",
               );
             } catch (e) {
-              if (!ended)
+              if (!ended && !stopping && !res.writableEnded && !res.destroyed)
                 res.write(
                   "event: unavailable\ndata: " +
                     JSON.stringify({
@@ -259,10 +273,12 @@ export function collaborationServer(
       );
     }
   });
-  server.stopStreams = () => {
+  const managed = server as typeof server & { stopStreams(): void };
+  managed.stopStreams = () => {
+    stopping = true;
     for (const res of streams) res.end();
   };
   server.requestTimeout = 30000;
   server.headersTimeout = 10000;
-  return server;
+  return managed;
 }

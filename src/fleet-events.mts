@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { Bridge } from "./bridge.mjs";
 import { createHash } from "node:crypto";
 import { subscriptionActive, subscriptionExpiry } from "./subscription-state.mjs";
 import { readReason } from "./read-errors.mjs";
@@ -10,10 +11,8 @@ const terminal = new Set(["completed", "failed", "cancelled", "interrupted"]);
 // One native MCP subscription, existing encrypted delivery store and read routes.
 // Inventory progresses in bounded pages; no task dispatch or per-thread enrollment.
 export class FleetEvents {
-  constructor(bridge) {
-    this.bridge = bridge;
-  }
-  hosts(owner) {
+  constructor(public bridge: Bridge) {}
+  hosts(owner = undefined) {
     const b = this.bridge,
       p = b.policy().principals.find((p) => p.id === owner && p.enabled !== false);
     if (!p || !b.fleetReads || !b.commands || p.eddieCaller || p.eddieHostCaller) throw fail();
@@ -28,13 +27,13 @@ export class FleetEvents {
         }
       });
   }
-  grant(owner, host, projectId, provider) {
+  grant(owner, host, projectId = undefined, provider = undefined) {
     if (!this.hosts(owner).includes(host)) throw fail();
     const { grant } = this.bridge.commands.grant(owner, host, projectId);
     if (provider !== undefined && !grant.providerInstanceIds.includes(provider)) throw fail();
     return grant;
   }
-  active(owner) {
+  active(owner = undefined) {
     return this.bridge.store
       .all("subscription")
       .filter(

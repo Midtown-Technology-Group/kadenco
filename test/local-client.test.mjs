@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, utimesSync, rmSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { localClientOptions, withLocalFollowup } from "../src/local-client.mjs";
-import { fleetBackend } from "../src/backend.mjs";
+import { localClientOptions, withLocalFollowup } from "../dist/local-client.mjs";
+import { fleetBackend } from "../dist/backend.mjs";
 
 test("credential path replacement and in-place growth cannot substitute unchecked contents", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "credential-race-")),

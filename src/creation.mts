@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { Store } from "./store.mjs";
+import type { Commands } from "./commands.mjs";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { scrub } from "./fleet-read.mjs";
@@ -62,9 +64,7 @@ const nativeThreadId = (owner, request) => {
 };
 
 export class Creation {
-  constructor(commands) {
-    this.commands = commands;
-  }
+  constructor(public commands: Commands) {}
   grant(owner, p) {
     const { grant, route } = this.commands.grant(owner, p.host, p.project_id);
     if (p.provider_instance_id && !grant.providerInstanceIds.includes(p.provider_instance_id))
@@ -152,7 +152,11 @@ export class Creation {
     return c.reader.withHost(owner, p.host, p.project_id, async (client) => {
       const project = await this.project(owner, p, client);
       return c.session(
-        { ...route, readOnly: true, audit: (...a) => c.store.audit(...a) },
+        {
+          ...route,
+          readOnly: true,
+          audit: (...a: Parameters<Store["audit"]>) => c.store.audit(...a),
+        },
         async (call) => {
           const config = await call(client.base, "server.getConfig", {}),
             providers = this.providers(owner, p, config);
@@ -266,7 +270,7 @@ export class Creation {
       return c.session(
         {
           ...route,
-          audit: (...a) => c.store.audit(...a),
+          audit: (...a: Parameters<Store["audit"]>) => c.store.audit(...a),
           authorizeDispatch: () => this.runtimeGrant(owner, p),
         },
         async (call) => {
@@ -438,7 +442,11 @@ export class Creation {
     try {
       return await c.reader.withHost(owner, r.host, r.projectId, (client) =>
         c.session(
-          { ...route, readOnly: true, audit: (...a) => c.store.audit(...a) },
+          {
+            ...route,
+            readOnly: true,
+            audit: (...a: Parameters<Store["audit"]>) => c.store.audit(...a),
+          },
           async (call) => {
             const projection = await call(client.base, "orchestration.getThreadProjection", {
               threadId: r.thread_id,

@@ -2,6 +2,10 @@
 
 Use a supported Node 22 or 24 release, then `npm ci --ignore-scripts`.
 Run `npm exec -- vp run check`, `npm exec -- vp run test`, and `npm audit`.
+The check runs both pinned compilers; the test command first builds with `tsrs`.
+Edit `src/*.mts`, not generated `dist/*.mjs`. Production startup uses compiled
+output and needs no compiler. The sidecar's independent CI/release and typed
+embedding API are described in [docs/t3-sidecar.md](docs/t3-sidecar.md).
 `npm exec -- vp run format` applies Oxfmt formatting; Oxlint treats warnings as
 failures. These are JavaScript static checks, not a claim of complete TypeScript
 type safety. Keep the native Node test runner; `vp test` selects Vitest instead.

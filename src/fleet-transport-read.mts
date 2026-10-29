@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { TransportOptions, NativeRecord } from "./contracts.mjs";
 // Read-only derivative of the installed MTG T3 Fleet 0.1.2 transport.
 // Original SHA256 ca8fc11c9f379cf2228e9c4b9391320f36e4169a4caa65801311b8c8b88bd3c1.
 // Preserve existing route/auth machinery; add native paginated project/thread
@@ -36,7 +37,8 @@ const SAFE_SSH_OPTIONS = [
 ];
 
 export class FleetTransportError extends Error {
-  constructor(message, reason) {
+  declare reason?: string;
+  constructor(message: string, reason?: string) {
     super(message);
     this.reason = reason;
   }
@@ -60,7 +62,7 @@ function parseResponse(response, text) {
   const type = (response.headers.get("content-type") || "").toLowerCase();
   if (!type.includes("text/event-stream")) {
     try {
-      return JSON.parse(text);
+      return JSON.parse(String(text));
     } catch {
       throw new FleetTransportError("MCP returned invalid JSON", "source_protocol_error");
     }
@@ -212,7 +214,7 @@ function sessionRank(access) {
 // Select only an unexpired cached MCP-client session bound to the exact origin.
 // This function never creates or refreshes a token.
 export function selectExistingSession(
-  cache,
+  cache: Record<string, NativeRecord>,
   hostName,
   base,
   scope,
@@ -261,6 +263,7 @@ export function selectExistingSession(
 }
 
 class McpClient {
+  declare url: string;
   #token;
   #fetch;
   #sessionId = null;
@@ -275,7 +278,7 @@ class McpClient {
   }
 
   async #post(body) {
-    const headers = {
+    const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       Authorization: `Bearer ${this.#token}`,
@@ -388,31 +391,30 @@ class McpClient {
   }
 
   readSession(scope, metadata) {
-    const client = this;
     return Object.freeze({
       host: metadata.host,
       base: metadata.base,
       runtimeAccess: metadata.runtimeAccess,
       scopes: [...metadata.scopes],
       expiresAt: metadata.expiresAt,
-      async searchThreads(args) {
+      searchThreads: async (args) => {
         if (scope !== "read") throw new FleetTransportError("session lacks read scope");
-        return client.#callAllowed(TOOL_NAMES.search, args);
+        return this.#callAllowed(TOOL_NAMES.search, args);
       },
-      async readThread(args) {
+      readThread: async (args) => {
         if (scope !== "read") throw new FleetTransportError("session lacks read scope");
-        return client.#callAllowed(TOOL_NAMES.read, args);
+        return this.#callAllowed(TOOL_NAMES.read, args);
       },
-      async listProjects(args) {
+      listProjects: async (args) => {
         if (scope !== "read") throw new FleetTransportError("session lacks read scope");
-        return client.#callAllowed(TOOL_NAMES.projects, args);
+        return this.#callAllowed(TOOL_NAMES.projects, args);
       },
-      async listThreads(args) {
+      listThreads: async (args) => {
         if (scope !== "read") throw new FleetTransportError("session lacks read scope");
-        return client.#callAllowed(TOOL_NAMES.threads, args);
+        return this.#callAllowed(TOOL_NAMES.threads, args);
       },
-      async dispose() {
-        await client.dispose();
+      dispose: async () => {
+        await this.dispose();
       },
     });
   }
@@ -456,11 +458,11 @@ function isPortFree(netImpl, port) {
 }
 
 function waitForTunnel(netImpl, port, child, timeoutMs = 10000) {
-  return new Promise((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     const started = Date.now();
     let finished = false;
     let timer;
-    const done = (error) => {
+    const done = (error = undefined) => {
       if (finished) return;
       finished = true;
       if (timer) clearInterval(timer);
@@ -497,6 +499,22 @@ function defaultPaths() {
 }
 
 export class T3FleetTransport {
+  declare hostsFile: string;
+  declare tokensFile: string;
+  declare fetchImpl: typeof fetch;
+  declare spawnImpl: TransportOptions["spawnImpl"];
+  declare execFileImpl: TransportOptions["execFileImpl"];
+  declare netImpl: typeof net;
+  declare now: () => number;
+  declare sshBinary: string;
+  declare hostsProvider: () => { hosts: NativeRecord[] };
+  declare cacheProvider: () => Record<string, NativeRecord>;
+  declare preopenedHosts: Set<string>;
+  declare tunnels: Map<string, NativeRecord>;
+  declare clients: Set<McpClient>;
+  declare runtimePortCache: Map<string, { port: number; expiresAt: number }>;
+  declare diagnostic: (event: unknown) => void;
+
   constructor({
     hostsFile,
     tokensFile,
@@ -511,7 +529,7 @@ export class T3FleetTransport {
     preopenedHosts = [],
     runtimePortCache,
     diagnostic = () => {},
-  } = {}) {
+  }: TransportOptions = {}) {
     const defaults = defaultPaths();
     this.hostsFile = hostsFile || defaults.hostsFile;
     this.tokensFile = tokensFile || defaults.tokensFile;
@@ -572,7 +590,7 @@ export class T3FleetTransport {
         },
       );
       const text = typeof result === "string" ? result : result.stdout;
-      const runtime = JSON.parse(text);
+      const runtime = JSON.parse(String(text));
       if (!isPort(runtime?.port))
         throw new FleetTransportError("remote T3 runtime has no valid listening port");
       // Reuse verified nonsecret runtime metadata during consecutive read pages.

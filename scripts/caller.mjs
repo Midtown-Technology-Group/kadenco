@@ -5,13 +5,13 @@ import {
   hostAckArgs,
   hostConversationArgs,
   hostCapabilityArgs,
-} from "../src/host-callers.mjs";
+} from "../dist/host-callers.mjs";
 // One explicit MCP call, no launcher, background polling or native T3 writes.
 // The Windows wrapper supplies only the separately enrolled caller credential.
 import { readFileSync } from "node:fs";
-import { askArgs, requestArgs, acknowledgeArgs, conversationArgs } from "../src/exchange.mjs";
+import { askArgs, requestArgs, acknowledgeArgs, conversationArgs } from "../dist/exchange.mjs";
 import { z } from "zod";
-import { ackCommandArgs } from "../src/commands.mjs";
+import { ackCommandArgs } from "../dist/commands.mjs";
 import { callerClient } from "./caller-client.mjs";
 
 let client,

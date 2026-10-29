@@ -5,8 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { localSource } from "../src/local-source.mjs";
-import { configSchema } from "../src/config.mjs";
+import { localSource } from "../dist/local-source.mjs";
+import { configSchema } from "../dist/config.mjs";
 
 test("native projection lifecycle and messages are read with a strict thread boundary", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "t3-source-")),

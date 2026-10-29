@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { T3FleetTransport } from "../src/fleet-transport-read.mjs";
+import { T3FleetTransport } from "../dist/fleet-transport-read.mjs";
 
 function transportWithReply(reply, cleanup = () => new Response(null, { status: 204 })) {
   return new T3FleetTransport({

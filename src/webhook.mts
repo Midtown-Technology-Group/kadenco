@@ -37,7 +37,7 @@ export async function resolveCallback(host, resolve = lookup, timeoutMs = 10000)
   try {
     return await Promise.race([
       resolve(host, { all: true, verbatim: true }),
-      new Promise((_, reject) => {
+      new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("callback_resolution_timeout")), timeoutMs);
       }),
     ]);

@@ -1,30 +1,41 @@
 {
   "name": "kadenco",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "private": true,
   "description": "Experimental MCP tools, durable events and receipts for T3 Code",
   "license": "AGPL-3.0-or-later",
   "files": [
+    "dist",
     "src",
     "scripts",
     "test",
     "examples",
+    "docs",
     "README.md",
     "LICENSE",
     "NOTICE",
     "SECURITY.md",
     "COMPATIBILITY.md",
     "EXPORT-MANIFEST.json",
-    "vite.config.ts"
+    "vite.config.ts",
+    "tsconfig.json"
   ],
   "type": "module",
+  "exports": {
+    "./sidecar": {
+      "types": "./dist/sidecar.d.mts",
+      "import": "./dist/sidecar.mjs"
+    }
+  },
   "scripts": {
-    "test": "node --test",
-    "start": "node src/main.mjs",
-    "check": "vp check --deny-warnings",
+    "test": "npm run build && node --test",
+    "start": "node dist/main.mjs",
+    "check": "vp check --deny-warnings && npm run typecheck",
     "lint": "vp lint --deny-warnings",
     "format": "vp fmt --write",
-    "test:browser": "node scripts/verify-collaboration-ui.mjs"
+    "test:browser": "node scripts/verify-collaboration-ui.mjs",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsrs -p tsconfig.json --noEmit --fast && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.3.1",
@@ -37,7 +48,10 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@types/node": "22.20.5",
     "playwright-core": "1.64.1",
+    "tsrs": "0.20.1-ts7.1.0-beta",
+    "typescript": "7.0.2",
     "vite-plus": "1.4.0"
   },
   "overrides": {

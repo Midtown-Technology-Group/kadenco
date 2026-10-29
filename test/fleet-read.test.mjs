@@ -2,9 +2,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { FleetReader } from "../src/fleet-read.mjs";
-import { configSchema } from "../src/config.mjs";
-import { httpServer } from "../src/server.mjs";
+import { FleetReader } from "../dist/fleet-read.mjs";
+import { configSchema } from "../dist/config.mjs";
+import { httpServer } from "../dist/server.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 function fixture() {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { T3FleetTransport } from "../src/fleet-transport-read.mjs";
+import { T3FleetTransport } from "../dist/fleet-transport-read.mjs";
 import { EventEmitter } from "node:events";
 
 test("inventory transport exposes only native read methods, reuses origin-bound credentials and gives MCP errors precedence", async () => {

@@ -6,10 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { Webhook } from "standardwebhooks";
-import { Store } from "../src/store.mjs";
-import { Bridge, FOLLOWUP } from "../src/bridge.mjs";
-import { callbackUrl, publicAddress, postWebhook } from "../src/webhook.mjs";
-import { httpServer, principalFor } from "../src/server.mjs";
+import { Store } from "../dist/store.mjs";
+import { Bridge, FOLLOWUP } from "../dist/bridge.mjs";
+import { callbackUrl, publicAddress, postWebhook } from "../dist/webhook.mjs";
+import { httpServer, principalFor } from "../dist/server.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 function fixture(t) {

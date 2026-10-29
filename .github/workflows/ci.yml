@@ -25,7 +25,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm exec -- vp run check
+      - name: Format, lint and both compiler checks
+        run: npm exec -- vp run check
       - run: npm audit
   test:
     name: test / ${{ matrix.os }} / node-${{ matrix.node }}

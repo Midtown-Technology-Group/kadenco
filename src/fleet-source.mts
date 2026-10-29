@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { ReadOptions, Backend } from "./contracts.mjs";
 // Remote enrolled sessions reuse the same authorized, read-only fleet reader
 // as inventory. No new credentials, scheduler, queue or execution path.
-export function withFleetSessions(source, reader, policy) {
+export function withFleetSessions(source: Backend, reader, policy) {
   const local = (session) => {
     if (session.host !== "local") throw new Error("remote_followup_not_authorized");
     return source;
   };
   return {
     ...source,
-    async read(session, activity = false, options = {}) {
+    async read(session, activity = false, options: ReadOptions = {}) {
       if (session.host === "local") return source.read(session, activity, options);
       const p = policy(),
         enrolled = p.sessions.find((s) => s.id === session.id);
@@ -34,7 +35,8 @@ export function withFleetSessions(source, reader, policy) {
         items: options.runId ? data.items.filter((i) => i.runId === options.runId) : data.items,
       };
     },
-    preflight: (session, ...args) => local(session).preflight?.(session, ...args),
-    followup: (session, ...args) => local(session).followup(session, ...args),
+    preflight: (session, ...args: [string]) => local(session).preflight?.(session, ...args),
+    followup: (session, ...args: [string?, string?, string?]) =>
+      local(session).followup(session, ...args),
   };
 }

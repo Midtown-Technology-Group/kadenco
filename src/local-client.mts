@@ -89,8 +89,8 @@ export async function withLocalFollowup(source, helperPath, config) {
     supportsFollowup: true,
     read: (session, activity = false, options = {}) =>
       activity ? native.read(session, true, options) : source.read(session, false, options),
-    preflight: (...args) => native.preflight(...args),
-    followup: (...args) => native.followup(...args),
+    preflight: (...args: Parameters<typeof native.preflight>) => native.preflight(...args),
+    followup: (...args: Parameters<typeof native.followup>) => native.followup(...args),
     close: async () => {
       try {
         await native.close();
