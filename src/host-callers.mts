@@ -33,6 +33,15 @@ export class HostCallers {
     this.grant(owner);
     return hostCallerOwner(owner, threadId);
   }
+  /** Advertise only negotiated bookkeeping support, never execution authority. */
+  deliveryAcknowledgement() {
+    return {
+      available: this.deliveryAcknowledgements && !!this.bridge.commands,
+      requires_current_run: true,
+      requires_retained_native_run_evidence: true,
+      is_completion: false,
+    };
+  }
   async capabilities(owner, input) {
     const p = hostCapabilityArgs.parse(input),
       g = this.grant(owner);
@@ -49,6 +58,7 @@ export class HostCallers {
         ...this.bridge.exchanges.capabilities(identity),
         host_caller: true,
         source_status: "available",
+        delivery_acknowledgement: this.deliveryAcknowledgement(),
       };
     }
     return {
@@ -58,12 +68,7 @@ export class HostCallers {
       inbox_id: g.reviewer,
       expires_at: new Date(g.expiresAt).toISOString(),
       passive_exchange: true,
-      delivery_acknowledgement: {
-        available: this.deliveryAcknowledgements && !!this.bridge.commands,
-        requires_current_run: true,
-        requires_retained_native_run_evidence: true,
-        is_completion: false,
-      },
+      delivery_acknowledgement: this.deliveryAcknowledgement(),
       resumes_t3: false,
       identity:
         "Authenticated host; caller supplies thread_id, server validates exact native thread/project and active run. Not a cryptographic attestation of the agent process.",
@@ -122,17 +127,21 @@ export class HostCallers {
     const { thread_id, ...p } = hostAckArgs.parse(input);
     return this.bridge.exchanges.acknowledge(this.identity(owner, thread_id), p);
   }
+  /** Recheck the captured host/reviewer after native waits, including rebinding. */
   acknowledgeDelivery(owner, input) {
     const { thread_id, ...p } = hostDeliveryAckArgs.parse(input),
-      g = this.grant(owner);
+      { host, reviewer } = this.grant(owner);
     if (!this.bridge.commands) throw fail("delivery_ack_unavailable");
     return this.bridge.commands.acknowledge(
       this.identity(owner, thread_id),
-      g.reviewer,
-      g.host,
+      reviewer,
+      host,
       thread_id,
       p,
-      () => this.grant(owner),
+      () => {
+        const current = this.grant(owner);
+        if (current.host !== host || current.reviewer !== reviewer) throw fail("forbidden");
+      },
     );
   }
 }

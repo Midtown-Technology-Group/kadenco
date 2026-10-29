@@ -509,3 +509,58 @@ test("legacy host caller discovery remains five tools unless acknowledgement is 
   const caps = await client.callTool({ name: "get_eddie_capabilities", arguments: {} });
   assert.equal(caps.structuredContent.delivery_acknowledgement.available, false);
 });
+
+test("delivery acknowledgement rejects host or reviewer rebinding during its native wait", async (t) => {
+  for (const field of ["host", "reviewer"]) {
+    const f = fixture(t);
+    let release;
+    const gate = new Promise((r) => (release = r));
+    f.policy.principals.push({
+      ...f.policy.principals[0],
+      id: "other",
+      readHosts: [{ host: "local", projectIds: ["p"] }],
+    });
+    f.policy.principals[0].readHosts.push({ host: "alternate", projectIds: ["p"] });
+    f.bridge.fleetReads.grant = (owner, host) => {
+      if (
+        !f.policy.principals.some(
+          (p) => p.id === owner && p.readHosts?.some((g) => g.host === host),
+        )
+      )
+        throw Object.assign(Error("forbidden"), { reason: "forbidden" });
+    };
+    f.bridge.commands = {
+      acknowledge: async (_caller, _reviewer, _host, _thread, _args, authorize) => {
+        authorize();
+        await gate;
+        authorize();
+        return { agent_acknowledged: true };
+      },
+    };
+    const pending = f.callers.acknowledgeDelivery("agents", {
+      thread_id: "codex",
+      request_id: randomUUID(),
+      run_id: "run-codex",
+    });
+    f.policy.principals[1].eddieHostCaller[field] = field === "host" ? "alternate" : "other";
+    release();
+    await assert.rejects(pending, /forbidden/);
+    assert.equal(f.store.all("command").length, 0);
+  }
+});
+
+test("thread-qualified capability discovery advertises negotiated acknowledgement too", async (t) => {
+  const f = fixture(t);
+  f.bridge.commands = {};
+  assert.equal(
+    (await f.callers.capabilities("agents", { thread_id: "codex" })).delivery_acknowledgement
+      .available,
+    true,
+  );
+  const legacy = new HostCallers(f.bridge, false);
+  assert.equal(
+    (await legacy.capabilities("agents", { thread_id: "codex" })).delivery_acknowledgement
+      .available,
+    false,
+  );
+});
