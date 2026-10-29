@@ -287,6 +287,7 @@ test("official MCP and stdio expose only passive tools with the host schema and 
   const tools = (await client.listTools()).tools;
   assert.deepEqual(tools.map((t) => t.name).sort(), [
     "acknowledge_eddie_reply",
+    "acknowledge_thread_delivery",
     "ask_eddie",
     "get_eddie_capabilities",
     "get_eddie_conversation",
@@ -393,6 +394,31 @@ test("universal CLI and native Pi tools use the same host-scoped MCP exchange an
     return JSON.parse(out);
   };
   const p = f.ask("codex");
+  const deliveries = [];
+  f.bridge.commands = {
+    acknowledge: async (caller, reviewer, host, threadId, args, authorize) => {
+      authorize();
+      deliveries.push({ caller, reviewer, host, threadId, ...args });
+      return { request_id: args.request_id, agent_acknowledged: true, completed: false };
+    },
+  };
+  const deliveryId = randomUUID();
+  const delivered = await run("ack_delivery", {
+    thread_id: "codex",
+    request_id: deliveryId,
+    run_id: "run-codex",
+  });
+  assert.equal(delivered.agent_acknowledged, true);
+  assert.equal(delivered.completed, false);
+  assert.deepEqual(deliveries[0], {
+    caller: hostCallerOwner("agents", "codex"),
+    reviewer: "eddie",
+    host: "local",
+    threadId: "codex",
+    request_id: deliveryId,
+    run_id: "run-codex",
+  });
+
   assert.equal((await run("ask", p)).run_id, "run-codex");
   await f.bridge.exchanges.get("eddie", { request_id: p.request_id }, { reviewer: true });
   await f.bridge.exchanges.reply("eddie", { request_id: p.request_id, reply: "CLI_REPLY_OK" });
@@ -410,7 +436,7 @@ test("universal CLI and native Pi tools use the same host-scoped MCP exchange an
     Object: (p, o) => ({ type: "object", properties: p, ...o }),
   };
   registerPiEddie(pi, Type, connection);
-  assert.equal(Object.keys(tools).length, 5);
+  assert.equal(Object.keys(tools).length, 6);
   const q = f.ask("pi"),
     asked = await tools.ask_eddie.execute("tool-call", q);
   assert.equal(asked.details.run_id, "run-pi");
@@ -424,5 +450,33 @@ test("universal CLI and native Pi tools use the same host-scoped MCP exchange an
   assert.equal(reply.details.resumes_t3, false);
   await handlers.session_shutdown();
   assert.equal(f.store.all("exchange").length, 2);
+  assert.equal(f.store.all("command").length, 0);
+});
+
+test("host delivery acknowledgements retain host/thread scope and fail after revocation", async (t) => {
+  const f = fixture(t),
+    request_id = randomUUID();
+  let release;
+  const gate = new Promise((r) => (release = r));
+  f.bridge.commands = {
+    acknowledge: async (_caller, reviewer, host, threadId, p, authorize) => {
+      assert.equal(reviewer, "eddie");
+      assert.equal(host, "local");
+      assert.equal(threadId, "codex");
+      assert.equal(p.request_id, request_id);
+      authorize();
+      await gate;
+      authorize();
+      return { agent_acknowledged: true };
+    },
+  };
+  const pending = f.callers.acknowledgeDelivery("agents", {
+    thread_id: "codex",
+    request_id,
+    run_id: "run-codex",
+  });
+  f.policy.principals[1].enabled = false;
+  release();
+  await assert.rejects(pending, /forbidden/);
   assert.equal(f.store.all("command").length, 0);
 });

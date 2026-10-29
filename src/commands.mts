@@ -343,6 +343,7 @@ export class Commands {
       native_submitted: r.submission === "accepted" ? true : null,
       sequence: r.sequence ?? null,
       agent_acknowledged: r.ackAt !== undefined,
+      acknowledged_run_id: r.ackRunId ?? null,
       acknowledged_at: r.ackAt ? new Date(r.ackAt).toISOString() : null,
       run_status: r.runStatus ?? null,
       terminal: terminal.has(r.runStatus),
@@ -537,7 +538,7 @@ export class Commands {
             );
           const communication = hasLane
             ? "Your two-way Eddie lane is active. Ask Eddie through your existing native question/user-input tool; its pending request is delivered to Eddie, whose exact live answer returns through T3. Do not search for ask_eddie or require a separate caller MCP. Permission approvals are not routed to Eddie."
-            : "If your authorized Eddie caller tools are available, acknowledge_thread_delivery for this exact request and current run before acting. Acknowledgement is not completion.";
+            : "Acknowledge this exact request and current run through your existing Eddie caller connection. If native tools are not exposed, the already-installed terminal adapter supports ask-eddie ack_delivery with thread_id, request_id and run_id in a JSON file. Use only the existing caller credential; preserve any denial and never substitute another caller or create credentials. Missing native run evidence requires reviewer receipt reconciliation, not a new turn. Acknowledgement is not completion.";
           const command =
             kind === "continue"
               ? {
@@ -930,16 +931,30 @@ export class Commands {
       !["continue", "create"].includes(r.kind)
     )
       throw fail("forbidden");
-    const receipt = await this.receipt(reviewer, p);
-    if (receipt.run_id !== p.run_id) throw fail("identity_mismatch");
+    // Acknowledgement must not issue a temporary native RPC credential just
+    // to refresh bookkeeping. Require retained native placement/run evidence.
+    const observedRun = r.messageObservation?.run_id ?? r.runId;
+    if (!observedRun) throw fail("delivery_run_unobserved");
+    if (observedRun !== p.run_id) throw fail("identity_mismatch");
     const source = await this.reader.read(reviewer, { host, thread_id: threadId });
+    if (source.thread.threadId !== threadId || source.thread.projectId !== r.projectId)
+      throw fail("identity_mismatch");
     if (source.thread.activeRunId !== p.run_id) throw fail("source_run_not_active");
     authorize();
     this.grant(reviewer, host, r.projectId);
     const current = this.store.get("command", p.request_id);
+    if (
+      !current ||
+      current.owner !== reviewer ||
+      current.host !== host ||
+      current.thread_id !== threadId ||
+      (current.messageObservation?.run_id ?? current.runId) !== p.run_id
+    )
+      throw fail("identity_mismatch");
     if (current.ackAt === undefined) {
       current.ackAt = this.now();
       current.ackCaller = caller;
+      current.ackRunId = p.run_id;
       this.store.put("command", p.request_id, current);
       this.store.audit("command.acknowledged", p.request_id, caller);
     }

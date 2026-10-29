@@ -86,6 +86,12 @@ export class Store {
       .all(host, after, new Date(Date.now() - 7 * 86400000).toISOString(), limit + 1)
       .map((r) => ({ sequence: r.seq, ...this.decode(r.value) }));
   }
+  latestDiagnostic(host) {
+    const r = this.db
+      .prepare("SELECT value FROM diagnostics WHERE host=? ORDER BY seq DESC LIMIT 1")
+      .get(host);
+    return r ? this.decode(r.value) : undefined;
+  }
   transaction(fn) {
     this.db.exec("BEGIN IMMEDIATE");
     try {

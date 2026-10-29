@@ -300,3 +300,34 @@ test("worker diagnostics sample a final synchronous stall on successful and fail
     histogram.disable();
   }
 });
+
+test("synchronous timing captures slow operations without serializing arguments or exceptions", async () => {
+  const { SynchronousTimings } = await import("../dist/synchronous-timings.mjs");
+  const m = new SynchronousTimings(),
+    error = Error("PRIVATE");
+  const target = {
+    read(_value) {
+      assert.equal(this, target);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+      throw error;
+    },
+  };
+  m.wrap(target, "backend", ["read"]);
+  assert.throws(
+    () => target.read("PRIVATE"),
+    (e) => e === error,
+  );
+  const r = m.take();
+  assert.equal(r.sync_operation, "backend.read");
+  assert.ok(r.sync_operation_max_ms >= 20);
+  assert.equal(JSON.stringify(r).includes("PRIVATE"), false);
+  assert.equal(m.take().sync_operation, null);
+  const row = diagnosticRecord("relay", "worker", Date.now(), null, {
+    sync_operation: "PRIVATE",
+    sync_operation_max_ms: Infinity,
+    process_cpu_user_ms: -1,
+  });
+  assert.equal(row.sync_operation, undefined);
+  assert.equal(row.sync_operation_max_ms, undefined);
+  assert.equal(row.process_cpu_user_ms, undefined);
+});

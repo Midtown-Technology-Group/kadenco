@@ -68,7 +68,7 @@ function fixture(t) {
       return fn({ base: "http://127.0.0.1:3773" });
     },
     async read() {
-      return { thread: { activeRunId: "new-run" } };
+      return { thread: { threadId: "t", projectId: "p", activeRunId: "new-run" } };
     },
     async inventory() {
       return {
@@ -553,6 +553,12 @@ test("agent acknowledgement is bound to the exact recipient thread and delivered
     userMessageId: f.writes[0].messageId,
     status: "running",
   });
+  // Acknowledgement consumes retained native evidence, never mints an RPC
+  // credential to discover a run. The reviewer reconciles placement first.
+  await f.commands.receipt("eddie", { request_id: f.p.request_id });
+  f.commands.session = async () => {
+    throw Error("ack_must_not_issue_credentials");
+  };
   await assert.rejects(
     f.commands.acknowledge("caller", "eddie", "local", "wrong", {
       request_id: f.p.request_id,

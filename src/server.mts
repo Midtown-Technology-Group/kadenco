@@ -6,6 +6,7 @@ import {
   hostAskArgs,
   hostGetArgs,
   hostAckArgs,
+  hostDeliveryAckArgs,
   hostConversationArgs,
   hostCapabilityArgs,
 } from "./host-callers.mjs";
@@ -393,6 +394,8 @@ export function makeMcp(bridge: Bridge, owner: string) {
               "receipt_not_found",
               "invalid_native_options",
               "settings_unsupported",
+              "delivery_ack_unavailable",
+              "delivery_run_unobserved",
             ].includes(e.reason) || readReasons.has(e.reason)
               ? e.reason
               : "request_denied_or_source_unavailable";
@@ -444,6 +447,13 @@ export function makeMcp(bridge: Bridge, owner: string) {
     );
   if (principal?.eddieHostCaller) {
     const callers = new HostCallers(bridge);
+    register(
+      "acknowledge_thread_delivery",
+      "Record this exact delivered request and current native run as acknowledged from the bound host/thread. Bookkeeping only; no execution or credential issuance.",
+      hostDeliveryAckArgs,
+      false,
+      (p) => callers.acknowledgeDelivery(owner, p),
+    );
     register(
       "get_eddie_capabilities",
       "Discover this host-bound passive Eddie connection. Optionally verify an exact thread. No per-thread enrollment, provider restriction or execution grant.",

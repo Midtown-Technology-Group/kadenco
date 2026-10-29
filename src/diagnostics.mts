@@ -3,6 +3,7 @@ import type { DiagnosticRecord, NativeRecord } from "./contracts.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { syncOperations } from "./synchronous-timings.mjs";
 import { readReason } from "./read-errors.mjs";
 const context = new AsyncLocalStorage<{
   origin: string;
@@ -80,6 +81,10 @@ export function diagnosticRecord(host, stage, started, error, metadata: NativeRe
     r.delivery_state = metadata.delivery_state;
   if (Number.isFinite(metadata.event_loop_delay_max_ms) && metadata.event_loop_delay_max_ms >= 0)
     r.event_loop_delay_max_ms = Math.round(metadata.event_loop_delay_max_ms);
+  if (syncOperations.has(metadata.sync_operation)) r.sync_operation = metadata.sync_operation;
+  for (const name of ["sync_operation_max_ms", "process_cpu_user_ms", "process_cpu_system_ms"])
+    if (Number.isFinite(metadata[name]) && metadata[name] >= 0)
+      r[name] = Math.round(metadata[name]);
   return r;
 }
 export async function diagnose(emit, host, stage, fn, metadata = {}) {
@@ -106,7 +111,7 @@ export async function diagnose(emit, host, stage, fn, metadata = {}) {
 
 // Let the histogram's 20ms timer sample the final operation before reading it.
 // A static metadata object also preserves the sample when the operation throws.
-export async function diagnoseWorkerCycle(emit, histogram, fn) {
+export async function diagnoseWorkerCycle(emit, histogram, fn, measurements = () => ({})) {
   const metadata: NativeRecord = {};
   try {
     return await diagnose(
@@ -119,6 +124,11 @@ export async function diagnoseWorkerCycle(emit, histogram, fn) {
         } finally {
           await delay(20);
           metadata.event_loop_delay_max_ms = histogram.max / 1e6;
+          try {
+            Object.assign(metadata, measurements());
+          } catch {
+            /* Diagnostics cannot replace the operation's outcome. */
+          }
         }
       },
       metadata,

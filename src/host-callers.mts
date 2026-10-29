@@ -3,6 +3,7 @@ import type { Bridge } from "./bridge.mjs";
 import { z } from "zod";
 import { askArgs, requestArgs, acknowledgeArgs, conversationArgs } from "./exchange.mjs";
 import { hostCallerOwner } from "./host-caller-scope.mjs";
+import { ackCommandArgs } from "./commands.mjs";
 const thread = z.string().min(1).max(2048),
   wait = z.number().int().min(0).max(10000).default(0);
 export const hostAskArgs = askArgs
@@ -10,6 +11,7 @@ export const hostAskArgs = askArgs
   .extend({ thread_id: thread, wait_ms: wait });
 export const hostGetArgs = requestArgs.extend({ thread_id: thread, wait_ms: wait });
 export const hostAckArgs = acknowledgeArgs.extend({ thread_id: thread });
+export const hostDeliveryAckArgs = ackCommandArgs.extend({ thread_id: thread });
 export const hostConversationArgs = conversationArgs.extend({ thread_id: thread });
 export const hostCapabilityArgs = z.object({ thread_id: thread.optional() }).strict();
 const fail = (reason) => Object.assign(new Error(reason), { reason });
@@ -53,6 +55,12 @@ export class HostCallers {
       inbox_id: g.reviewer,
       expires_at: new Date(g.expiresAt).toISOString(),
       passive_exchange: true,
+      delivery_acknowledgement: {
+        available: !!this.bridge.commands,
+        requires_current_run: true,
+        requires_retained_native_run_evidence: true,
+        is_completion: false,
+      },
       resumes_t3: false,
       identity:
         "Authenticated host; caller supplies thread_id, server validates exact native thread/project and active run. Not a cryptographic attestation of the agent process.",
@@ -110,5 +118,18 @@ export class HostCallers {
   acknowledge(owner, input) {
     const { thread_id, ...p } = hostAckArgs.parse(input);
     return this.bridge.exchanges.acknowledge(this.identity(owner, thread_id), p);
+  }
+  acknowledgeDelivery(owner, input) {
+    const { thread_id, ...p } = hostDeliveryAckArgs.parse(input),
+      g = this.grant(owner);
+    if (!this.bridge.commands) throw fail("delivery_ack_unavailable");
+    return this.bridge.commands.acknowledge(
+      this.identity(owner, thread_id),
+      g.reviewer,
+      g.host,
+      thread_id,
+      p,
+      () => this.grant(owner),
+    );
   }
 }
