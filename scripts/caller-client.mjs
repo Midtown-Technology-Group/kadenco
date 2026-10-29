@@ -27,7 +27,9 @@ export async function callerClient() {
   try {
     await client.connect(
       new StreamableHTTPClientTransport(url, {
-        requestInit: { headers: { Authorization: "Bearer " + token } },
+        requestInit: {
+          headers: { Authorization: "Bearer " + token, "x-kadenco-delivery-ack": "1" },
+        },
         fetch: (url, options) =>
           fetch(url, { ...options, redirect: "error", signal: AbortSignal.timeout(30000) }),
       }),

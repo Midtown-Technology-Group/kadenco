@@ -34,3 +34,5 @@ preemption; they identify a path to investigate, not prove SQLite or CPU causali
 The read-only fleet status exposes the last completed worker measurement and age;
 an in-progress cycle is not observed and an old sample is not a health guarantee.
 No additional polling worker or permission changes are introduced.
+
+To preserve rolling compatibility, updated caller-client requests x-kadenco-delivery-ack: 1. Unnegotiated host clients keep their legacy five-tool surface. This header selects a protocol surface only; it grants no authority and all acknowledgement scope checks still apply.

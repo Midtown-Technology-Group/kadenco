@@ -281,7 +281,9 @@ test("official MCP and stdio expose only passive tools with the host schema and 
   });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(endpoint), {
-      requestInit: { headers: { Authorization: "Bearer " + f.token } },
+      requestInit: {
+        headers: { Authorization: "Bearer " + f.token, "x-kadenco-delivery-ack": "1" },
+      },
     }),
   );
   const tools = (await client.listTools()).tools;
@@ -479,4 +481,31 @@ test("host delivery acknowledgements retain host/thread scope and fail after rev
   release();
   await assert.rejects(pending, /forbidden/);
   assert.equal(f.store.all("command").length, 0);
+});
+
+test("legacy host caller discovery remains five tools unless acknowledgement is explicitly negotiated", async (t) => {
+  const f = fixture(t),
+    server = httpServer(f.bridge);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const client = new Client(
+    { name: "legacy-caller", version: "0.7.1" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  t.after(async () => {
+    await client.close();
+    await new Promise((r) => server.close(r));
+  });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.address().port}/mcp`), {
+      requestInit: { headers: { Authorization: "Bearer " + f.token } },
+    }),
+  );
+  const tools = (await client.listTools()).tools;
+  assert.equal(tools.length, 5);
+  assert.equal(
+    tools.some((t) => t.name === "acknowledge_thread_delivery"),
+    false,
+  );
+  const caps = await client.callTool({ name: "get_eddie_capabilities", arguments: {} });
+  assert.equal(caps.structuredContent.delivery_acknowledgement.available, false);
 });

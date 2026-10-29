@@ -16,7 +16,10 @@ export const hostConversationArgs = conversationArgs.extend({ thread_id: thread 
 export const hostCapabilityArgs = z.object({ thread_id: thread.optional() }).strict();
 const fail = (reason) => Object.assign(new Error(reason), { reason });
 export class HostCallers {
-  constructor(public bridge: Bridge) {}
+  constructor(
+    public bridge: Bridge,
+    public deliveryAcknowledgements = true,
+  ) {}
   grant(owner) {
     const g = this.bridge
       .policy()
@@ -56,7 +59,7 @@ export class HostCallers {
       expires_at: new Date(g.expiresAt).toISOString(),
       passive_exchange: true,
       delivery_acknowledgement: {
-        available: !!this.bridge.commands,
+        available: this.deliveryAcknowledgements && !!this.bridge.commands,
         requires_current_run: true,
         requires_retained_native_run_evidence: true,
         is_completion: false,
