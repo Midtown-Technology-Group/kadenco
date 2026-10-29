@@ -23,6 +23,14 @@ The returned handle exposes its address and idempotent asynchronous `shutdown`.
 Startup failure releases owned resources. The CLI owns SIGINT/SIGTERM handling;
 an embedding supervisor owns its own process lifecycle.
 
+The environment key fallback is captured in private module memory and removed
+from `process.env` before operator/native helpers run. Same-process retry/restart
+can reuse it; explicit `stateKey` still takes precedence. A new environment value
+on a later start replaces the fallback (and must validate normally). Startup
+cleanup reports an aggregate with the original startup error as its cause when
+cleanup also fails. Shutdown attempts every owned resource exactly once, and
+authenticated stream requests resuming after shutdown are refused.
+
 `backendFactory` is a startup-only composition hook for an operator's existing
 reviewed helper adapter. It is code supplied by the process owner, never a remote
 tool argument, config-selected module, enrollment mechanism or policy override.

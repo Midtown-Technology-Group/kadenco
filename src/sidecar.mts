@@ -34,15 +34,17 @@ function projectionBackend(config: Policy): Backend {
   return localSource(config.source.databasePath);
 }
 
+// Preserve the embedding API's fallback across retries/restarts without leaving
+// the raw key in the environment inherited by SSH/native helper children.
+let environmentKey: Buffer | undefined;
+
 // Importing this module has no process, signal, model or network side effects.
 export async function startSidecar(options: SidecarOptions = {}): Promise<Sidecar> {
   const configPath = options.configPath ?? process.env.EDDIE_T3_CONFIG;
-  const key =
-    options.stateKey ??
-    (process.env.EDDIE_T3_STATE_KEY
-      ? Buffer.from(process.env.EDDIE_T3_STATE_KEY, "base64")
-      : undefined);
+  if (process.env.EDDIE_T3_STATE_KEY !== undefined)
+    environmentKey = Buffer.from(process.env.EDDIE_T3_STATE_KEY, "base64");
   delete process.env.EDDIE_T3_STATE_KEY;
+  const key = options.stateKey ?? environmentKey;
   if (!configPath || !key) throw Error("EDDIE_T3_CONFIG and EDDIE_T3_STATE_KEY required");
   if (key.length !== 32) throw Error("32_byte_state_key_required");
   const policy = () => configSchema.parse(JSON.parse(readFileSync(configPath, "utf8")));
@@ -61,7 +63,8 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
       stopped = true;
       clearTimeout(timer);
       collaboration?.stopStreams();
-      await Promise.all(
+      const errors: unknown[] = [];
+      const listeners = await Promise.allSettled(
         [server, collaboration].filter(Boolean).map(
           (s) =>
             new Promise<void>((resolve, reject) => {
@@ -70,16 +73,19 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
             }),
         ),
       );
-      await inFlight;
+      for (const result of listeners) if (result.status === "rejected") errors.push(result.reason);
       try {
-        await reader?.close();
-      } finally {
-        try {
-          await backend?.close();
-        } finally {
-          store?.close();
-        }
+        await inFlight;
+      } catch (error) {
+        errors.push(error);
       }
+      for (const close of [() => reader?.close(), () => backend?.close(), () => store?.close()])
+        try {
+          await close();
+        } catch (error) {
+          errors.push(error);
+        }
+      if (errors.length) throw new AggregateError(errors, "sidecar shutdown failed");
     })());
   try {
     backend = await (options.backendFactory ?? projectionBackend)(config);
@@ -133,7 +139,13 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
     inFlight = cycle();
     return { address: () => server.address() as AddressInfo | null, shutdown };
   } catch (error) {
-    await shutdown();
+    try {
+      await shutdown();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "sidecar startup and cleanup failed", {
+        cause: error,
+      });
+    }
     throw error;
   }
 }

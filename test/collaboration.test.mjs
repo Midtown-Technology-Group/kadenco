@@ -580,3 +580,48 @@ test("HTTP rejects CSRF, oversized input and native endpoints; streams recheck g
   assert.match(output, /access_revoked/);
   controller.abort();
 });
+
+test("stream authentication resuming after stop cannot enroll a new stream or delay server close", async (t) => {
+  const f = fixture(t);
+  await f.grant("viewer", ["view"]);
+  let entered, release;
+  const authenticated = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const barrier = new Promise((resolve) => {
+    release = resolve;
+  });
+  const server = collaborationServer(
+    { policy: () => f.policy, store: f.store, fleetReads: f.reader, commands: f.commands },
+    {
+      authenticate: async () => {
+        entered();
+        await barrier;
+        return { ...f.users.viewer, expiresAt: Date.now() + 60000 };
+      },
+      intervalMs: 10,
+    },
+  );
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    release();
+    server.stopStreams();
+    server.closeAllConnections();
+    server.close();
+  });
+  const request = fetch(
+    `http://127.0.0.1:${server.address().port}/collaborate/api/stream?host=local&thread_id=t`,
+    { signal: AbortSignal.timeout(5000) },
+  ).catch((error) => error);
+  await authenticated;
+  server.stopStreams();
+  const closed = new Promise((resolve) => server.close(resolve));
+  release();
+  const result = await request;
+  assert.ok(
+    result instanceof TypeError,
+    "shutdown must destroy the resumed response, not open SSE until the client deadline",
+  );
+  await closed;
+  assert.equal(f.writes.length, 0);
+});

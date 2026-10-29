@@ -102,6 +102,7 @@ export function collaborationServer(
   const host = localhostHostValidation(),
     streams = new Set<ServerResponse>(),
     perUser = new Map();
+  let stopping = false;
   const json = (res, status, data) => {
     res.writeHead(status, { ...security, "content-type": "application/json" });
     res.end(JSON.stringify(data));
@@ -114,7 +115,12 @@ export function collaborationServer(
       if (!url.pathname.startsWith("/collaborate/")) return json(res, 404, { reason: "not_found" });
       if (req.headers["sec-fetch-site"] === "cross-site") throw fail("forbidden");
       const user = await authenticate(req.headers["cf-access-jwt-assertion"], c);
+      if (stopping) {
+        res.destroy();
+        return;
+      }
       const live = () => {
+        if (stopping) throw fail("server_stopping");
         const next = service.config();
         if (
           user.expiresAt <= Date.now() ||
@@ -176,7 +182,7 @@ export function collaborationServer(
           };
           res.on("close", stop);
           const tick = async () => {
-            if (ended) return;
+            if (ended || stopping || res.writableEnded || res.destroyed) return stop();
             try {
               live();
               service.grant(user, target);
@@ -190,7 +196,7 @@ export function collaborationServer(
                   "\n\n",
               );
             } catch (e) {
-              if (!ended)
+              if (!ended && !stopping && !res.writableEnded && !res.destroyed)
                 res.write(
                   "event: unavailable\ndata: " +
                     JSON.stringify({
@@ -269,6 +275,7 @@ export function collaborationServer(
   });
   const managed = server as typeof server & { stopStreams(): void };
   managed.stopStreams = () => {
+    stopping = true;
     for (const res of streams) res.end();
   };
   server.requestTimeout = 30000;
