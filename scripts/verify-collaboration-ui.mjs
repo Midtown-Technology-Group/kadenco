@@ -6,9 +6,9 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
-import { Store } from "../src/store.mjs";
-import { Collaboration } from "../src/collaboration.mjs";
-import { collaborationServer } from "../src/collaboration-http.mjs";
+import { Store } from "../dist/store.mjs";
+import { Collaboration } from "../dist/collaboration.mjs";
+import { collaborationServer } from "../dist/collaboration-http.mjs";
 
 if (!process.env.T3_TEST_BROWSER_PATH)
   throw Error("Set T3_TEST_BROWSER_PATH to an installed Chromium executable");

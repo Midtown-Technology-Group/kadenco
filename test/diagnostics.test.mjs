@@ -2,10 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, createHash } from "node:crypto";
-import { Store } from "../src/store.mjs";
-import { diagnosticContext, diagnosticRecord, diagnose } from "../src/diagnostics.mjs";
-import { T3FleetTransport } from "../src/fleet-transport-read.mjs";
-import { httpServer } from "../src/server.mjs";
+import { Store } from "../dist/store.mjs";
+import { diagnosticContext, diagnosticRecord, diagnose } from "../dist/diagnostics.mjs";
+import { T3FleetTransport } from "../dist/fleet-transport-read.mjs";
+import { httpServer } from "../dist/server.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 test("concurrent origins stay isolated and errors/metadata cannot leak secrets", async () => {

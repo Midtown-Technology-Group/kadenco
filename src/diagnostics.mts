@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { DiagnosticRecord, NativeRecord } from "./contracts.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readReason } from "./read-errors.mjs";
-const context = new AsyncLocalStorage();
-export function diagnosticContext(origin, operation, fn) {
+const context = new AsyncLocalStorage<{
+  origin: string;
+  operation: string;
+  correlation_id: string;
+}>();
+export function diagnosticContext<T>(origin: string, operation: string, fn: () => T): T {
   return context.run({ origin, operation, correlation_id: randomUUID() }, fn);
 }
 const codes = new Set([
@@ -28,10 +33,10 @@ const stages = new Set([
 ]);
 // Fixed fields only: never serialize exception messages, URLs, arguments,
 // headers, credential files, keys, stdout/stderr or provider response bodies.
-export function diagnosticRecord(host, stage, started, error, metadata = {}) {
+export function diagnosticRecord(host, stage, started, error, metadata: NativeRecord = {}) {
   const c = context.getStore(),
     code = error?.code ?? error?.cause?.code;
-  const r = {
+  const r: DiagnosticRecord = {
     at: new Date().toISOString(),
     host,
     stage: stages.has(stage) ? stage : "host_read",

@@ -2,12 +2,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { Store } from "../src/store.mjs";
-import { Commands, resolveArgs, continueArgs } from "../src/commands.mjs";
-import { nativeSession } from "../src/native-session.mjs";
-import { configSchema } from "../src/config.mjs";
-import { httpServer } from "../src/server.mjs";
-import { Bridge } from "../src/bridge.mjs";
+import { Store } from "../dist/store.mjs";
+import { Commands, resolveArgs, continueArgs } from "../dist/commands.mjs";
+import { nativeSession } from "../dist/native-session.mjs";
+import { configSchema } from "../dist/config.mjs";
+import { httpServer } from "../dist/server.mjs";
+import { Bridge } from "../dist/bridge.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 function fixture(t) {
   let now = Date.now(),

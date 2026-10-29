@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { Store } from "./store.mjs";
+import type { Policy } from "./config.mjs";
+import type { FleetReader } from "./fleet-read.mjs";
 import { subscriptionActive } from "./subscription-state.mjs";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -82,11 +85,18 @@ const observationFields = [
 ];
 const observationFingerprint = (r) => hash(observationFields.map((key) => r[key] ?? null));
 export class Commands {
+  declare policy: () => Policy;
+  declare store: Store;
+  declare reader: FleetReader;
+  declare session: typeof nativeSession;
+  declare now: () => number;
+  declare creation: Creation;
+
   constructor({ policy, store, reader, session = nativeSession, now = Date.now }) {
     Object.assign(this, { policy, store, reader, session, now });
     this.creation = new Creation(this);
   }
-  grant(owner, host, projectId) {
+  grant(owner, host, projectId = undefined) {
     const p = this.policy(),
       principal = p.principals.find((x) => x.id === owner && x.enabled !== false);
     const grant = principal?.commandHosts?.find((x) => x.host === host),
@@ -134,7 +144,11 @@ export class Commands {
       };
     return this.reader.withHost(owner, p.host, undefined, (client) =>
       this.session(
-        { ...route, readOnly: true, audit: (...a) => this.store.audit(...a) },
+        {
+          ...route,
+          readOnly: true,
+          audit: (...a: Parameters<Store["audit"]>) => this.store.audit(...a),
+        },
         async (call) => {
           const projection = await call(client.base, "orchestration.getThreadProjection", {
             threadId: p.thread_id,
@@ -426,7 +440,15 @@ export class Commands {
     owner,
     p,
     kind,
-    { authorize = () => {}, currentSelectionOnly = false, collaborator = false } = {},
+    {
+      authorize = () => {},
+      currentSelectionOnly = false,
+      collaborator = false,
+    }: {
+      authorize?: (selection?: { projectId: string }) => void;
+      currentSelectionOnly?: boolean;
+      collaborator?: boolean;
+    } = {},
   ) {
     authorize();
     const old = this.existing(owner, p, kind);
@@ -439,7 +461,7 @@ export class Commands {
       return this.session(
         {
           ...route,
-          audit: (...a) => this.store.audit(...a),
+          audit: (...a: Parameters<Store["audit"]>) => this.store.audit(...a),
           authorizeDispatch: () => nativeGuard(),
         },
         async (call) => {
@@ -567,7 +589,7 @@ export class Commands {
       );
     });
   }
-  continue(owner, p, options) {
+  continue(owner, p, options = undefined) {
     return this.submit(owner, continueArgs.parse(p), "continue", options);
   }
   answer(owner, p) {
@@ -578,7 +600,11 @@ export class Commands {
       { route } = this.grant(owner, p.host);
     return this.reader.withHost(owner, p.host, undefined, (client) =>
       this.session(
-        { ...route, readOnly: true, audit: (...a) => this.store.audit(...a) },
+        {
+          ...route,
+          readOnly: true,
+          audit: (...a: Parameters<Store["audit"]>) => this.store.audit(...a),
+        },
         async (call) => {
           const projection = await call(client.base, "orchestration.getThreadProjection", {
             threadId: p.thread_id,
@@ -664,7 +690,11 @@ export class Commands {
     return this.reader
       .withHost(owner, r.host, r.projectId, (client) =>
         this.session(
-          { ...route, readOnly: true, audit: (...a) => this.store.audit(...a) },
+          {
+            ...route,
+            readOnly: true,
+            audit: (...a: Parameters<Store["audit"]>) => this.store.audit(...a),
+          },
           async (call) => {
             let current = this.store.get("command", request_id);
             if (
@@ -850,7 +880,7 @@ export class Commands {
       result_fresh = false,
       message_fresh = false,
       native_message_status = "not_checked",
-      source_error,
+      source_error = undefined,
     },
   ) {
     const cachedTerminal = terminal.has(current.runStatus),

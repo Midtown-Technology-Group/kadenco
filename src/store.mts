@@ -3,7 +3,10 @@ import { DatabaseSync } from "node:sqlite";
 import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 
 export class Store {
-  constructor(path, key) {
+  declare key: Buffer;
+  declare db: DatabaseSync;
+  declare diagnosticWrites: number;
+  constructor(path: string, key: Buffer) {
     if (!Buffer.isBuffer(key) || key.length !== 32) throw new Error("32_byte_state_key_required");
     this.key = key;
     this.db = new DatabaseSync(path);

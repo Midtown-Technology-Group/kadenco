@@ -36,7 +36,7 @@ test("standalone local-projection entrypoint starts with synthetic state and no 
       sessions: [],
     }),
   );
-  const child = spawn(process.execPath, ["src/main.mjs"], {
+  const child = spawn(process.execPath, ["dist/main.mjs"], {
     env: {
       ...process.env,
       EDDIE_T3_CONFIG: policy,

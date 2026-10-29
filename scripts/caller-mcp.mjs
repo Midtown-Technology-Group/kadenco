@@ -5,14 +5,14 @@ import {
   hostAckArgs,
   hostConversationArgs,
   hostCapabilityArgs,
-} from "../src/host-callers.mjs";
+} from "../dist/host-callers.mjs";
 // Optional native MCP entrypoint for an already-authorized T3 provider config.
 // It exposes only the bound caller tools; remote authorization remains authoritative.
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
-import { askArgs, requestArgs, acknowledgeArgs, conversationArgs } from "../src/exchange.mjs";
+import { askArgs, requestArgs, acknowledgeArgs, conversationArgs } from "../dist/exchange.mjs";
 import { z } from "zod";
-import { ackCommandArgs } from "../src/commands.mjs";
+import { ackCommandArgs } from "../dist/commands.mjs";
 import { callerClient } from "./caller-client.mjs";
 
 try {

@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { NativeRecord } from "./contracts.mjs";
+import type { Bridge } from "./bridge.mjs";
 import { subscriptionActive } from "./subscription-state.mjs";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -53,8 +55,7 @@ export const acknowledgeArgs = requestArgs.extend({
 // This class has only native READ access. Receipts are integration delivery
 // bookkeeping, never native T3 messages, queued turns or execution requests.
 export class Exchanges {
-  constructor(bridge) {
-    this.bridge = bridge;
+  constructor(public bridge: Bridge) {
     // Additive, encrypted bookkeeping only; old request fingerprints stay valid.
     // Existing requests become independent roots. Ordering is stable on restart.
     this.store.transaction(() => {
@@ -73,7 +74,7 @@ export class Exchanges {
   get now() {
     return this.bridge.now();
   }
-  principal(owner) {
+  principal(owner): NativeRecord {
     const policy = this.bridge.policy();
     const p =
       policy.principals.find((p) => p.id === owner && p.enabled !== false) ??
@@ -377,7 +378,7 @@ export class Exchanges {
     } else if (!reviewer) this.store.audit("exchange.receipt", request_id, owner);
     return this.receipt(current, reviewer);
   }
-  async list(owner, { cursor, limit = 25 } = {}) {
+  async list(owner, { cursor, limit = 25 }: { cursor?: string; limit?: number } = {}) {
     this.inbox(owner);
     const records = this.store
       .all("exchange")

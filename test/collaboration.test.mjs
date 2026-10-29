@@ -2,9 +2,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { Store } from "../src/store.mjs";
-import { Collaboration, grantArgs } from "../src/collaboration.mjs";
-import { accessIdentity, collaborationServer } from "../src/collaboration-http.mjs";
+import { Store } from "../dist/store.mjs";
+import { Collaboration, grantArgs } from "../dist/collaboration.mjs";
+import { accessIdentity, collaborationServer } from "../dist/collaboration-http.mjs";
 import { generateKeyPair, SignJWT } from "jose";
 
 function fixture(t) {

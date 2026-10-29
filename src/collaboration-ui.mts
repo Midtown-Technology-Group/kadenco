@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-const el = (id) => document.getElementById(id);
+const el = (id) => document.getElementById(id) as HTMLInputElement;
 const status = (text, error = false) => {
   el("status").textContent = text;
   el("status").classList.toggle("error", error);
@@ -22,7 +22,7 @@ const active = (scope, generation) => {
     hash.get("thread_id") === scope.thread_id
   );
 };
-async function api(path, body) {
+async function api(path: string, body?: unknown) {
   const response = await fetch("/collaborate/api/" + path, {
     method: body ? "POST" : "GET",
     headers: body ? { "content-type": "application/json", "x-t3-collaboration": "1" } : {},
@@ -178,7 +178,7 @@ function showGrant() {
   for (const cap of ["view", "propose", "send", "review"])
     el(cap).checked = (g?.capabilities ?? ["view"]).includes(cap);
   const expiry = new Date(g?.expires_at ?? Date.now() + 86400000);
-  el("expiry").value = new Date(expiry - expiry.getTimezoneOffset() * 60000)
+  el("expiry").value = new Date(expiry.getTime() - expiry.getTimezoneOffset() * 60000)
     .toISOString()
     .slice(0, 16);
 }

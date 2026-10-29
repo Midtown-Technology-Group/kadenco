@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { RelaySession } from "./contracts.mjs";
+import type { ReadOptions } from "./contracts.mjs";
+import type { Bridge } from "./bridge.mjs";
 import { subscriptionActive } from "./subscription-state.mjs";
 import { createHash } from "node:crypto";
 const hash = (x) => createHash("sha256").update(JSON.stringify(x)).digest("hex");
@@ -8,10 +11,8 @@ const fail = (reason) => Object.assign(new Error(reason), { reason });
 // Subscription and delivery records already supply persistence/retry; no caller
 // token, provider config, task queue or alternate agent identity is created.
 export class ThreadLanes {
-  constructor(bridge) {
-    this.bridge = bridge;
-  }
-  binding(owner, { host, thread_id }, projectId) {
+  constructor(public bridge: Bridge) {}
+  binding(owner, { host, thread_id }, projectId = undefined) {
     const b = this.bridge;
     if (!b.commands) throw fail("two_way_lane_unavailable");
     b.commands.grant(owner, host, projectId);
@@ -65,7 +66,7 @@ export class ThreadLanes {
         }
       });
   }
-  sessions(owner) {
+  sessions(owner = undefined): RelaySession[] {
     return [
       ...new Map(
         this.subscriptions(owner).map((s) => [
@@ -86,7 +87,7 @@ export class ThreadLanes {
   session(owner, id) {
     return this.sessions(owner).find((s) => s.id === id);
   }
-  async read(session, activity = false, options = {}) {
+  async read(session, activity = false, options: ReadOptions = {}) {
     const bound = this.session(session.owner, session.id);
     if (!bound || bound.host !== session.host || bound.threadId !== session.threadId)
       throw fail("forbidden");

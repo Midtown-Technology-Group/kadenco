@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { ServerResponse } from "node:http";
+import type { JWTVerifyGetKey } from "jose";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { createRemoteJWKSet, jwtVerify } from "jose";
@@ -34,9 +36,15 @@ async function boundedJson(response, max = 65536) {
   return JSON.parse(Buffer.concat(chunks).toString());
 }
 
-export function accessIdentity({ keySet, fetchImpl = fetch } = {}) {
+export function accessIdentity({
+  keySet,
+  fetchImpl = fetch,
+}: { keySet?: JWTVerifyGetKey; fetchImpl?: typeof fetch } = {}) {
   const keys = new Map();
-  return async (token, c) => {
+  return async (
+    token,
+    c,
+  ): Promise<{ subject: string; email: string; expiresAt: number; identity_scope?: string }> => {
     try {
       if (typeof token !== "string" || token.length > 16384) throw fail("authentication_required");
       let jwks = keySet ?? keys.get(c.issuer);
@@ -92,7 +100,7 @@ export function collaborationServer(
     commands: bridge.commands,
   });
   const host = localhostHostValidation(),
-    streams = new Set(),
+    streams = new Set<ServerResponse>(),
     perUser = new Map();
   const json = (res, status, data) => {
     res.writeHead(status, { ...security, "content-type": "application/json" });
@@ -259,10 +267,11 @@ export function collaborationServer(
       );
     }
   });
-  server.stopStreams = () => {
+  const managed = server as typeof server & { stopStreams(): void };
+  managed.stopStreams = () => {
     for (const res of streams) res.end();
   };
   server.requestTimeout = 30000;
   server.headersTimeout = 10000;
-  return server;
+  return managed;
 }

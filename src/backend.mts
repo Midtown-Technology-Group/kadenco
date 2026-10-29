@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { ReadOptions } from "./contracts.mjs";
 import { pathToFileURL } from "node:url";
 
 // Reuse the installed, reviewed fleet helper, without editing its cache or
 // exporting its credentials. This adapter never bootstraps authentication.
 export async function fleetBackend(helperPath, transportOptions = {}) {
   const { T3FleetTransport } = await import(pathToFileURL(helperPath).href);
-  const active = new Set();
+  const active = new Set<{ close(): Promise<void> }>();
   const open = () => {
     const transport = new T3FleetTransport({
       ...transportOptions,
@@ -37,7 +38,7 @@ export async function fleetBackend(helperPath, transportOptions = {}) {
   };
   return {
     supportsFollowup: true,
-    async read(session, activity = false, options = {}) {
+    async read(session, activity = false, options: ReadOptions = {}) {
       const transport = open();
       try {
         const client = await transport.connect(session.host, "read");

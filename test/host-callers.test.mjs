@@ -10,12 +10,12 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { Store } from "../src/store.mjs";
-import { Bridge } from "../src/bridge.mjs";
-import { HostCallers } from "../src/host-callers.mjs";
-import { hostCallerOwner } from "../src/host-caller-scope.mjs";
-import { httpServer } from "../src/server.mjs";
-import { configSchema } from "../src/config.mjs";
+import { Store } from "../dist/store.mjs";
+import { Bridge } from "../dist/bridge.mjs";
+import { HostCallers } from "../dist/host-callers.mjs";
+import { hostCallerOwner } from "../dist/host-caller-scope.mjs";
+import { httpServer } from "../dist/server.mjs";
+import { configSchema } from "../dist/config.mjs";
 function fixture(t) {
   const store = new Store(":memory:", randomBytes(32)),
     token = randomBytes(32).toString("base64");

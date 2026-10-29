@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { NativeRecord } from "./contracts.mjs";
+import type { Store } from "./store.mjs";
+import type { Policy } from "./config.mjs";
+import type { FleetReader } from "./fleet-read.mjs";
+import type { Commands } from "./commands.mjs";
 // Restricted human collaboration. No browser receives a broker/native credential.
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -86,6 +91,12 @@ function commandUuid(id) {
 }
 
 export class Collaboration {
+  declare policy: () => Policy;
+  declare store: Store;
+  declare reader: FleetReader;
+  declare commands: Commands;
+  declare now: () => number;
+
   constructor({ policy, store, reader, commands, now = Date.now }) {
     Object.assign(this, { policy, store, reader, commands, now });
   }
@@ -336,7 +347,7 @@ export class Collaboration {
           ).length >= 3
       )
         throw fail("pending_limit");
-      const r = {
+      const r: NativeRecord = {
         ...p,
         id,
         identity_scope: this.identityScope(),

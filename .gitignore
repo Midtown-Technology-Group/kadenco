@@ -10,3 +10,4 @@ ui-proof/
 .vite/
 .vp/
 coverage/
+dist/

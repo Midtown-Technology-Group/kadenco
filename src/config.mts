@@ -287,3 +287,6 @@ export const configSchema = z
       }
     }
   });
+
+export type Policy = z.infer<typeof configSchema>;
+export type Session = z.infer<typeof session>;

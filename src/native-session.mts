@@ -64,7 +64,7 @@ export async function nativeSession(
       "Eddie T3 private delivery",
       "--json",
     ]);
-    issued = JSON.parse(result.stdout);
+    issued = JSON.parse(String(result.stdout));
     if (!issued.sessionId || !issued.token || issued.subject !== "eddie-t3-delivery")
       throw fail("native_auth_unavailable");
     const call = async (base, tag, payload) => {
@@ -107,10 +107,10 @@ export async function nativeSession(
       url.protocol = "ws:";
       url.searchParams.set("wsTicket", ticket.ticket);
       url.searchParams.set("orchestrationProtocol", "2");
-      return new Promise((resolve, reject) => {
+      return new Promise<import("./contracts.mjs").NativeRecord>((resolve, reject) => {
         let socket,
           done = false;
-        const finish = (error, value) => {
+        const finish = (error, value = undefined) => {
           if (done) return;
           done = true;
           clearTimeout(timer);
