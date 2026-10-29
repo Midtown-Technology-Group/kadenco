@@ -4,6 +4,7 @@ import { localClientOptions } from "./local-client.mjs";
 import { T3FleetTransport } from "./fleet-transport-read.mjs";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { diagnose } from "./diagnostics.mjs";
+import { fetchWithReadDeadline } from "./http-limits.mjs";
 
 // The fleet reader receives only read handles from the existing reviewed helper.
 // It has no send, delegation, auth bootstrap, source-DB write or event-enrollment path.
@@ -476,7 +477,7 @@ export async function fleetReader(policy, store) {
         ...(route.localClient
           ? localClientOptions(route.localClient, Date.now, "read", route.name)
           : {}),
-        fetchImpl: (url, opts) => fetch(url, { ...opts, signal: AbortSignal.timeout(15000) }),
+        fetchImpl: fetchWithReadDeadline,
       }),
   });
   reader.diagnostic = (event) => store.diagnostic(event);

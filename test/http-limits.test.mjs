@@ -1,11 +1,63 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boundedResponseText } from "../src/http-limits.mjs";
+import { boundedResponseText, fetchWithReadDeadline } from "../src/http-limits.mjs";
 import { httpServer } from "../src/server.mjs";
 import { resolveCallback, postWebhook } from "../src/webhook.mjs";
 import { createServer } from "node:http";
 import { T3FleetTransport } from "../src/fleet-transport-read.mjs";
+
+test("read fetch wrapper preserves a caller cleanup signal and only supplies a missing deadline", async () => {
+  const signal = AbortSignal.abort();
+  const seen = [];
+  const fake = async (url, options) => {
+    seen.push({ url, options });
+    return 42;
+  };
+  assert.equal(
+    await fetchWithReadDeadline("http://127.0.0.1/", { method: "DELETE", signal }, fake),
+    42,
+  );
+  assert.equal(seen[0].options.signal, signal);
+  assert.equal(seen[0].options.signal.aborted, true);
+  assert.equal(seen[0].options.method, "DELETE");
+  await fetchWithReadDeadline("http://127.0.0.1/", {}, fake);
+  assert.ok(seen[1].options.signal instanceof AbortSignal);
+});
+
+test("native response body aborts retain timeout classification and size caps retain protocol errors", async () => {
+  for (const kind of ["AbortError", "TimeoutError", "oversize"]) {
+    const transport = new T3FleetTransport({
+      hostsProvider: () => ({ hosts: [{ name: "local", url: "http://127.0.0.1:1234/mcp" }] }),
+      cacheProvider: () => ({
+        "local|mcp-client|fixture": {
+          host: "local",
+          base: "http://127.0.0.1:1234",
+          token: "synthetic",
+          scopes: ["orchestration:read"],
+          expiresAt: Date.now() + 600000,
+        },
+      }),
+      fetchImpl: async () =>
+        kind === "oversize"
+          ? new Response("x".repeat(2 * 1024 * 1024 + 1))
+          : new Response(
+              new ReadableStream({
+                start(c) {
+                  c.error(new DOMException("PRIVATE response body", kind));
+                },
+              }),
+            ),
+    });
+    await assert.rejects(
+      transport.connect("local"),
+      (error) =>
+        error.reason === (kind === "oversize" ? "source_protocol_error" : "source_timeout") &&
+        !error.message.includes("PRIVATE"),
+    );
+    await transport.close();
+  }
+});
 
 test("native response cap counts bytes, rejects misleading/missing lengths and cancels oversize streams", async () => {
   assert.equal(await boundedResponseText(new Response("é"), 2), "é");

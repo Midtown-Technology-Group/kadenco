@@ -324,7 +324,15 @@ class McpClient {
         { diagnosticMetadata: { http_status: response.status } },
       );
     }
-    return parseResponse(response, await boundedResponseText(response));
+    let text;
+    try {
+      text = await boundedResponseText(response);
+    } catch (error) {
+      if (["TimeoutError", "AbortError"].includes(error?.name))
+        throw new FleetTransportError("MCP response body timed out", "source_timeout");
+      throw error;
+    }
+    return parseResponse(response, text);
   }
 
   async initialize() {
