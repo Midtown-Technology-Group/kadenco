@@ -77,6 +77,17 @@ export class FleetEvents {
             state: record?.state ?? "not_checked",
             observed_at: record?.at ?? null,
             last_complete_at: record?.lastCompleteAt ?? null,
+            last_successful_read_at: record?.lastSuccessfulReadAt ?? null,
+            last_failure_at: record?.lastFailureAt ?? null,
+            consecutive_failures: record?.consecutiveFailures ?? 0,
+            current_read: record?.currentRead ?? "not_checked",
+            // A retained scan is historical evidence, never proof of current access.
+            coverage_freshness: !record?.lastCompleteAt
+              ? "never_complete"
+              : b.now() - Date.parse(record.lastCompleteAt) > 300000
+                ? "stale"
+                : "recent",
+            coverage_stale_after_ms: 300000,
             scanning: !!record?.cursor,
             reason: record?.reason ?? null,
             last_complete_age_ms: record?.lastCompleteAt
@@ -104,13 +115,21 @@ export class FleetEvents {
       at = new Date(b.now()).toISOString();
     const next = { ...previous, ...extra, id, subId: sub.id, host, state, at };
     b.store.transaction(() => {
-      if (previous?.state !== state) {
+      if (previous?.state !== state || previous?.reason !== next.reason) {
         next.revision = (previous?.revision ?? 0) + 1;
-        this.enqueue(sub, { host, kind: "coverage_changed", state, reason: next.reason ?? null }, [
-          "coverage",
-          host,
-          next.revision,
-        ]);
+        this.enqueue(
+          sub,
+          {
+            host,
+            kind: "coverage_changed",
+            state,
+            reason: next.reason ?? null,
+            coverage_revision: next.revision,
+            last_complete_at: next.lastCompleteAt ?? null,
+            current_read: next.currentRead ?? "not_checked",
+          },
+          ["coverage", host, next.revision],
+        );
         b.store.audit("fleet.coverage", id, state);
       }
       b.store.put("fleet_scan", id, next);
@@ -239,7 +258,13 @@ export class FleetEvents {
         }
         try {
           await this.observeThread(sub, host, t);
-        } catch {
+        } catch (error) {
+          if (
+            ["authentication_required", "forbidden", "identity_mismatch"].includes(
+              readReason(error),
+            )
+          )
+            throw error;
           failed = true;
         }
       }
@@ -251,15 +276,25 @@ export class FleetEvents {
         host,
         failed
           ? "degraded"
-          : page.next_cursor &&
-              (!previous?.lastCompleteAt ||
-                ["unavailable", "degraded", "scanning"].includes(previous?.state))
-            ? "scanning"
-            : "available",
+          : page.next_cursor && previous?.lastCompleteAt && previous?.state !== "available"
+            ? "degraded"
+            : page.next_cursor && !previous?.lastCompleteAt
+              ? "scanning"
+              : "available",
         previous,
         {
           cursor: failed ? (previous?.cursor ?? null) : page.next_cursor,
-          reason: failed ? "thread_read_unavailable" : null,
+          reason: failed
+            ? "thread_read_unavailable"
+            : page.next_cursor && previous?.lastCompleteAt && previous?.state !== "available"
+              ? previous.state === "unavailable"
+                ? "reconciling"
+                : previous.reason
+              : null,
+          currentRead: failed ? "partial" : "ok",
+          lastSuccessfulReadAt: new Date(b.now()).toISOString(),
+          consecutiveFailures: failed ? (previous?.consecutiveFailures ?? 0) + 1 : 0,
+          ...(failed ? { lastFailureAt: new Date(b.now()).toISOString() } : {}),
           ...(!failed && !page.next_cursor
             ? { lastCompleteAt: new Date(b.now()).toISOString() }
             : {}),
@@ -273,10 +308,23 @@ export class FleetEvents {
         return;
       }
       const restart = ["invalid_inventory_cursor", "inventory_changed"].includes(e.reason);
-      this.coverage(sub, host, "unavailable", previous, {
-        reason: restart ? "inventory_restarted" : readReason(e),
-        ...(restart ? { cursor: null } : {}),
-      });
+      const reason = restart ? "inventory_restarted" : readReason(e);
+      const accessFailure = ["authentication_required", "forbidden", "identity_mismatch"].includes(
+        reason,
+      );
+      this.coverage(
+        sub,
+        host,
+        previous?.lastCompleteAt && !accessFailure ? "degraded" : "unavailable",
+        previous,
+        {
+          reason,
+          currentRead: "failed",
+          lastFailureAt: new Date(b.now()).toISOString(),
+          consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+          ...(restart ? { cursor: null } : {}),
+        },
+      );
     }
   }
   async observe() {
@@ -295,6 +343,11 @@ export class FleetEvents {
     const b = this.bridge,
       d = event.data;
     this.grant(sub.owner, d.host, d.project_id, d.provider_instance_id);
+    if (d.kind === "coverage_changed" && d.coverage_revision !== undefined) {
+      const latest = b.store.get("fleet_scan", hash([sub.id, d.host]));
+      if (latest?.revision !== d.coverage_revision)
+        throw Object.assign(Error("coverage_superseded"), { reason: "coverage_superseded" });
+    }
     if (d.kind !== "coverage_changed") {
       const data = await b.fleetReads.read(sub.owner, { host: d.host, thread_id: d.thread_id });
       if (

@@ -452,6 +452,11 @@ export class Bridge {
         else if (s?.name === "t3.thread.activity") await this.lanes.deliverable(s, d.event);
         else this.grant(s?.owner, s?.sessionId);
       } catch (e) {
+        if (e.reason === "coverage_superseded") {
+          this.store.put("delivery", d.id, { ...d, status: "superseded" });
+          this.store.audit("fleet.coverage.delivery", d.id, "superseded");
+          continue;
+        }
         // A native source outage must not permanently discard an exchange.
         if (
           authorized &&

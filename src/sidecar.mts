@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { readFileSync, statSync } from "node:fs";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { AddressInfo } from "node:net";
 import type { Backend } from "./contracts.mjs";
 import type { Policy } from "./config.mjs";
@@ -13,7 +14,7 @@ import { fleetReader, type FleetReader } from "./fleet-read.mjs";
 import { Commands } from "./commands.mjs";
 import { withFleetSessions } from "./fleet-source.mjs";
 import { collaborationServer } from "./collaboration-http.mjs";
-import { diagnosticContext, diagnose } from "./diagnostics.mjs";
+import { diagnosticContext, diagnoseWorkerCycle } from "./diagnostics.mjs";
 
 export interface SidecarOptions {
   configPath?: string;
@@ -58,10 +59,12 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
     inFlight = Promise.resolve(),
     stopping: Promise<void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const eventLoop = monitorEventLoopDelay({ resolution: 20 });
   const shutdown = () =>
     (stopping ??= (async () => {
       stopped = true;
       clearTimeout(timer);
+      eventLoop.disable();
       collaboration?.stopStreams();
       const errors: unknown[] = [];
       const listeners = await Promise.allSettled(
@@ -111,19 +114,21 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
         collaboration.once("error", reject);
         collaboration.listen(config.collaboration.port, "127.0.0.1", resolve);
       });
+    eventLoop.enable();
     async function cycle(): Promise<void> {
       if (stopped) return;
       try {
         await diagnosticContext("worker", "event_cycle", async () => {
-          await diagnose(
+          await diagnoseWorkerCycle(
             (e) => store.diagnostic(e),
-            "relay",
-            "worker",
-            () => bridge.observe(),
+            eventLoop,
+            async () => {
+              await bridge.observe();
+              await bridge.deliver();
+              await bridge.fleetEvents.observe();
+              await bridge.deliver();
+            },
           );
-          await bridge.deliver();
-          await bridge.fleetEvents.observe();
-          await bridge.deliver();
         });
       } catch {
         store.audit("worker.cycle", "bridge", "failed");
