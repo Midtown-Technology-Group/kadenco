@@ -13,6 +13,8 @@ const terminal = new Set(["completed", "failed", "cancelled", "interrupted"]);
 // Inventory progresses in bounded pages; no task dispatch or per-thread enrollment.
 export class FleetEvents {
   constructor(public bridge: Bridge) {}
+  private observation: Promise<void> | undefined;
+  private catchUp = false;
   hosts(owner = undefined) {
     const b = this.bridge,
       p = b.policy().principals.find((p) => p.id === owner && p.enabled !== false);
@@ -70,6 +72,7 @@ export class FleetEvents {
       })
     )
       b.store.audit("fleet.event", eventId, data.kind);
+    return id;
   }
   status(owner) {
     const b = this.bridge,
@@ -142,7 +145,14 @@ export class FleetEvents {
     b.store.transaction(() => {
       if (previous?.state !== state || previous?.reason !== next.reason) {
         next.revision = (previous?.revision ?? 0) + 1;
-        this.enqueue(
+        // Coverage is replaceable state; task/result events are never coalesced.
+        const pending =
+          previous?.pendingDeliveryId && b.store.get("delivery", previous.pendingDeliveryId);
+        if (pending?.status === "pending") {
+          b.store.put("delivery", pending.id, { ...pending, status: "superseded" });
+          b.store.audit("fleet.coverage.delivery", pending.id, "superseded");
+        }
+        next.pendingDeliveryId = this.enqueue(
           sub,
           {
             host,
@@ -355,7 +365,29 @@ export class FleetEvents {
       );
     }
   }
-  async observe() {
+  observe(): Promise<void> {
+    if (this.observation) {
+      this.catchUp = true;
+      return this.observation;
+    }
+    this.observation = (async () => {
+      try {
+        this.catchUp = false;
+        await this.observePass();
+        // One catch-up wake per burst; subsequent work stays on the normal poll.
+        if (this.catchUp) {
+          this.catchUp = false;
+          await yieldToIO();
+          await this.observePass();
+        }
+      } finally {
+        this.catchUp = false;
+        this.observation = undefined;
+      }
+    })();
+    return this.observation;
+  }
+  private async observePass() {
     for (const sub of this.active()) {
       let hosts;
       try {

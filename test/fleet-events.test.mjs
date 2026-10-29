@@ -442,3 +442,72 @@ test("bounded host pages yield to I/O while processing unchanged or immediately 
   assert.ok(observed > 0 && observed < 40, String(observed));
   assert.equal(processed, 40);
 });
+
+test("coverage bursts retain only newest pending state without coalescing terminal events", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observe();
+  f.outage(true);
+  await f.bridge.fleetEvents.observe();
+  f.outage(false);
+  await f.bridge.fleetEvents.observe();
+  const all = f.store.all("delivery");
+  const coverage = all.filter(
+    (d) => d.event.data?.kind === "coverage_changed" && d.event.data.host === "a",
+  );
+  assert.equal(coverage.filter((d) => d.status === "pending").length, 1);
+  assert.equal(coverage.filter((d) => d.status === "superseded").length, 2);
+  assert.equal(all.filter((d) => d.event.data?.kind === "task_finished").length, 1);
+  await f.bridge.deliver();
+  assert.equal(
+    f.posts.filter((e) => e.data?.kind === "coverage_changed" && e.data.host === "a").length,
+    1,
+  );
+});
+
+test("overlapping fleet wakes share one scan and one catch-up; later polls remain usable", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  const original = f.bridge.fleetReads.inventory;
+  let release;
+  const blocked = new Promise((resolve) => {
+    release = resolve;
+  });
+  f.bridge.fleetReads.inventory = async (...args) => {
+    await blocked;
+    return original(...args);
+  };
+  const first = f.bridge.fleetEvents.observe();
+  const wakes = Array.from({ length: 30 }, () => f.bridge.fleetEvents.observe());
+  assert.ok(wakes.every((p) => p === first));
+  release();
+  await Promise.all([first, ...wakes]);
+  assert.equal(f.calls.length, 4);
+  await f.bridge.fleetEvents.observe();
+  assert.equal(f.calls.length, 6);
+});
+
+test("observer replacement reconciles outage without replaying retained task completion", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observe();
+  f.outage(true);
+  await f.bridge.fleetEvents.observe();
+  const Observer = f.bridge.fleetEvents.constructor;
+  f.bridge.fleetEvents = new Observer(f.bridge);
+  f.outage(false);
+  await f.bridge.fleetEvents.observe();
+  const state = f.bridge.fleetEvents.status("eddie");
+  assert.equal(state.subscriptions[0].hosts.find((h) => h.host === "a").state, "available");
+  const events = f.store.all("delivery");
+  assert.equal(events.filter((d) => d.event.data?.kind === "task_finished").length, 1);
+  assert.equal(
+    events.filter(
+      (d) =>
+        d.event.data?.kind === "coverage_changed" &&
+        d.event.data.host === "a" &&
+        d.status === "pending",
+    ).length,
+    1,
+  );
+});
