@@ -6,3 +6,7 @@ private-state/
 config.local.json
 *.tgz
 ui-proof/
+
+.vite/
+.vp/
+coverage/

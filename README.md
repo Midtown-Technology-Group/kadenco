@@ -1,5 +1,13 @@
 # Kadenco
 
+## Development checks
+
+After `npm ci --ignore-scripts`, run `npm exec -- vp run check` and
+`npm exec -- vp run test`. Vite+ uses native Oxlint/Oxfmt for formatting and
+static analysis; warnings fail CI. Tests retain Node's built-in runner. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for synthetic browser validation. We do not
+claim full TypeScript type safety for the JavaScript implementation.
+
 Experimental standalone release candidate, 0.1.0-alpha.1. No T3 source edits.
 
 MCP tools for native T3 inventory/results, persistent signed events, explicit bounded delegation and durable receipts. Not a replacement agent, orchestrator, queue or memory system. Existing Eddie tool/environment names are retained as compatibility identifiers; they do not require an OpenAI dot. A persistent agent needs an MCP client plus a compatible wake-up runtime. OpenAI MCP Events is the implemented event protocol; other runtimes need compatible webhook ingress or explicit read-only polling. Basic MCP tool support alone is insufficient.
@@ -20,4 +28,4 @@ Collaboration remains opt-in and disabled by default. The current identity verif
 
 ## Release status
 
-Experimental GitHub source release. The private package flag deliberately prevents npm publication; install from source. Project code is AGPL-3.0-or-later, selected by the owner. Project: https://github.com/Midtown-Technology-Group/kadenco . No real fleet credentials, runtime files, private Git history or deployment evidence are included. The export manifest binds every candidate file; install dependencies separately from the lockfile.
+Experimental GitHub source release. The private package flag deliberately prevents npm publication; install from source. Project code is AGPL-3.0-or-later, selected by the owner. Project: https://github.com/Midtown-Technology-Group/kadenco . No real fleet credentials, runtime files, private Git history or deployment evidence are included. EXPORT-MANIFEST.json is a historical record of the initial extraction, not a manifest for later revisions. Use the exact Git commit and lockfile for current source provenance.

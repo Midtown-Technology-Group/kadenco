@@ -1,7 +1,79 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kadenco shared threads</title><link rel="stylesheet" href="/collaborate/app.css"><script type="module" src="/collaborate/app.js"></script></head>
-<body><header><span class="brand">Kadenco</span><h1>Shared threads</h1><p id="identity">Verifying your MTG sign-in…</p></header>
-<main><aside><h2>Your threads</h2><nav id="threads"></nav><form id="open" hidden><h2>Open a thread</h2><label>Host<input id="host" required maxlength="100" value="local"></label><label>Thread ID<input id="thread" required maxlength="2048"></label><button>Open</button></form></aside>
-<section><div class="thread-head"><h2 id="title">Choose a shared thread</h2><button id="copy" hidden>Copy link</button></div><p id="status" role="status" aria-live="polite">Only threads explicitly shared with you appear here.</p><div id="guest-access" hidden><p>You are signed in, but this thread is not available to your account. Ask its owner to grant your signed-in account access to this exact host and thread. A forwarded link grants no permission.</p><p id="guest-identity"></p><button id="retry-access" type="button">Check access again</button></div><p id="disclosure"></p><div id="timeline" aria-label="Thread messages"></div>
-<form id="compose" hidden><label>Message<textarea id="message" maxlength="4000" required rows="4"></textarea></label><p id="send-mode"></p><button id="submit">Propose message</button></form><h2 id="requests-title" hidden>Messages and delivery</h2><div id="requests"></div>
-<details id="access" hidden><summary>Manage access to this thread</summary><p>Users must sign in here once before you can select them. A copied link never grants access.</p><form id="grant"><label for="user">MTG user</label><select id="user" required></select><fieldset><legend>Permissions</legend><label><input type="checkbox" id="view" checked>View</label><label><input type="checkbox" id="propose">Propose messages</label><label><input type="checkbox" id="send">Send directly</label><label><input type="checkbox" id="review">Approve or dismiss messages</label></fieldset><label>Expires<input type="datetime-local" id="expiry" required></label><button>Save permissions</button><button type="button" id="revoke">Revoke access</button></form></details></section></main></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kadenco shared threads</title>
+    <link rel="stylesheet" href="/collaborate/app.css" />
+    <script type="module" src="/collaborate/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <span class="brand">Kadenco</span>
+      <h1>Shared threads</h1>
+      <p id="identity">Verifying your MTG sign-in…</p>
+    </header>
+    <main>
+      <aside>
+        <h2>Your threads</h2>
+        <nav id="threads"></nav>
+        <form id="open" hidden>
+          <h2>Open a thread</h2>
+          <label>Host<input id="host" required maxlength="100" value="local" /></label
+          ><label>Thread ID<input id="thread" required maxlength="2048" /></label
+          ><button>Open</button>
+        </form>
+      </aside>
+      <section>
+        <div class="thread-head">
+          <h2 id="title">Choose a shared thread</h2>
+          <button id="copy" hidden>Copy link</button>
+        </div>
+        <p id="status" role="status" aria-live="polite">
+          Only threads explicitly shared with you appear here.
+        </p>
+        <div id="guest-access" hidden>
+          <p>
+            You are signed in, but this thread is not available to your account. Ask its owner to
+            grant your signed-in account access to this exact host and thread. A forwarded link
+            grants no permission.
+          </p>
+          <p id="guest-identity"></p>
+          <button id="retry-access" type="button">Check access again</button>
+        </div>
+        <p id="disclosure"></p>
+        <div id="timeline" aria-label="Thread messages"></div>
+        <form id="compose" hidden>
+          <label
+            >Message<textarea id="message" maxlength="4000" required rows="4"></textarea>
+          </label>
+          <p id="send-mode"></p>
+          <button id="submit">Propose message</button>
+        </form>
+        <h2 id="requests-title" hidden>Messages and delivery</h2>
+        <div id="requests"></div>
+        <details id="access" hidden>
+          <summary>Manage access to this thread</summary>
+          <p>
+            Users must sign in here once before you can select them. A copied link never grants
+            access.
+          </p>
+          <form id="grant">
+            <label for="user">MTG user</label
+            ><select id="user" required></select>
+            <fieldset>
+              <legend>Permissions</legend>
+              <label><input type="checkbox" id="view" checked />View</label
+              ><label><input type="checkbox" id="propose" />Propose messages</label
+              ><label><input type="checkbox" id="send" />Send directly</label
+              ><label><input type="checkbox" id="review" />Approve or dismiss messages</label>
+            </fieldset>
+            <label>Expires<input type="datetime-local" id="expiry" required /></label
+            ><button>Save permissions</button
+            ><button type="button" id="revoke">Revoke access</button>
+          </form>
+        </details>
+      </section>
+    </main>
+  </body>
+</html>
