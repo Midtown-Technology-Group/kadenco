@@ -224,7 +224,7 @@ export class Creation {
       safe_to_resend: false,
       ...extra,
       acknowledgement_support:
-        "existing_exact_thread_bound_caller_only; host-wide passive caller does not expose delivery acknowledgement",
+        "existing exact-thread or host-bound passive caller; exact current run and retained native delivery evidence required; acknowledgement is not completion",
       instruction:
         "Creation, initial message acceptance, exact native readback, caller acknowledgement and completion are separate. Partial or uncertain requests are never automatically resumed or resent. Reconcile this exact UUID; do not create a replacement request or substitute the latest run.",
     };

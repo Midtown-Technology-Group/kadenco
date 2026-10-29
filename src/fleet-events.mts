@@ -66,7 +66,21 @@ export class FleetEvents {
       subs = this.active(owner);
     const readable =
       b.policy().principals.find((p) => p.id === owner && p.enabled !== false)?.readHosts ?? [];
+    const worker = b.store.latestDiagnostic?.("relay");
     return {
+      relay_worker: worker
+        ? {
+            observed_at: worker.at,
+            cycle_duration_ms: worker.duration_ms,
+            event_loop_delay_max_ms: worker.event_loop_delay_max_ms ?? null,
+            sync_operation: worker.sync_operation ?? null,
+            sync_operation_max_ms: worker.sync_operation_max_ms ?? null,
+            process_cpu_user_ms: worker.process_cpu_user_ms ?? null,
+            process_cpu_system_ms: worker.process_cpu_system_ms ?? null,
+            age_ms: Math.max(0, b.now() - Date.parse(worker.at)),
+            in_progress_cycle_not_observed: true,
+          }
+        : null,
       subscriptions: subs.map((s) => ({
         subscription_id: s.id,
         expires_at: subscriptionExpiry(s),

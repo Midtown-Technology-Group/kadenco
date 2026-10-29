@@ -44,6 +44,10 @@ export interface DiagnosticRecord {
   event_id?: string;
   delivery_state?: string;
   event_loop_delay_max_ms?: number;
+  sync_operation?: string;
+  sync_operation_max_ms?: number;
+  process_cpu_user_ms?: number;
+  process_cpu_system_ms?: number;
 }
 export interface TransportOptions {
   hostsFile?: string;

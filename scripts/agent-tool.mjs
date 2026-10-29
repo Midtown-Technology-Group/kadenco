@@ -14,10 +14,12 @@ try {
     conversation: "get_eddie_conversation",
     capabilities: "get_eddie_capabilities",
     ack_reply: "acknowledge_eddie_reply",
+    ack_delivery: "acknowledge_thread_delivery",
   }[mode];
   if (!name || !path || extra.length) throw Error();
   input = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
   client = await connectAgent(connection);
+  if (!client.callerToolNames.includes(name)) throw Error("caller_capability_unavailable");
   attempted = true;
   const result = await client.callTool({ name, arguments: input });
   console.log(JSON.stringify(result.structuredContent));

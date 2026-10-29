@@ -6,6 +6,7 @@ import {
   hostAskArgs,
   hostGetArgs,
   hostAckArgs,
+  hostDeliveryAckArgs,
   hostConversationArgs,
   hostCapabilityArgs,
 } from "./host-callers.mjs";
@@ -255,7 +256,7 @@ function safeResult(data) {
   };
 }
 
-export function makeMcp(bridge: Bridge, owner: string) {
+export function makeMcp(bridge: Bridge, owner: string, deliveryAcknowledgements = false) {
   const principal = bridge.policy().principals.find((p) => p.id === owner && p.enabled !== false);
   const capabilities: ServerCapabilities & { events?: Record<string, never> } =
     principal?.eddieHostCaller ? {} : { events: {} };
@@ -393,6 +394,8 @@ export function makeMcp(bridge: Bridge, owner: string) {
               "receipt_not_found",
               "invalid_native_options",
               "settings_unsupported",
+              "delivery_ack_unavailable",
+              "delivery_run_unobserved",
             ].includes(e.reason) || readReasons.has(e.reason)
               ? e.reason
               : "request_denied_or_source_unavailable";
@@ -443,7 +446,15 @@ export function makeMcp(bridge: Bridge, owner: string) {
       },
     );
   if (principal?.eddieHostCaller) {
-    const callers = new HostCallers(bridge);
+    const callers = new HostCallers(bridge, deliveryAcknowledgements);
+    if (deliveryAcknowledgements)
+      register(
+        "acknowledge_thread_delivery",
+        "Record this exact delivered request and current native run as acknowledged from the bound host/thread. Bookkeeping only; no execution or credential issuance.",
+        hostDeliveryAckArgs,
+        false,
+        (p) => callers.acknowledgeDelivery(owner, p),
+      );
     register(
       "get_eddie_capabilities",
       "Discover this host-bound passive Eddie connection. Optionally verify an exact thread. No per-thread enrollment, provider restriction or execution grant.",
@@ -844,10 +855,13 @@ export function httpServer(bridge) {
     }
     try {
       const handler = toNodeHandler(
-        createMcpHandler(() => makeMcp(bridge, owner), {
-          legacy: "reject",
-          maxRequestBodySize: 65536,
-        }),
+        createMcpHandler(
+          () => makeMcp(bridge, owner, req.headers["x-kadenco-delivery-ack"] === "1"),
+          {
+            legacy: "reject",
+            maxRequestBodySize: 65536,
+          },
+        ),
       );
       await handler(req, res);
     } catch {

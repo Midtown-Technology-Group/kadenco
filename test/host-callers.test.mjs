@@ -281,12 +281,15 @@ test("official MCP and stdio expose only passive tools with the host schema and 
   });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(endpoint), {
-      requestInit: { headers: { Authorization: "Bearer " + f.token } },
+      requestInit: {
+        headers: { Authorization: "Bearer " + f.token, "x-kadenco-delivery-ack": "1" },
+      },
     }),
   );
   const tools = (await client.listTools()).tools;
   assert.deepEqual(tools.map((t) => t.name).sort(), [
     "acknowledge_eddie_reply",
+    "acknowledge_thread_delivery",
     "ask_eddie",
     "get_eddie_capabilities",
     "get_eddie_conversation",
@@ -393,6 +396,31 @@ test("universal CLI and native Pi tools use the same host-scoped MCP exchange an
     return JSON.parse(out);
   };
   const p = f.ask("codex");
+  const deliveries = [];
+  f.bridge.commands = {
+    acknowledge: async (caller, reviewer, host, threadId, args, authorize) => {
+      authorize();
+      deliveries.push({ caller, reviewer, host, threadId, ...args });
+      return { request_id: args.request_id, agent_acknowledged: true, completed: false };
+    },
+  };
+  const deliveryId = randomUUID();
+  const delivered = await run("ack_delivery", {
+    thread_id: "codex",
+    request_id: deliveryId,
+    run_id: "run-codex",
+  });
+  assert.equal(delivered.agent_acknowledged, true);
+  assert.equal(delivered.completed, false);
+  assert.deepEqual(deliveries[0], {
+    caller: hostCallerOwner("agents", "codex"),
+    reviewer: "eddie",
+    host: "local",
+    threadId: "codex",
+    request_id: deliveryId,
+    run_id: "run-codex",
+  });
+
   assert.equal((await run("ask", p)).run_id, "run-codex");
   await f.bridge.exchanges.get("eddie", { request_id: p.request_id }, { reviewer: true });
   await f.bridge.exchanges.reply("eddie", { request_id: p.request_id, reply: "CLI_REPLY_OK" });
@@ -410,7 +438,7 @@ test("universal CLI and native Pi tools use the same host-scoped MCP exchange an
     Object: (p, o) => ({ type: "object", properties: p, ...o }),
   };
   registerPiEddie(pi, Type, connection);
-  assert.equal(Object.keys(tools).length, 5);
+  assert.equal(Object.keys(tools).length, 6);
   const q = f.ask("pi"),
     asked = await tools.ask_eddie.execute("tool-call", q);
   assert.equal(asked.details.run_id, "run-pi");
@@ -425,4 +453,114 @@ test("universal CLI and native Pi tools use the same host-scoped MCP exchange an
   await handlers.session_shutdown();
   assert.equal(f.store.all("exchange").length, 2);
   assert.equal(f.store.all("command").length, 0);
+});
+
+test("host delivery acknowledgements retain host/thread scope and fail after revocation", async (t) => {
+  const f = fixture(t),
+    request_id = randomUUID();
+  let release;
+  const gate = new Promise((r) => (release = r));
+  f.bridge.commands = {
+    acknowledge: async (_caller, reviewer, host, threadId, p, authorize) => {
+      assert.equal(reviewer, "eddie");
+      assert.equal(host, "local");
+      assert.equal(threadId, "codex");
+      assert.equal(p.request_id, request_id);
+      authorize();
+      await gate;
+      authorize();
+      return { agent_acknowledged: true };
+    },
+  };
+  const pending = f.callers.acknowledgeDelivery("agents", {
+    thread_id: "codex",
+    request_id,
+    run_id: "run-codex",
+  });
+  f.policy.principals[1].enabled = false;
+  release();
+  await assert.rejects(pending, /forbidden/);
+  assert.equal(f.store.all("command").length, 0);
+});
+
+test("legacy host caller discovery remains five tools unless acknowledgement is explicitly negotiated", async (t) => {
+  const f = fixture(t),
+    server = httpServer(f.bridge);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const client = new Client(
+    { name: "legacy-caller", version: "0.7.1" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  t.after(async () => {
+    await client.close();
+    await new Promise((r) => server.close(r));
+  });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.address().port}/mcp`), {
+      requestInit: { headers: { Authorization: "Bearer " + f.token } },
+    }),
+  );
+  const tools = (await client.listTools()).tools;
+  assert.equal(tools.length, 5);
+  assert.equal(
+    tools.some((t) => t.name === "acknowledge_thread_delivery"),
+    false,
+  );
+  const caps = await client.callTool({ name: "get_eddie_capabilities", arguments: {} });
+  assert.equal(caps.structuredContent.delivery_acknowledgement.available, false);
+});
+
+test("delivery acknowledgement rejects host or reviewer rebinding during its native wait", async (t) => {
+  for (const field of ["host", "reviewer"]) {
+    const f = fixture(t);
+    let release;
+    const gate = new Promise((r) => (release = r));
+    f.policy.principals.push({
+      ...f.policy.principals[0],
+      id: "other",
+      readHosts: [{ host: "local", projectIds: ["p"] }],
+    });
+    f.policy.principals[0].readHosts.push({ host: "alternate", projectIds: ["p"] });
+    f.bridge.fleetReads.grant = (owner, host) => {
+      if (
+        !f.policy.principals.some(
+          (p) => p.id === owner && p.readHosts?.some((g) => g.host === host),
+        )
+      )
+        throw Object.assign(Error("forbidden"), { reason: "forbidden" });
+    };
+    f.bridge.commands = {
+      acknowledge: async (_caller, _reviewer, _host, _thread, _args, authorize) => {
+        authorize();
+        await gate;
+        authorize();
+        return { agent_acknowledged: true };
+      },
+    };
+    const pending = f.callers.acknowledgeDelivery("agents", {
+      thread_id: "codex",
+      request_id: randomUUID(),
+      run_id: "run-codex",
+    });
+    f.policy.principals[1].eddieHostCaller[field] = field === "host" ? "alternate" : "other";
+    release();
+    await assert.rejects(pending, /forbidden/);
+    assert.equal(f.store.all("command").length, 0);
+  }
+});
+
+test("thread-qualified capability discovery advertises negotiated acknowledgement too", async (t) => {
+  const f = fixture(t);
+  f.bridge.commands = {};
+  assert.equal(
+    (await f.callers.capabilities("agents", { thread_id: "codex" })).delivery_acknowledgement
+      .available,
+    true,
+  );
+  const legacy = new HostCallers(f.bridge, false);
+  assert.equal(
+    (await legacy.capabilities("agents", { thread_id: "codex" })).delivery_acknowledgement
+      .available,
+    false,
+  );
 });

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { readFileSync, statSync } from "node:fs";
 import { monitorEventLoopDelay } from "node:perf_hooks";
+import { SynchronousTimings } from "./synchronous-timings.mjs";
 import type { AddressInfo } from "node:net";
 import type { Backend } from "./contracts.mjs";
 import type { Policy } from "./config.mjs";
@@ -48,7 +49,11 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
   const key = options.stateKey ?? environmentKey;
   if (!configPath || !key) throw Error("EDDIE_T3_CONFIG and EDDIE_T3_STATE_KEY required");
   if (key.length !== 32) throw Error("32_byte_state_key_required");
-  const policy = () => configSchema.parse(JSON.parse(readFileSync(configPath, "utf8")));
+  const synchronous = new SynchronousTimings();
+  const policy = () =>
+    synchronous.measure("policy", () =>
+      configSchema.parse(JSON.parse(readFileSync(configPath, "utf8"))),
+    );
   const config = policy();
   if (process.platform !== "win32" && statSync(config.stateDirectory).mode & 0o077)
     throw Error("state_directory_must_be_private");
@@ -93,6 +98,16 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
   try {
     backend = await (options.backendFactory ?? projectionBackend)(config);
     store = new Store(config.stateDirectory + "/bridge.db", key);
+    synchronous.wrap(store, "store", [
+      "get",
+      "all",
+      "put",
+      "insert",
+      "audit",
+      "diagnostic",
+      "transaction",
+    ]);
+    synchronous.wrap(backend, "backend", ["read"]);
     reader = config.fleetRead ? await fleetReader(policy, store) : undefined;
     if (config.source) backend = withFleetSessions(backend, reader, policy);
     const bridge = new Bridge({
@@ -128,6 +143,7 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
               await bridge.fleetEvents.observe();
               await bridge.deliver();
             },
+            () => synchronous.take(),
           );
         });
       } catch {

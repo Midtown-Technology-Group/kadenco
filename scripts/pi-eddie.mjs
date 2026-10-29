@@ -8,6 +8,10 @@ export function registerPiEddie(pi, Type, connection) {
     request = { ...thread, request_id: Type.String({ minLength: 36, maxLength: 36 }) };
   const wait = Type.Optional(Type.Integer({ minimum: 0, maximum: 10000 }));
   const schemas = {
+    acknowledge_thread_delivery: Type.Object(
+      { ...request, run_id: text() },
+      { additionalProperties: false },
+    ),
     ask_eddie: Type.Object(
       {
         ...request,

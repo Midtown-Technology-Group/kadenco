@@ -9,6 +9,7 @@ const names = [
   "get_eddie_capabilities",
   "acknowledge_eddie_reply",
 ];
+const optionalNames = ["acknowledge_thread_delivery"];
 export async function connectAgent(path) {
   const launch = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
   if (
@@ -27,7 +28,10 @@ export async function connectAgent(path) {
       new StdioClientTransport({ command: launch.command, args: launch.args, stderr: "ignore" }),
     );
     const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-    if (JSON.stringify(tools) !== JSON.stringify([...names].sort()))
+    if (
+      !names.every((n) => tools.includes(n)) ||
+      tools.some((n) => ![...names, ...optionalNames].includes(n))
+    )
       throw Error("passive_host_caller_required");
     const r = await client.callTool({ name: "get_eddie_capabilities", arguments: {} });
     if (
@@ -36,6 +40,7 @@ export async function connectAgent(path) {
       r.structuredContent.host !== launch.host
     )
       throw Error("host_binding_mismatch");
+    client.callerToolNames = Object.freeze(tools);
     return client;
   } catch {
     await client.close();

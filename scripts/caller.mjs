@@ -3,6 +3,7 @@ import {
   hostAskArgs,
   hostGetArgs,
   hostAckArgs,
+  hostDeliveryAckArgs,
   hostConversationArgs,
   hostCapabilityArgs,
 } from "../dist/host-callers.mjs";
@@ -31,6 +32,7 @@ try {
         ask: hostAskArgs,
         get: hostGetArgs,
         ack_reply: hostAckArgs,
+        ack_delivery: hostDeliveryAckArgs,
         conversation: hostConversationArgs,
         capabilities: hostCapabilityArgs,
       }

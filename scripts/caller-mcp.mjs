@@ -3,6 +3,7 @@ import {
   hostAskArgs,
   hostGetArgs,
   hostAckArgs,
+  hostDeliveryAckArgs,
   hostConversationArgs,
   hostCapabilityArgs,
 } from "../dist/host-callers.mjs";
@@ -31,6 +32,7 @@ try {
             ask_eddie: hostAskArgs,
             get_eddie_reply: hostGetArgs,
             acknowledge_eddie_reply: hostAckArgs,
+            acknowledge_thread_delivery: hostDeliveryAckArgs,
             get_eddie_conversation: hostConversationArgs,
             get_eddie_capabilities: hostCapabilityArgs,
           }

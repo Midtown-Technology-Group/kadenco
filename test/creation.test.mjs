@@ -711,12 +711,13 @@ test("official MCP discovery exposes creation only to command principals and doe
   assert.equal(f.writes.length, 2);
 });
 
-test("existing exact-bound caller acknowledges creation through MCP; wrong thread/run, expired caller and host-wide caller cannot", async (t) => {
+test("existing exact-bound caller acknowledges creation through MCP; wrong thread/run and expired caller fail closed", async (t) => {
   const f = fixture(t),
     commands = f.commands(),
     created = await commands.creation.create("eddie", f.p),
     v = f.projections.get(created.thread_id);
   v.runs[0].status = "running";
+  await commands.receipt("eddie", { request_id: f.p.request_id });
   const token = "bound-creation-ack",
     binding = {
       host: "local",
@@ -775,10 +776,10 @@ test("existing exact-bound caller acknowledges creation through MCP; wrong threa
   assert.equal(f.writes.length, 2);
   binding.expiresAt = Date.now() - 1;
   assert.equal((await ack("exact-run")).isError, true);
-  // Host-wide passive callers retain their existing five-tool surface.
+  // Host-wide callers expose the same narrowly bound bookkeeping operation.
   assert.match(
     (await commands.receipt("eddie", { request_id: f.p.request_id })).acknowledgement_support,
-    /host-wide passive caller does not expose/,
+    /host-bound passive caller/,
   );
 });
 
