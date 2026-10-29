@@ -400,3 +400,45 @@ test("thread authentication failure is not reduced to a generic partial read", a
   assert.equal(h.reason, "reconciling");
   assert.equal(h.scanning, true);
 });
+
+test("per-thread fleet authorization checks only the exact host and still rejects scope changes", (t) => {
+  const f = fixture(t),
+    calls = [],
+    grant = f.bridge.commands.grant;
+  f.bridge.commands.grant = (...a) => {
+    calls.push(a[1]);
+    return grant(...a);
+  };
+  f.bridge.fleetEvents.grant("eddie", "a", "p", "opencode");
+  assert.deepEqual(calls, ["a"]);
+  f.policy.principals[0].readHosts = [];
+  assert.throws(() => f.bridge.fleetEvents.grant("eddie", "a"), /forbidden/);
+  assert.deepEqual(calls, ["a"]);
+});
+
+test("bounded host pages yield to I/O while processing unchanged or immediately resolved thread reads", async (t) => {
+  const f = fixture(t);
+  f.inventory.a = Array.from({ length: 40 }, (_, i) => ({
+    ...f.inventory.a[0],
+    threadId: "t" + i,
+  }));
+  await f.bridge.subscribe("eddie", f.p);
+  let processed = 0,
+    observed = -1;
+  const original = f.bridge.fleetEvents.observeThread.bind(f.bridge.fleetEvents);
+  f.bridge.fleetEvents.observeThread = async (...a) => {
+    await original(...a);
+    processed++;
+  };
+  const tick = new Promise((resolve) =>
+    setImmediate(() => {
+      observed = processed;
+      resolve();
+    }),
+  );
+  const sub = f.bridge.fleetEvents.active("eddie")[0];
+  await f.bridge.fleetEvents.host(sub, "a");
+  await tick;
+  assert.ok(observed > 0 && observed < 40, String(observed));
+  assert.equal(processed, 40);
+});

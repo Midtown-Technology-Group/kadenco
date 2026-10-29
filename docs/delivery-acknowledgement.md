@@ -36,3 +36,12 @@ an in-progress cycle is not observed and an old sample is not a health guarantee
 No additional polling worker or permission changes are introduced.
 
 To preserve rolling compatibility, updated caller-client requests x-kadenco-delivery-ack: 1. Unnegotiated host clients keep their legacy five-tool surface. This header selects a protocol surface only; it grants no authority and all acknowledgement scope checks still apply.
+
+When a new delivery has no retained run binding, acknowledgement uses one exact
+native user-message item read through the existing MCP read credential. The item
+ID is the installed native IdAllocator format, turn-item:message: plus the encoded
+stored message ID. The returned message ID, native run, thread, project and current
+active run must all match; unsupported/missing item evidence fails closed. There
+is no timeline scan, latest-run substitution, new RPC credential or task send.
+A queued accepted run remains separate from the actual message placement. A
+previous acknowledgement cannot be reassigned to a different run.
