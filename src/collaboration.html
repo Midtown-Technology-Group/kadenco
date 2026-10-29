@@ -17,6 +17,12 @@
       <aside>
         <h2>Your threads</h2>
         <nav id="threads"></nav>
+        <section id="cadence" hidden>
+          <h2>Cadence oversight</h2>
+          <p>Read-only goal progress and coverage. No automatic nudges or execution.</p>
+          <button id="cadence-refresh" type="button">Read goal overview</button>
+          <div id="cadence-goals" aria-live="polite"></div>
+        </section>
         <form id="open" hidden>
           <h2>Open a thread</h2>
           <label>Host<input id="host" required maxlength="100" value="local" /></label

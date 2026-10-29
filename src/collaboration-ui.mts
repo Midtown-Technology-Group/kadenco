@@ -368,8 +368,47 @@ el("grant").onsubmit = (event) => {
   void saveGrant();
 };
 el("revoke").onclick = () => void saveGrant(true);
+el("cadence-refresh").onclick = async () => {
+  const container = el("cadence-goals");
+  container.replaceChildren();
+  try {
+    let cursor;
+    do {
+      const page = await api("cadence" + (cursor ? "?" + query({ cursor }) : ""));
+      for (const goal of page.goals) {
+        const article = node("article", "", container);
+        node("h3", `${goal.title} · ${goal.bucket}`, article);
+        node(
+          "p",
+          `Phase: ${goal.phase}. Next: ${goal.next_action.owner ?? "unowned"} · ${goal.next_action.description}`,
+          article,
+        );
+        node(
+          "p",
+          `Last progress: ${goal.last_meaningful_progress ?? "not observed"}. Activity: ${goal.last_activity ?? "not observed"}.`,
+          article,
+        );
+        const button = node("button", "Read exact goal evidence", article);
+        button.onclick = async () => {
+          try {
+            const detail = await api("cadence-goal?" + query({ goal_id: goal.goal_id }));
+            let evidence = article.querySelector("pre");
+            if (!evidence) evidence = node("pre", "", article);
+            evidence.textContent = JSON.stringify(detail, null, 2);
+          } catch {
+            status("Goal evidence unavailable. No action was sent.", true);
+          }
+        };
+      }
+      cursor = page.next_cursor;
+    } while (cursor);
+  } catch {
+    status("Cadence overview unavailable. No action was sent.", true);
+  }
+};
 try {
   me = await api("me");
+  el("cadence").hidden = !me.cadence_available;
   el("identity").textContent = `Signed in as ${me.email}`;
   el("open").hidden = !me.owner;
   const { threads } = await api("threads");

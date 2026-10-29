@@ -33,6 +33,16 @@ export class FleetReader {
   declare active: Set<T3FleetTransport>;
   declare stopped: boolean;
   declare diagnostic: (event: unknown) => void;
+  declare afterRead?: (
+    owner: string,
+    input: { host: string; thread_id: string },
+    result: unknown,
+  ) => void;
+  declare afterReadFailure?: (
+    owner: string,
+    input: { host: string; thread_id: string },
+    error: unknown,
+  ) => void;
 
   constructor({ policy, audit, transport, cursorKey = randomBytes(32) }) {
     Object.assign(this, { policy, audit, transport, cursorKey });
@@ -452,10 +462,22 @@ export class FleetReader {
         },
       };
       this.audit("fleet.read", `${owner}:${host}:${thread_id}`, "returned");
+      // Optional local projection only; telemetry failure cannot change native
+      // read behavior or cause an automatic retry/dispatch.
+      try {
+        this.afterRead?.(owner, { host, thread_id }, result);
+      } catch {
+        this.audit("cadence.observe", owner, "unavailable");
+      }
       return result;
     } catch (error) {
       const reason = reasonFor(error);
       this.audit("fleet.read", `${owner}:${host}`, reason);
+      try {
+        this.afterReadFailure?.(owner, { host, thread_id }, error);
+      } catch {
+        this.audit("cadence.observe", owner, "unavailable");
+      }
       throw Object.assign(failure(reason), {
         readRecovery: { ...p, view },
         retryRead: {

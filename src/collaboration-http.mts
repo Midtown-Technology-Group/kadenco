@@ -142,7 +142,24 @@ export function collaborationServer(
       }
       const p = Object.fromEntries(url.searchParams);
       if (req.method === "GET") {
-        if (url.pathname === "/collaborate/api/me") return json(res, 200, service.identity(user));
+        if (url.pathname === "/collaborate/api/me")
+          return json(res, 200, {
+            ...service.identity(user),
+            ...(bridge.cadence && service.admin(user) ? { cadence_available: true } : {}),
+          });
+        if (["/collaborate/api/cadence", "/collaborate/api/cadence-goal"].includes(url.pathname)) {
+          if (!bridge.cadence || !service.admin(user)) throw fail("forbidden");
+          const result = url.pathname.endsWith("cadence-goal")
+            ? await bridge.cadence.detail(c.brokerPrincipal, p.goal_id)
+            : bridge.cadence.overview(c.brokerPrincipal, {
+                ...(p.after_change ? { after_change: Number(p.after_change) } : {}),
+                ...(p.cursor ? { cursor: p.cursor } : {}),
+              });
+          live();
+          if (!service.admin(user) || service.config().brokerPrincipal !== c.brokerPrincipal)
+            throw fail("forbidden");
+          return json(res, 200, result);
+        }
         if (url.pathname === "/collaborate/api/threads")
           return json(res, 200, { threads: service.list(user) });
         if (url.pathname === "/collaborate/api/admin")

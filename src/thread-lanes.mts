@@ -200,6 +200,7 @@ export class ThreadLanes {
             b.store.insert("delivery", id, {
               id,
               subId: sub.id,
+              observedAt: b.now(),
               event: {
                 eventId,
                 name: "t3.thread.activity",

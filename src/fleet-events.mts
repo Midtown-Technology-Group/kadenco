@@ -53,6 +53,7 @@ export class FleetEvents {
         id,
         subId: sub.id,
         event,
+        observedAt: b.now(),
         attempts: 0,
         nextAt: b.now(),
         status: "pending",
