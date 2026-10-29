@@ -77,6 +77,8 @@ export function diagnosticRecord(host, stage, started, error, metadata: NativeRe
     r.event_id = metadata.event_id;
   if (["acknowledged", "stopped", "pending"].includes(metadata.delivery_state))
     r.delivery_state = metadata.delivery_state;
+  if (Number.isFinite(metadata.event_loop_delay_max_ms) && metadata.event_loop_delay_max_ms >= 0)
+    r.event_loop_delay_max_ms = Math.round(metadata.event_loop_delay_max_ms);
   return r;
 }
 export async function diagnose(emit, host, stage, fn, metadata = {}) {

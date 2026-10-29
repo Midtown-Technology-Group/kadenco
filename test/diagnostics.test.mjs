@@ -248,3 +248,19 @@ test("SSH runtime discovery failures retain a safe transport code and exact fail
   assert.equal(JSON.stringify(rows).includes("PRIVATE"), false);
   await transport.close();
 });
+
+test("event loop telemetry accepts only finite nonnegative measurements", () => {
+  const r = diagnosticRecord("relay", "worker", Date.now(), null, {
+    event_loop_delay_max_ms: 4428.4,
+    secret: "PRIVATE",
+  });
+  assert.equal(r.event_loop_delay_max_ms, 4428);
+  assert.equal(JSON.stringify(r).includes("PRIVATE"), false);
+  for (const value of [-1, Infinity, NaN, "PRIVATE"]) {
+    assert.equal(
+      diagnosticRecord("relay", "worker", Date.now(), null, { event_loop_delay_max_ms: value })
+        .event_loop_delay_max_ms,
+      undefined,
+    );
+  }
+});

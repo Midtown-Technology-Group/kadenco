@@ -297,3 +297,106 @@ test("aggregate admission respects eight active slots during concurrent verifica
   await f.bridge.subscribe("eddie", p(9));
   await assert.rejects(f.bridge.subscribe("eddie", p(0)), /subscription_limit/);
 });
+
+test("transient failure retains dated coverage and reconciles without a scanning alert", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observe();
+  await f.bridge.deliver();
+  const status = () =>
+    f.bridge.fleetEvents.status("eddie").subscriptions[0].hosts.find((h) => h.host === "a");
+  const complete = status().last_complete_at;
+  f.advance(1000);
+  f.outage(true);
+  await f.bridge.fleetEvents.observe();
+  await f.bridge.deliver();
+  assert.equal(status().state, "degraded");
+  assert.equal(status().current_read, "failed");
+  assert.equal(status().last_complete_at, complete);
+  assert.equal(status().consecutive_failures, 1);
+  f.advance(300001);
+  await f.bridge.fleetEvents.observe();
+  assert.equal(status().coverage_freshness, "stale");
+  assert.equal(status().consecutive_failures, 2);
+  let page = 0;
+  f.bridge.fleetReads.inventory = async (_o, p) => ({
+    threads: [],
+    next_cursor: p.host === "a" && page++ === 0 ? "next" : null,
+  });
+  await f.bridge.fleetEvents.observe();
+  assert.equal(status().state, "degraded");
+  assert.equal(status().current_read, "ok");
+  assert.equal(status().scanning, true);
+  assert.equal(status().last_complete_at, complete);
+  await f.bridge.fleetEvents.observe();
+  await f.bridge.deliver();
+  assert.equal(status().state, "available");
+  assert.equal(status().coverage_freshness, "recent");
+  assert.equal(status().consecutive_failures, 0);
+  const states = f.posts
+    .filter((e) => e.data?.host === "a" && e.data.kind === "coverage_changed")
+    .map((e) => e.data.state);
+  assert.deepEqual(states, ["available", "degraded", "available"]);
+});
+
+test("access failures remain unavailable despite retained coverage; revoked scopes stay excluded", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observe();
+  for (const reason of ["authentication_required", "identity_mismatch"]) {
+    f.bridge.fleetReads.inventory = async () => {
+      throw Object.assign(Error("PRIVATE"), { reason });
+    };
+    await f.bridge.fleetEvents.observe();
+    const h = f.bridge.fleetEvents.status("eddie").subscriptions[0].hosts[0];
+    assert.equal(h.state, "unavailable");
+    assert.equal(h.reason, reason);
+    assert.ok(h.last_complete_at);
+  }
+  f.revoke(true);
+  assert.equal(f.bridge.fleetEvents.status("eddie").subscriptions[0].hosts.length, 0);
+  await f.bridge.deliver();
+  assert.equal(f.posts.filter((e) => e.data).length, 0);
+});
+
+test("unsent obsolete coverage events are suppressed, including across bridge restart", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observe();
+  await f.bridge.deliver();
+  f.outage(true);
+  await f.bridge.fleetEvents.observe();
+  const stale = f.store
+    .all("delivery")
+    .find((d) => d.event.data.host === "a" && d.event.data.state === "degraded");
+  f.outage(false);
+  const resumed = new Bridge({ ...f.bridge });
+  resumed.commands = f.bridge.commands;
+  resumed.fleetReads = f.bridge.fleetReads;
+  await resumed.fleetEvents.observe();
+  await resumed.deliver();
+  assert.equal(f.store.get("delivery", stale.id).status, "superseded");
+  assert.equal(f.posts.filter((e) => e.data?.state === "degraded").length, 0);
+  assert.equal(f.store.all("command").length, 0);
+});
+
+test("thread authentication failure is not reduced to a generic partial read", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observe();
+  f.inventory.a[0].updatedAt = "2026-10-28T00:00:00Z";
+  f.bridge.fleetReads.read = async () => {
+    throw Object.assign(Error("PRIVATE"), { reason: "authentication_required" });
+  };
+  await f.bridge.fleetEvents.observe();
+  let h = f.bridge.fleetEvents.status("eddie").subscriptions[0].hosts[0];
+  assert.equal(h.state, "unavailable");
+  assert.equal(h.reason, "authentication_required");
+  f.bridge.fleetReads.inventory = async () => ({ threads: [], next_cursor: "recovering" });
+  await f.bridge.fleetEvents.observe();
+  h = f.bridge.fleetEvents.status("eddie").subscriptions[0].hosts[0];
+  assert.equal(h.state, "degraded");
+  assert.equal(h.current_read, "ok");
+  assert.equal(h.reason, "reconciling");
+  assert.equal(h.scanning, true);
+});

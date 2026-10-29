@@ -43,6 +43,7 @@ export interface DiagnosticRecord {
   credential_status?: string;
   event_id?: string;
   delivery_state?: string;
+  event_loop_delay_max_ms?: number;
 }
 export interface TransportOptions {
   hostsFile?: string;
