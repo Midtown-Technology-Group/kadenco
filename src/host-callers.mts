@@ -38,7 +38,9 @@ export class HostCallers {
     return {
       available: this.deliveryAcknowledgements && !!this.bridge.commands,
       requires_current_run: true,
-      requires_retained_native_run_evidence: true,
+      requires_retained_native_run_evidence: false,
+      requires_native_run_evidence: true,
+      evidence_recovery: "one_exact_native_message_read",
       is_completion: false,
     };
   }

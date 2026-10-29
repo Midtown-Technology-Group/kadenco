@@ -931,14 +931,44 @@ export class Commands {
       !["continue", "create"].includes(r.kind)
     )
       throw fail("forbidden");
-    // Acknowledgement must not issue a temporary native RPC credential just
-    // to refresh bookkeeping. Require retained native placement/run evidence.
-    const observedRun = r.messageObservation?.run_id ?? r.runId;
-    if (!observedRun) throw fail("delivery_run_unobserved");
-    if (observedRun !== p.run_id) throw fail("identity_mismatch");
-    const source = await this.reader.read(reviewer, { host, thread_id: threadId });
+    // Never issue an RPC credential. If placement is not retained, read only
+    // the canonical native user item for this exact stored message ID.
+    let observedRun = r.messageObservation?.run_id ?? r.runId;
+    const needsExact = !observedRun || observedRun !== p.run_id;
+    if (needsExact && !r.messageId)
+      throw fail(observedRun ? "identity_mismatch" : "delivery_run_unobserved");
+    const source = await this.reader.read(reviewer, {
+      host,
+      thread_id: threadId,
+      ...(needsExact
+        ? { view: "activity", item_id: "turn-item:message:" + encodeURIComponent(r.messageId) }
+        : {}),
+    });
     if (source.thread.threadId !== threadId || source.thread.projectId !== r.projectId)
       throw fail("identity_mismatch");
+    let proof;
+    if (needsExact) {
+      const items =
+        source.items?.filter(
+          (i) =>
+            i.type === "user_message" &&
+            i.messageId === r.messageId &&
+            typeof i.runId === "string" &&
+            i.runId,
+        ) ?? [];
+      if (items.length !== 1)
+        throw fail(observedRun ? "identity_mismatch" : "delivery_run_unobserved");
+      observedRun = items[0].runId;
+      proof = {
+        message_id: r.messageId,
+        run_id: observedRun,
+        run_status: source.runs?.find((v) => v.runId === observedRun)?.status ?? null,
+        input_intent: null,
+        observed_at: new Date(this.now()).toISOString(),
+        source: "native_exact_message",
+      };
+    }
+    if (observedRun !== p.run_id) throw fail("identity_mismatch");
     if (source.thread.activeRunId !== p.run_id) throw fail("source_run_not_active");
     authorize();
     this.grant(reviewer, host, r.projectId);
@@ -948,10 +978,18 @@ export class Commands {
       current.owner !== reviewer ||
       current.host !== host ||
       current.thread_id !== threadId ||
-      (current.messageObservation?.run_id ?? current.runId) !== p.run_id
+      (current.ackAt !== undefined &&
+        (current.ackRunId ?? current.messageObservation?.run_id ?? current.runId) !== p.run_id) ||
+      (proof
+        ? current.messageId !== r.messageId ||
+          (current.messageObservation?.run_id &&
+            current.messageObservation.run_id !== p.run_id &&
+            JSON.stringify(current.messageObservation) !== JSON.stringify(r.messageObservation))
+        : (current.messageObservation?.run_id ?? current.runId) !== p.run_id)
     )
       throw fail("identity_mismatch");
     if (current.ackAt === undefined) {
+      if (proof) current.messageObservation = proof;
       current.ackAt = this.now();
       current.ackCaller = caller;
       current.ackRunId = p.run_id;

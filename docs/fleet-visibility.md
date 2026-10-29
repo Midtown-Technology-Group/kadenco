@@ -34,3 +34,10 @@ this with per-host SSH/native-read timings; it does not identify the cause of a
 stall by itself. No request bodies, credentials or exception text are captured.
 
 Before sampling, the worker yields one 20 ms sampler interval so a final synchronous stall can be recorded. Success and failure diagnostics both retain the measurement. This adds a sampling yield to the existing cycle, not a source retry.
+
+Fleet per-thread authorization now checks the exact requested host directly,
+retaining live principal/read/project/provider/command-grant checks without
+rescanning sibling host grants. It caches no authorization or policy. Synthetic
+resolved-promise host pages yield to I/O at least once per 16 visited threads,
+preventing a burst of otherwise synchronous observations from starving timers.
+No retry, sleep/backoff, subscription or task-execution behavior changes.

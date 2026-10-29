@@ -1693,3 +1693,97 @@ test("receipt observation preserves late durable acceptance and native sequence 
   assert.equal(f.store.get("command", f.p.request_id).submission, "accepted");
   assert.equal(f.writes.length, 1);
 });
+
+test("unbound or queued delivery acknowledgements use one exact native message read without RPC issuance", async (t) => {
+  for (const queued of [false, true]) {
+    const f = fixture(t);
+    await f.commands.continue("eddie", f.p);
+    const r = f.store.get("command", f.p.request_id);
+    if (queued) {
+      r.runId = "queued-run";
+      r.runStatus = "cancelled";
+      f.store.put("command", f.p.request_id, r);
+    }
+    let reads = 0;
+    f.commands.session = async () => {
+      throw Error("no_credential_issuance");
+    };
+    f.reader.read = async (_owner, p) => {
+      reads++;
+      assert.equal(p.item_id, "turn-item:message:" + encodeURIComponent(r.messageId));
+      return {
+        thread: { threadId: "t", projectId: "p", activeRunId: "new-run" },
+        items: [{ type: "user_message", messageId: r.messageId, runId: "new-run" }],
+        runs: [{ runId: "new-run", status: "running" }],
+      };
+    };
+    const ack = await f.commands.acknowledge("caller", "eddie", "local", "t", {
+      request_id: f.p.request_id,
+      run_id: "new-run",
+    });
+    assert.equal(ack.agent_acknowledged, true);
+    assert.equal(ack.acknowledged_run_id, "new-run");
+    assert.equal(reads, 1);
+    assert.equal(f.writes.length, 1);
+    assert.equal(f.store.get("command", f.p.request_id).messageObservation.run_id, "new-run");
+  }
+});
+
+test("missing exact message evidence and ended runs never acquire an acknowledgement", async (t) => {
+  const f = fixture(t);
+  await f.commands.continue("eddie", f.p);
+  const r = f.store.get("command", f.p.request_id);
+  f.reader.read = async () => ({
+    thread: { threadId: "t", projectId: "p", activeRunId: "new-run" },
+    items: [],
+  });
+  await assert.rejects(
+    f.commands.acknowledge("caller", "eddie", "local", "t", {
+      request_id: f.p.request_id,
+      run_id: "new-run",
+    }),
+    /delivery_run_unobserved/,
+  );
+  f.reader.read = async () => ({
+    thread: { threadId: "t", projectId: "p", activeRunId: "other-run" },
+    items: [{ type: "user_message", messageId: r.messageId, runId: "new-run" }],
+  });
+  await assert.rejects(
+    f.commands.acknowledge("caller", "eddie", "local", "t", {
+      request_id: f.p.request_id,
+      run_id: "new-run",
+    }),
+    /source_run_not_active/,
+  );
+  assert.equal(f.store.get("command", f.p.request_id).ackAt, undefined);
+  assert.equal(f.writes.length, 1);
+});
+
+test("an acknowledged delivery cannot be re-acknowledged as a different run", async (t) => {
+  const f = fixture(t);
+  await f.commands.continue("eddie", f.p);
+  const r = f.store.get("command", f.p.request_id);
+  f.reader.read = async () => ({
+    thread: { threadId: "t", projectId: "p", activeRunId: "new-run" },
+    items: [{ type: "user_message", messageId: r.messageId, runId: "new-run" }],
+  });
+  await f.commands.acknowledge("caller", "eddie", "local", "t", {
+    request_id: f.p.request_id,
+    run_id: "new-run",
+  });
+  const first = f.store.get("command", f.p.request_id);
+  f.reader.read = async () => ({
+    thread: { threadId: "t", projectId: "p", activeRunId: "later-run" },
+    items: [{ type: "user_message", messageId: r.messageId, runId: "later-run" }],
+  });
+  await assert.rejects(
+    f.commands.acknowledge("caller", "eddie", "local", "t", {
+      request_id: f.p.request_id,
+      run_id: "later-run",
+    }),
+    /identity_mismatch/,
+  );
+  assert.equal(f.store.get("command", f.p.request_id).ackRunId, "new-run");
+  assert.equal(f.store.get("command", f.p.request_id).ackAt, first.ackAt);
+  assert.equal(f.writes.length, 1);
+});

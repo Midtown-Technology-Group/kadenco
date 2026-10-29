@@ -3,6 +3,7 @@ import type { Bridge } from "./bridge.mjs";
 import { createHash } from "node:crypto";
 import { subscriptionActive, subscriptionExpiry } from "./subscription-state.mjs";
 import { readReason } from "./read-errors.mjs";
+import { setImmediate as yieldToIO } from "node:timers/promises";
 
 const hash = (x) => createHash("sha256").update(JSON.stringify(x)).digest("hex");
 const fail = () => Object.assign(Error("forbidden"), { reason: "forbidden" });
@@ -28,7 +29,17 @@ export class FleetEvents {
       });
   }
   grant(owner, host, projectId = undefined, provider = undefined) {
-    if (!this.hosts(owner).includes(host)) throw fail();
+    const b = this.bridge,
+      p = b.policy().principals.find((p) => p.id === owner && p.enabled !== false);
+    if (
+      !p ||
+      !b.fleetReads ||
+      !b.commands ||
+      p.eddieCaller ||
+      p.eddieHostCaller ||
+      !p.readHosts?.some((g) => g.host === host)
+    )
+      throw fail();
     const { grant } = this.bridge.commands.grant(owner, host, projectId);
     if (provider !== undefined && !grant.providerInstanceIds.includes(provider)) throw fail();
     return grant;
@@ -260,7 +271,10 @@ export class FleetEvents {
       )
         throw Error("source_unavailable");
       let failed = false;
+      let visited = 0;
       for (const t of page.threads) {
+        // Resolved promises alone can starve timers across concurrent host pages.
+        if (visited++ > 0 && visited % 16 === 0) await yieldToIO();
         if (typeof t.providerInstanceId !== "string" || !t.providerInstanceId) {
           failed = true;
           continue;
