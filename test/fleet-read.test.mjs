@@ -131,6 +131,31 @@ function fixture() {
   };
 }
 
+test("local cadence hooks observe existing reads/failures without changing results, retries or native write scope", async () => {
+  const f = fixture(),
+    observations = [],
+    failures = [];
+  f.reader.afterRead = (owner, input, result) => {
+    observations.push({ owner, input, thread: result.thread.threadId });
+    throw Error("local telemetry failure");
+  };
+  const result = await f.reader.read("eddie", { host: "a", thread_id: "t" });
+  assert.equal(result.thread.threadId, "t");
+  assert.equal(observations.length, 1);
+  assert.equal(f.reads.length, 1);
+  f.reader.afterReadFailure = (owner, input) => {
+    failures.push({ owner, input });
+    throw Error("local telemetry failure");
+  };
+  f.state.readHook = () => {
+    throw Object.assign(Error("unavailable"), { reason: "source_unavailable" });
+  };
+  await assert.rejects(f.reader.read("eddie", { host: "a", thread_id: "t" }), /source_unavailable/);
+  assert.equal(failures.length, 1);
+  assert.equal(f.sends.length, 0);
+  await f.reader.close();
+});
+
 test("host and principal grants fail closed before any transport; reads never enroll execution", async () => {
   const f = fixture();
   assert.deepEqual(

@@ -42,6 +42,17 @@ export class Store {
       .all(kind)
       .map((r) => this.decode(r.value));
   }
+  recent(kind: string, limit: number) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5000)
+      throw Error("invalid_record_window");
+    const rows = this.db
+      .prepare("SELECT value FROM records WHERE kind=? ORDER BY rowid DESC LIMIT ?")
+      .all(kind, limit + 1);
+    return {
+      records: rows.slice(0, limit).map((r) => this.decode(r.value)),
+      truncated: rows.length > limit,
+    };
+  }
   put(kind, id, value) {
     this.db
       .prepare(

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { z } from "zod";
+import { isAbsolute } from "node:path";
 
 const session = z
   .object({
@@ -98,6 +99,19 @@ export const configSchema = z
       .strict()
       .optional(),
     callbackHosts: z.array(z.string().regex(/^[a-z0-9.-]+$/)).max(10),
+    cadence: z
+      .object({
+        manifestPath: z
+          .string()
+          .min(1)
+          .max(2048)
+          .refine(isAbsolute, "cadence manifest path must be absolute"),
+        freshForMs: z.number().int().min(1000).max(3600000).default(120000),
+        noProgressMs: z.number().int().min(60000).max(604800000).default(900000),
+        repetitionThreshold: z.number().int().min(2).max(100).default(3),
+      })
+      .strict()
+      .optional(),
     collaboration: z
       .object({
         enabled: z.boolean().default(false),
@@ -203,6 +217,8 @@ export const configSchema = z
         message: "local MCP client requires local source and fleet helper",
       });
     const hosts = p.fleetRead?.hosts.map((h) => h.name) ?? [];
+    if (p.cadence && !p.fleetRead)
+      ctx.addIssue({ code: "custom", message: "cadence requires existing fleet read routes" });
     if (p.collaboration) {
       const c = p.collaboration,
         broker = p.principals.find((x) => x.id === c.brokerPrincipal && x.enabled !== false);

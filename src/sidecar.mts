@@ -14,6 +14,8 @@ import { Commands } from "./commands.mjs";
 import { withFleetSessions } from "./fleet-source.mjs";
 import { collaborationServer } from "./collaboration-http.mjs";
 import { diagnosticContext, diagnose } from "./diagnostics.mjs";
+import { Cadence } from "./cadence.mjs";
+import { goalManifestFile } from "./cadence-manifest.mjs";
 
 export interface SidecarOptions {
   configPath?: string;
@@ -99,6 +101,17 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
       post: (url, headers, body) => postWebhook(url, headers, body, policy().callbackHosts),
     });
     if (reader) bridge.fleetReads = reader;
+    if (reader && config.cadence) {
+      bridge.cadence = new Cadence({
+        policy,
+        store,
+        reader,
+        manifest: goalManifestFile(config.cadence.manifestPath),
+      });
+      reader.afterRead = (owner, input, result) => bridge.cadence.observe(owner, input, result);
+      reader.afterReadFailure = (owner, input, error) =>
+        bridge.cadence.sourceFailure(owner, input, error);
+    }
     if (config.nativeDelivery) bridge.commands = new Commands({ policy, store, reader });
     server = httpServer(bridge);
     await new Promise<void>((resolve, reject) => {

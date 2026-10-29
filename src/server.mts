@@ -384,6 +384,11 @@ export function makeMcp(bridge: Bridge, owner: string) {
               "invalid_model_option",
               "runtime_mode_unavailable",
               "runtime_mode_not_authorized",
+              "cadence_manifest_unavailable",
+              "cadence_definition_changed",
+              "cadence_definition_regressed",
+              "cadence_definition_conflict",
+              "invalid_cadence_cursor",
             ].includes(e.reason) || readReasons.has(e.reason)
               ? e.reason
               : "request_denied_or_source_unavailable";
@@ -570,6 +575,28 @@ export function makeMcp(bridge: Bridge, owner: string) {
     true,
     () => ({ sessions: bridge.sessions(owner) }),
   );
+  if (bridge.cadence && principal?.readHosts?.length) {
+    register(
+      "get_cadence_overview",
+      "Read material goal changes from existing authorized observations. No scanner, subscription, nudge or execution. Invisible is not stalled; finish all cursor pages before advancing after_change.",
+      z
+        .object({
+          after_change: z.number().int().min(0).optional(),
+          cursor: z.string().max(4096).optional(),
+          limit: z.number().int().min(1).max(20).optional(),
+        })
+        .strict(),
+      true,
+      (p) => bridge.cadence.overview(owner, p),
+    );
+    register(
+      "get_cadence_goal",
+      "Reconcile one owner-defined goal with exact authorized native reads, cached handoff receipts, coverage and independent verification records. Completion/checks/agent text are not verification or execution authority. Never sends or retries work.",
+      z.object({ goal_id: z.string().min(1).max(200) }).strict(),
+      true,
+      (p) => bridge.cadence.detail(owner, p.goal_id),
+    );
+  }
   if (bridge.commands && principal?.commandHosts?.length)
     register(
       "get_fleet_event_status",

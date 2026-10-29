@@ -4,6 +4,7 @@ import type { Store } from "./store.mjs";
 import type { Policy } from "./config.mjs";
 import type { FleetReader } from "./fleet-read.mjs";
 import type { Commands } from "./commands.mjs";
+import type { Cadence } from "./cadence.mjs";
 import type { Backend } from "./contracts.mjs";
 import {
   subscriptionActive,
@@ -34,6 +35,7 @@ export class Bridge {
   declare fleetEvents: FleetEvents;
   declare fleetReads?: FleetReader;
   declare commands?: Commands;
+  declare cadence?: Cadence;
 
   constructor({
     store,
@@ -431,6 +433,7 @@ export class Bridge {
               id: `${sub.id}:${outgoing.eventId}`,
               subId: sub.id,
               event: outgoing,
+              observedAt: this.now(),
               attempts: 0,
               nextAt: this.now(),
               status: "pending",

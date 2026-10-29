@@ -33,7 +33,7 @@
     "check": "vp check --deny-warnings && npm run typecheck",
     "lint": "vp lint --deny-warnings",
     "format": "vp fmt --write",
-    "test:browser": "node scripts/verify-collaboration-ui.mjs",
+    "test:browser": "node scripts/verify-collaboration-ui.mjs && node scripts/verify-cadence-ui.mjs",
     "build": "node scripts/build.mjs",
     "typecheck": "tsrs -p tsconfig.json --noEmit --fast && tsc -p tsconfig.json --noEmit"
   },
