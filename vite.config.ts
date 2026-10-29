@@ -1,2 +1,2 @@
-import {defineConfig} from 'vite-plus';
-export default defineConfig({});
+import { defineConfig } from "vite-plus";
+export default defineConfig({ lint: {}, fmt: {} });

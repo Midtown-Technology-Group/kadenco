@@ -2,7 +2,7 @@
   "schema": 1,
   "package": "kadenco",
   "version": "0.1.0-alpha.1",
-  "scope": "Candidate only; not published or independently cleared for redistribution",
+  "scope": "Historical initial extraction at 7c3fc7de241ef8a7bbd70c04c86ebb026a819fb0; not a current source manifest",
   "excluded": [
     "private Git history",
     "runtime/state/credentials",
