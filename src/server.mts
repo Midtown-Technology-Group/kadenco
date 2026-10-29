@@ -18,6 +18,7 @@ import {
   localhostOriginValidation,
 } from "@modelcontextprotocol/node";
 import { z } from "zod";
+import { threadOptionsArgs, standardSpeedArgs, speedReceiptArgs } from "./thread-settings.mjs";
 import {
   exchangeEvent,
   inboxArgs,
@@ -388,6 +389,10 @@ export function makeMcp(bridge: Bridge, owner: string) {
               "invalid_model_option",
               "runtime_mode_unavailable",
               "runtime_mode_not_authorized",
+              "request_id_conflict",
+              "receipt_not_found",
+              "invalid_native_options",
+              "settings_unsupported",
             ].includes(e.reason) || readReasons.has(e.reason)
               ? e.reason
               : "request_denied_or_source_unavailable";
@@ -399,6 +404,9 @@ export function makeMcp(bridge: Bridge, owner: string) {
               "continue_thread",
               "answer_thread_request",
               "get_delivery_receipt",
+              "get_thread_speed_receipt",
+              "read_thread_options",
+              "set_thread_speed_standard",
               "acknowledge_thread_delivery",
             ].includes(name)
           )
@@ -574,6 +582,29 @@ export function makeMcp(bridge: Bridge, owner: string) {
     true,
     () => ({ sessions: bridge.sessions(owner) }),
   );
+  if (bridge.commands && principal?.commandHosts?.length) {
+    register(
+      "get_thread_speed_receipt",
+      "Read a stored speed mutation receipt bound to owner/host/thread/UUID under current grants, without native I/O. Historical receipt is not current state or permission to resend.",
+      speedReceiptArgs,
+      true,
+      (p) => bridge.commands.settings.receipt(owner, p),
+    );
+    register(
+      "read_thread_options",
+      "Read exact native thread selection and live provider speed options under existing read/command grants. No settings changes.",
+      threadOptionsArgs,
+      true,
+      (p) => bridge.commands.settings.read(owner, p),
+    );
+    register(
+      "set_thread_speed_standard",
+      "Change only explicit Fast serviceTier priority to Standard default. Requires exact fingerprint and stable request UUID; preserves other settings. Reconcile uncertain receipts with the same request; never blindly resend. Native CAS and native idempotency are unavailable. No task send or interruption.",
+      standardSpeedArgs,
+      false,
+      (p) => bridge.commands.settings.standard(owner, p),
+    );
+  }
   if (bridge.commands && principal?.commandHosts?.length)
     register(
       "get_fleet_event_status",

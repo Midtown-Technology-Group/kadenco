@@ -42,6 +42,9 @@ export class Store {
       .all(kind)
       .map((r) => this.decode(r.value));
   }
+  commandBudgetRecords() {
+    return this.all("command").concat(this.all("settings_mutation").filter((r) => r.submitted_at));
+  }
   put(kind, id, value) {
     this.db
       .prepare(
