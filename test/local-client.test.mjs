@@ -158,6 +158,40 @@ test("native follow-up rechecks provider, model, runtime and source run; closes 
   assert.equal(state.closes, 7);
 });
 
+test("hybrid local close releases the projection even when native cleanup rejects", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "t3-close-error-")),
+    helper = join(dir, "helper.mjs");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(
+    helper,
+    `export class T3FleetTransport {
+      async connect(){throw new Error("synthetic connect failure");}
+      async close(){throw new Error("synthetic cleanup failure");}
+    }`,
+  );
+  let closes = 0;
+  const backend = await withLocalFollowup(
+    {
+      read: async () => ({}),
+      close: async () => {
+        closes++;
+      },
+    },
+    helper,
+    {
+      origin: "http://127.0.0.1:3773",
+      tokenFile: "not-used-by-fake",
+    },
+  );
+  // Leave a failing native transport active, as happens when a read's cleanup fails.
+  await assert.rejects(
+    backend.read({ host: "local", threadId: "synthetic" }, true),
+    /synthetic cleanup failure/,
+  );
+  await assert.rejects(backend.close(), /synthetic cleanup failure/);
+  assert.equal(closes, 1);
+});
+
 test("hybrid local source retrieves real activity through native MCP and keeps projection reads separate", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "t3-activity-")),
     helper = join(dir, "helper.mjs");

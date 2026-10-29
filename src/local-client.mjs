@@ -92,8 +92,11 @@ export async function withLocalFollowup(source, helperPath, config) {
     preflight: (...args) => native.preflight(...args),
     followup: (...args) => native.followup(...args),
     close: async () => {
-      await native.close();
-      await source.close();
+      try {
+        await native.close();
+      } finally {
+        await source.close();
+      }
     },
   };
 }
