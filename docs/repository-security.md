@@ -10,7 +10,7 @@ Verified through GitHub REST on 2026-10-29:
 - Main ruleset active, no bypass actors: PR required, one independent approval,
   stale approvals dismissed, approval after last push, all discussions resolved,
   strict/current-base required checks `gate` and `Analyze (javascript-typescript)`
-  from GitHub Actions. Deletion/force-push blocked and linear history required.
+  from GitHub Actions plus the `CodeQL` findings check from GitHub Advanced Security. Deletion/force-push blocked and linear history required.
 - Only squash merges permitted by repository merge settings; merged branches
   automatically deleted.
 - Workflow token default is read-only; Actions cannot approve pull requests.
