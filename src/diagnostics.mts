@@ -2,6 +2,7 @@
 import type { DiagnosticRecord, NativeRecord } from "./contracts.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { readReason } from "./read-errors.mjs";
 const context = new AsyncLocalStorage<{
   origin: string;
@@ -100,5 +101,29 @@ export async function diagnose(emit, host, stage, fn, metadata = {}) {
       ...error?.diagnosticMetadata,
     });
     throw error;
+  }
+}
+
+// Let the histogram's 20ms timer sample the final operation before reading it.
+// A static metadata object also preserves the sample when the operation throws.
+export async function diagnoseWorkerCycle(emit, histogram, fn) {
+  const metadata: NativeRecord = {};
+  try {
+    return await diagnose(
+      emit,
+      "relay",
+      "worker",
+      async () => {
+        try {
+          return await fn();
+        } finally {
+          await delay(20);
+          metadata.event_loop_delay_max_ms = histogram.max / 1e6;
+        }
+      },
+      metadata,
+    );
+  } finally {
+    histogram.reset();
   }
 }

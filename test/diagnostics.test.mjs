@@ -3,7 +3,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, createHash } from "node:crypto";
 import { Store } from "../dist/store.mjs";
-import { diagnosticContext, diagnosticRecord, diagnose } from "../dist/diagnostics.mjs";
+import {
+  diagnosticContext,
+  diagnosticRecord,
+  diagnose,
+  diagnoseWorkerCycle,
+} from "../dist/diagnostics.mjs";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { T3FleetTransport } from "../dist/fleet-transport-read.mjs";
 import { httpServer } from "../dist/server.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -262,5 +269,34 @@ test("event loop telemetry accepts only finite nonnegative measurements", () => 
         .event_loop_delay_max_ms,
       undefined,
     );
+  }
+});
+
+test("worker diagnostics sample a final synchronous stall on successful and failed cycles", async () => {
+  const histogram = monitorEventLoopDelay({ resolution: 20 });
+  histogram.enable();
+  const rows = [];
+  try {
+    for (const failed of [false, true]) {
+      await delay(50); // Prime the native sampler before a deliberate final-operation stall.
+      const error = Error("PRIVATE");
+      const work = diagnoseWorkerCycle(
+        (r) => rows.push(r),
+        histogram,
+        async () => {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120);
+          if (failed) throw error;
+          return 42;
+        },
+      );
+      if (failed) await assert.rejects(work, (e) => e === error);
+      else assert.equal(await work, 42);
+      assert.ok(rows.at(-1).event_loop_delay_max_ms >= 100, JSON.stringify(rows.at(-1)));
+      assert.equal(rows.at(-1).outcome, failed ? "failed" : "ok");
+      assert.equal(histogram.max, 0);
+    }
+    assert.equal(JSON.stringify(rows).includes("PRIVATE"), false);
+  } finally {
+    histogram.disable();
   }
 });

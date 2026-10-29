@@ -14,7 +14,7 @@ import { fleetReader, type FleetReader } from "./fleet-read.mjs";
 import { Commands } from "./commands.mjs";
 import { withFleetSessions } from "./fleet-source.mjs";
 import { collaborationServer } from "./collaboration-http.mjs";
-import { diagnosticContext, diagnose } from "./diagnostics.mjs";
+import { diagnosticContext, diagnoseWorkerCycle } from "./diagnostics.mjs";
 
 export interface SidecarOptions {
   configPath?: string;
@@ -119,23 +119,19 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
       if (stopped) return;
       try {
         await diagnosticContext("worker", "event_cycle", async () => {
-          await diagnose(
+          await diagnoseWorkerCycle(
             (e) => store.diagnostic(e),
-            "relay",
-            "worker",
+            eventLoop,
             async () => {
               await bridge.observe();
               await bridge.deliver();
               await bridge.fleetEvents.observe();
               await bridge.deliver();
             },
-            () => ({ event_loop_delay_max_ms: eventLoop.max / 1e6 }),
           );
         });
       } catch {
         store.audit("worker.cycle", "bridge", "failed");
-      } finally {
-        eventLoop.reset();
       }
       if (!stopped)
         timer = setTimeout(

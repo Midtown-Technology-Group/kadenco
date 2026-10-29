@@ -32,3 +32,5 @@ the previous idle interval and current cycle, resets after each cycle, and is
 disabled at shutdown. The existing retention applies. Operators can correlate
 this with per-host SSH/native-read timings; it does not identify the cause of a
 stall by itself. No request bodies, credentials or exception text are captured.
+
+Before sampling, the worker yields one 20 ms sampler interval so a final synchronous stall can be recorded. Success and failure diagnostics both retain the measurement. This adds a sampling yield to the existing cycle, not a source retry.

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
+import { z } from "zod";
 import assert from "node:assert/strict";
 import { randomBytes, createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -354,6 +355,33 @@ test("MCP discovery advertises two-way thread subscriptions before any session e
   assert.equal(events.result.events[0].name, "t3.thread.activity");
   const fleet = events.result.events.find((e) => e.name === "t3.fleet.activity");
   assert.ok(fleet);
+  const coverageSchema = z.fromJSONSchema(fleet.payloadSchema);
+  const coverage = {
+    host: "h",
+    kind: "coverage_changed",
+    state: "degraded",
+    reason: "reconciling",
+    coverage_revision: 2,
+    last_complete_at: "2026-10-29T00:00:00.000Z",
+    current_read: "ok",
+  };
+  assert.equal(coverageSchema.safeParse(coverage).success, true);
+  assert.equal(coverageSchema.safeParse({ ...coverage, unexpected: true }).success, false);
+  assert.equal(coverageSchema.safeParse({ ...coverage, coverage_revision: -1 }).success, false);
+  assert.equal(coverageSchema.safeParse({ ...coverage, current_read: "invented" }).success, false);
+  assert.equal(
+    coverageSchema.safeParse({ ...coverage, last_complete_at: "not-a-date" }).success,
+    false,
+  );
+  assert.equal(
+    coverageSchema.safeParse({
+      host: "h",
+      kind: "coverage_changed",
+      state: "available",
+      reason: null,
+    }).success,
+    true,
+  );
   assert.deepEqual(fleet.inputSchema.required, ["scope"]);
   assert.equal(fleet.inputSchema.properties.scope.const, "authorized_fleet");
   assert.ok((await client.listTools()).tools.some((t) => t.name === "get_fleet_event_status"));

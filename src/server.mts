@@ -196,8 +196,12 @@ const fleetEventDefinition = {
           kind: z.literal("coverage_changed"),
           state: z.enum(["scanning", "available", "degraded", "unavailable"]),
           reason: z
-            .enum(["thread_read_unavailable", "inventory_restarted", ...readReasons])
+            .enum(["thread_read_unavailable", "inventory_restarted", "reconciling", ...readReasons])
             .nullable(),
+          // Optional for retained events created before coverage revisions existed.
+          coverage_revision: z.number().int().positive().optional(),
+          last_complete_at: z.iso.datetime().nullable().optional(),
+          current_read: z.enum(["not_checked", "ok", "partial", "failed"]).optional(),
         })
         .strict(),
     ]),
