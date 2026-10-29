@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { ReadOptions } from "./contracts.mjs";
 import { DatabaseSync } from "node:sqlite";
 
 // Native T3 durable projections, opened read-only with WAL-aware short reads.
@@ -17,21 +18,23 @@ export function localSource(path) {
   );
   return {
     supportsFollowup: false,
-    async read(session, _activity = false, options = {}) {
+    async read(session, _activity = false, options: ReadOptions = {}) {
       if (session.host !== "local") throw new Error("local_host_required");
       db.exec("BEGIN");
       try {
         const row = thread.get(session.threadId);
         if (!row) throw new Error("thread_not_found");
-        const t = JSON.parse(row.payload_json);
-        const recentRuns = runs.all(session.threadId).map((r) => JSON.parse(r.payload_json));
+        const t = JSON.parse(row.payload_json as string);
+        const recentRuns = runs
+          .all(session.threadId)
+          .map((r) => JSON.parse(r.payload_json as string));
         if (t.id !== session.threadId || recentRuns.some((r) => r.threadId !== session.threadId))
           throw new Error("projection_identity_mismatch");
         const offset = options.afterPosition ?? 0,
           runId = options.runId ?? null;
         const rows = messages
           .all(session.threadId, runId, runId, offset)
-          .map((r) => JSON.parse(r.payload_json));
+          .map((r) => JSON.parse(r.payload_json as string));
         const items = rows.slice(0, 25).map((m, i) => ({
           itemId: m.id,
           messageId: m.id,

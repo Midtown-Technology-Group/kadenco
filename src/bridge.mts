@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { NativeRecord, ReadOptions, RelaySession } from "./contracts.mjs";
+import type { Store } from "./store.mjs";
+import type { Policy } from "./config.mjs";
+import type { FleetReader } from "./fleet-read.mjs";
+import type { Commands } from "./commands.mjs";
+import type { Backend } from "./contracts.mjs";
 import {
   subscriptionActive,
   subscriptionState,
@@ -18,13 +24,36 @@ export const FOLLOWUP =
   "Eddie integration validation: inspect only the immediately preceding assistant result already in this conversation. Reply with exactly EDDIE_T3_FOLLOWUP_OK. Do not use tools, execute commands, edit files, delegate, or contact anyone. Stop after this one reply.";
 
 export class Bridge {
-  constructor({ store, backend, policy, post, now = Date.now }) {
+  declare store: Store;
+  declare backend: Backend;
+  declare policy: () => Policy;
+  declare post: (url: string, headers: Record<string, string>, body: string) => Promise<unknown>;
+  declare now: () => number;
+  declare exchanges: Exchanges;
+  declare lanes: ThreadLanes;
+  declare fleetEvents: FleetEvents;
+  declare fleetReads?: FleetReader;
+  declare commands?: Commands;
+
+  constructor({
+    store,
+    backend,
+    policy,
+    post,
+    now = Date.now,
+  }: {
+    store: Store;
+    backend: Backend;
+    policy: () => Policy;
+    post: Bridge["post"];
+    now?: () => number;
+  }) {
     Object.assign(this, { store, backend, policy, post, now });
     this.exchanges = new Exchanges(this);
     this.lanes = new ThreadLanes(this);
     this.fleetEvents = new FleetEvents(this);
   }
-  grant(owner, sessionId) {
+  grant(owner, sessionId): RelaySession {
     const p = this.policy();
     const principal = p.principals.find((x) => x.id === owner && x.enabled !== false);
     const session = p.sessions.find((x) => x.id === sessionId);
@@ -70,9 +99,9 @@ export class Bridge {
         (f) => f.sessionId === sessionId && (!Number.isFinite(f.createdAt) || f.createdAt >= start),
       ).length;
   }
-  async read(owner, sessionId, activity = false, options = {}) {
+  async read(owner, sessionId, activity = false, options: ReadOptions = {}) {
     const s = this.grant(owner, sessionId),
-      data = await (s.dynamicLane ? this.lanes : this.backend).read(s, activity, {
+      data: NativeRecord = await (s.dynamicLane ? this.lanes : this.backend).read(s, activity, {
         ...options,
         owner,
       });
@@ -191,7 +220,7 @@ export class Bridge {
         .length >= MAX_ACTIVE_SUBSCRIPTIONS
     )
       throw new Error("subscription_limit");
-    const candidate = {
+    const candidate: NativeRecord = {
       id,
       owner,
       name: p.name,
@@ -309,7 +338,8 @@ export class Bridge {
     return {};
   }
   async observe() {
-    for (const session of [...this.policy().sessions, ...this.lanes.sessions()]) {
+    const sessions: RelaySession[] = [...this.policy().sessions, ...this.lanes.sessions()];
+    for (const session of sessions) {
       if (
         !this.policy().principals.some((p) => {
           try {
@@ -347,7 +377,7 @@ export class Bridge {
         const seenKey = "run_" + hash([session.host, session.threadId, session.id, run.runId]);
         const seen = this.store.get("run", seenKey);
         if (seen) continue;
-        const event = {
+        const event: NativeRecord = {
           eventId,
           name: "t3.task.finished",
           timestamp: run.completedAt,
@@ -369,7 +399,7 @@ export class Bridge {
             } catch {
               continue;
             }
-            let outgoing = event;
+            let outgoing: NativeRecord = event;
             if (sub.name === "t3.thread.activity") {
               try {
                 this.lanes.authorize(sub);

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boundedResponseText, fetchWithReadDeadline } from "../src/http-limits.mjs";
-import { httpServer } from "../src/server.mjs";
-import { resolveCallback, postWebhook } from "../src/webhook.mjs";
+import { boundedResponseText, fetchWithReadDeadline } from "../dist/http-limits.mjs";
+import { httpServer } from "../dist/server.mjs";
+import { resolveCallback, postWebhook } from "../dist/webhook.mjs";
 import { createServer } from "node:http";
-import { T3FleetTransport } from "../src/fleet-transport-read.mjs";
+import { T3FleetTransport } from "../dist/fleet-transport-read.mjs";
 
 test("read fetch wrapper preserves a caller cleanup signal and only supplies a missing deadline", async () => {
   const signal = AbortSignal.abort();

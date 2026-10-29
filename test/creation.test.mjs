@@ -8,12 +8,12 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Store } from "../src/store.mjs";
-import { Commands } from "../src/commands.mjs";
-import { createArgs } from "../src/creation.mjs";
-import { configSchema } from "../src/config.mjs";
-import { httpServer } from "../src/server.mjs";
-import { Exchanges } from "../src/exchange.mjs";
+import { Store } from "../dist/store.mjs";
+import { Commands } from "../dist/commands.mjs";
+import { createArgs } from "../dist/creation.mjs";
+import { configSchema } from "../dist/config.mjs";
+import { httpServer } from "../dist/server.mjs";
+import { Exchanges } from "../dist/exchange.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 function fixture(t) {

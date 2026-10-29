@@ -10,12 +10,12 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { Store } from "../src/store.mjs";
-import { Bridge } from "../src/bridge.mjs";
-import { FleetReader } from "../src/fleet-read.mjs";
-import { httpServer } from "../src/server.mjs";
-import { configSchema } from "../src/config.mjs";
-import { Exchanges } from "../src/exchange.mjs";
+import { Store } from "../dist/store.mjs";
+import { Bridge } from "../dist/bridge.mjs";
+import { FleetReader } from "../dist/fleet-read.mjs";
+import { httpServer } from "../dist/server.mjs";
+import { configSchema } from "../dist/config.mjs";
+import { Exchanges } from "../dist/exchange.mjs";
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "eddie-exchange-")),

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { communicationStatus } from "../src/communication-status.mjs";
+import { communicationStatus } from "../dist/communication-status.mjs";
 function fixture() {
   const now = 100000,
     events = [],

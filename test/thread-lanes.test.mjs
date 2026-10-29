@@ -5,9 +5,9 @@ import { randomBytes, createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Store } from "../src/store.mjs";
-import { Bridge } from "../src/bridge.mjs";
-import { httpServer } from "../src/server.mjs";
+import { Store } from "../dist/store.mjs";
+import { Bridge } from "../dist/bridge.mjs";
+import { httpServer } from "../dist/server.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 function fixture(t) {

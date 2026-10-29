@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { Bridge } from "./bridge.mjs";
 import { z } from "zod";
 import { askArgs, requestArgs, acknowledgeArgs, conversationArgs } from "./exchange.mjs";
 import { hostCallerOwner } from "./host-caller-scope.mjs";
@@ -13,9 +14,7 @@ export const hostConversationArgs = conversationArgs.extend({ thread_id: thread 
 export const hostCapabilityArgs = z.object({ thread_id: thread.optional() }).strict();
 const fail = (reason) => Object.assign(new Error(reason), { reason });
 export class HostCallers {
-  constructor(bridge) {
-    this.bridge = bridge;
-  }
+  constructor(public bridge: Bridge) {}
   grant(owner) {
     const g = this.bridge
       .policy()

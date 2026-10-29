@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Native responses are untrusted, including successful and malformed payloads.
-export function fetchWithReadDeadline(url, options = {}, implementation = fetch) {
+export function fetchWithReadDeadline(
+  url: string | URL | Request,
+  options: RequestInit = {},
+  implementation = fetch,
+) {
   return implementation(url, { ...options, signal: options.signal ?? AbortSignal.timeout(15000) });
 }
 
-export async function boundedResponseText(response, maximum = 2 * 1024 * 1024) {
+export async function boundedResponseText(response: Response, maximum = 2 * 1024 * 1024) {
   const fail = () =>
     Object.assign(new Error("source_response_too_large"), { reason: "source_protocol_error" });
   if (Number(response.headers.get("content-length")) > maximum) {

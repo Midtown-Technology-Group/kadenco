@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import type { NativeRecord } from "./contracts.mjs";
+import type { Policy } from "./config.mjs";
 import { readReason, transientReadReasons } from "./read-errors.mjs";
 import { localClientOptions } from "./local-client.mjs";
 import { T3FleetTransport } from "./fleet-transport-read.mjs";
@@ -23,6 +25,15 @@ const failure = (reason) => Object.assign(new Error(reason), { reason });
 const reasonFor = readReason;
 
 export class FleetReader {
+  declare policy: () => Policy;
+  declare audit: (action: string, subject: string, outcome: string) => void;
+  declare transport: (route: Policy["fleetRead"]["hosts"][number]) => T3FleetTransport;
+  declare cursorKey: Buffer;
+  declare tails: Map<string, Promise<unknown>>;
+  declare active: Set<T3FleetTransport>;
+  declare stopped: boolean;
+  declare diagnostic: (event: unknown) => void;
+
   constructor({ policy, audit, transport, cursorKey = randomBytes(32) }) {
     Object.assign(this, { policy, audit, transport, cursorKey });
     this.tails = new Map();
@@ -33,7 +44,7 @@ export class FleetReader {
     const payload = Buffer.from(JSON.stringify(state)).toString("base64url");
     return payload + "." + createHmac("sha256", this.cursorKey).update(payload).digest("base64url");
   }
-  grant(owner, host, projectId) {
+  grant(owner, host, projectId = undefined) {
     const p = this.policy(),
       principal = p.principals.find((x) => x.id === owner && x.enabled !== false);
     const route = p.fleetRead?.hosts.find((x) => x.name === host),
@@ -261,7 +272,7 @@ export class FleetReader {
     const hosts = host ? [host] : this.hosts(owner).hosts.map((h) => h.host);
     // Reject arbitrary caller-supplied hosts before opening any route.
     for (const h of hosts) this.grant(owner, h);
-    const results = Array.from({ length: hosts.length });
+    const results: NativeRecord[] = Array.from({ length: hosts.length });
     let next = 0;
     const worker = async () => {
       while (next < hosts.length) {
