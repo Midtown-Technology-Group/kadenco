@@ -41,3 +41,24 @@ rescanning sibling host grants. It caches no authorization or policy. Synthetic
 resolved-promise host pages yield to I/O at least once per 16 visited threads,
 preventing a burst of otherwise synchronous observations from starving timers.
 No retry, sleep/backoff, subscription or task-execution behavior changes.
+
+## T3 relay pattern adaptations
+
+The fleet observer uses a single in-process scan with one coalesced catch-up
+pass for a burst of overlapping wake requests. Additional activity is picked up
+by the existing poll; this adds no timer, scheduler, transport or subscription.
+Every pass rechecks live grants. Restart recovery still uses encrypted page
+checkpoints and stable event identities; it does not promise replay beyond
+native retained history.
+
+Coverage changes are replaceable state. In the same SQLite transaction that
+records a newer coverage revision, the previous pending coverage notice is
+marked superseded. Acknowledged notices and task/input events are preserved.
+No uncertain task mutation is retried, and webhook acknowledgement remains
+separate from agent execution. Unchanged coverage does not publish a new event.
+
+Design reference: T3 Code MIT source snapshot `415a5a0e`,
+`apps/server/src/relay/AgentAwarenessRelay.ts` (coalesced catch-up wake,
+change-only publication and bounded work). This is an independent adaptation;
+no T3 source is copied or bundled. T3 Connect credentials, relay signing and
+held-hook execution are not imported into Kadenco.
