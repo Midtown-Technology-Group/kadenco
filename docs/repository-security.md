@@ -7,8 +7,7 @@ Verified through GitHub REST on 2026-10-29:
   vulnerability alerts and automatic security-update PRs enabled.
 - GitHub-managed default CodeQL configured with extended queries and a weekly
   schedule for JavaScript/TypeScript. Do not add a competing producer.
-- Main ruleset active, no bypass actors: PR required, one independent approval,
-  stale approvals dismissed, approval after last push, all discussions resolved,
+- Main ruleset active, no bypass actors: PR required, no second-maintainer approval count or last-push approval requirement, all discussions resolved,
   strict/current-base required checks `gate` and `Analyze (javascript-typescript)`
   from GitHub Actions plus the `CodeQL` findings check from GitHub Advanced Security. Deletion/force-push blocked and linear history required.
 - Only squash merges permitted by repository merge settings; merged branches
@@ -34,5 +33,6 @@ Limitations: GitHub readback still reports non-provider secret patterns and
 secret validity checks disabled after an enable request; those optional features
 are not claimed as active. Standard scanning/push protection remain enabled.
 No npm package/release publishing, deployment or live T3 configuration was
-changed. Main protection deliberately applies to maintainers too: this PR needs
-an independent approval; neither its author nor an agent may self-approve it.
+changed. Main protection applies to maintainers too. As a solo-maintainer project, no
+formal approval count is imposed. Required checks and resolved discussions still
+apply; neither author nor agent fabricates an approving review.

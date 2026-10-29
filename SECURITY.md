@@ -26,8 +26,7 @@ below; do not post proof-of-concept credentials or customer data publicly.
 
 ## Repository controls
 
-Main uses PRs, one independent approval, stale-review dismissal, approval after
-the last push, resolved review threads, a current base, required CI, CodeQL analysis and CodeQL findings checks and no
+Main uses a solo-maintainer PR workflow without a required approval count, resolved review threads, a current base, required CI, CodeQL analysis and CodeQL findings checks and no
 bypass actors. Force-push/deletion are blocked. Merge is squash-only and merged
 branches are deleted. GitHub Actions defaults to read-only tokens and cannot
 approve pull requests. CI disables checkout credential persistence, pins actions

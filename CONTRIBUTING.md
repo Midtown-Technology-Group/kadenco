@@ -12,7 +12,7 @@ native boundary, never real grants or tasks. Never use live fleet access to
 create test fixtures or paste real thread data into issues.
 
 Open a focused PR. Protected main requires the CI gate, CodeQL, a current base
-and an independent approving review. Do not bypass protection or self-approve.
+and resolution of review findings. No second-maintainer approval is required; do not bypass protection or fabricate approvals.
 Keep dependency/action versions pinned and lockfile changes reviewable. Do not
 run third-party install scripts or use privileged pull-request workflows.
 
