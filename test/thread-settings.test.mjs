@@ -208,3 +208,130 @@ test("receipt readback is exact-target bound and works without native I/O but no
   f.revoke();
   assert.throws(() => f.settings.receipt("owner", input), /forbidden/);
 });
+
+test("final drift and observed-after-uncertainty receipts retain original evidence on replay", async (t) => {
+  const f = fixture(t),
+    p = await args(f),
+    read = f.client.currentOptions,
+    configure = f.client.configure;
+  let submitted = false;
+  f.client.configure = async (...a) => {
+    const result = await configure(...a);
+    submitted = true;
+    return result;
+  };
+  f.client.currentOptions = async () => {
+    const r = await read();
+    if (submitted) r.modelSelection.options[0].value = "low";
+    return r;
+  };
+  const first = await f.settings.standard("owner", p);
+  assert.equal(first.state, "drift_after_submission");
+  f.client.currentOptions = read;
+  const replay = await f.settings.standard("owner", p);
+  assert.equal(replay.state, "drift_after_submission");
+  assert.deepEqual(replay.after, first.after);
+  assert.equal(f.writes, 1);
+  const g = fixture(t),
+    q = await args(g);
+  g.uncertain();
+  await g.settings.standard("owner", q);
+  const observed = await g.settings.standard("owner", q);
+  assert.equal(observed.state, "observed_after_uncertainty");
+  g.client.currentOptions = async () => ({
+    threadId: "t",
+    modelSelection: {
+      instanceId: "codex",
+      model: "model",
+      options: [{ id: "serviceTier", value: "priority" }],
+    },
+    runtimeMode: "approval-required",
+    interactionMode: "plan",
+  });
+  const duplicate = await g.settings.standard("owner", q);
+  assert.equal(duplicate.state, "observed_after_uncertainty");
+  assert.deepEqual(duplicate.after, observed.after);
+  assert.equal(g.writes, 1);
+});
+
+test("budget rejection remains a proven pre-submission rejection across UUID replay", async (t) => {
+  const f = fixture(t),
+    p = await args(f);
+  f.commands.grant = () => ({ grant: { providerInstanceIds: ["codex"], maxPerDay: 0 } });
+  await assert.rejects(f.settings.standard("owner", p), /command_budget_exhausted/);
+  const r = f.settings.receipt("owner", {
+    host: p.host,
+    thread_id: p.thread_id,
+    request_id: p.request_id,
+  });
+  assert.equal(r.state, "rejected");
+  assert.equal(r.submission_not_attempted, true);
+  assert.equal(r.submitted_at, undefined);
+  assert.equal((await f.settings.standard("owner", p)).state, "rejected");
+  assert.equal(f.writes, 0);
+});
+
+test("MCP settings failures preserve safe reasons and denied-operation audit", async (t) => {
+  const { Bridge } = await import("../dist/bridge.mjs");
+  const { httpServer } = await import("../dist/server.mjs");
+  const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
+  const { createHash } = await import("node:crypto");
+  const store = new Store(":memory:", randomBytes(32));
+  t.after(() => store.close());
+  const token = randomBytes(24).toString("hex");
+  const policy = {
+    principals: [
+      {
+        id: "owner",
+        tokenSha256: createHash("sha256").update(token).digest("hex"),
+        sessions: [],
+        commandHosts: [{ host: "h" }],
+      },
+    ],
+    sessions: [],
+  };
+  const bridge = new Bridge({ store, backend: {}, policy: () => policy });
+  let reason = "request_id_conflict";
+  const deny = () => {
+    throw Object.assign(Error("PRIVATE"), { reason });
+  };
+  bridge.commands = { settings: { read: deny, standard: deny, receipt: deny } };
+  const server = httpServer(bridge);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const client = new Client(
+    { name: "test", version: "1" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  t.after(() => client.close());
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.address().port}/mcp`), {
+      requestInit: { headers: { Authorization: "Bearer " + token } },
+    }),
+  );
+  const base = { host: "h", thread_id: "t" };
+  for (const [name, r, args] of [
+    [
+      "set_thread_speed_standard",
+      "request_id_conflict",
+      {
+        ...base,
+        speed: "standard",
+        request_id: randomUUID(),
+        expected_fingerprint: "a".repeat(64),
+      },
+    ],
+    ["get_thread_speed_receipt", "receipt_not_found", { ...base, request_id: randomUUID() }],
+    ["read_thread_options", "invalid_native_options", base],
+    ["read_thread_options", "settings_unsupported", base],
+  ]) {
+    reason = r;
+    const result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.reason, r);
+    assert.equal(JSON.stringify(result).includes("PRIVATE"), false);
+  }
+  const rows = store.db.prepare("SELECT outcome FROM audit WHERE action='command.denied'").all();
+  assert.equal(rows.length, 4);
+  assert.ok(rows.some((r) => r.outcome.includes("set_thread_speed_standard:request_id_conflict")));
+});

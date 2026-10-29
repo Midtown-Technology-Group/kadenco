@@ -48,3 +48,10 @@ promise): CodexAdapterV2.planSelectionTransition uses turnScopedSelectionTransit
 whose outcome is apply_on_next_turn. This supports preserving the current turn
 while changing the saved selection. The adapter still reports running-turn speed
 as unverified because option readback does not measure provider execution.
+
+A definite preparation failure (including exhausted budget) is persisted as
+rejected with submission_not_attempted true. Reusing that UUID returns its final
+rejection; after resolving the prerequisite a separately authorized new request
+may use a fresh UUID because no native submission occurred. Final drift and
+observed-after-uncertainty receipts retain their original evidence; later reads
+are returned separately as current state, never rewriting that verdict.

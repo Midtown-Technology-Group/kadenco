@@ -389,6 +389,10 @@ export function makeMcp(bridge: Bridge, owner: string) {
               "invalid_model_option",
               "runtime_mode_unavailable",
               "runtime_mode_not_authorized",
+              "request_id_conflict",
+              "receipt_not_found",
+              "invalid_native_options",
+              "settings_unsupported",
             ].includes(e.reason) || readReasons.has(e.reason)
               ? e.reason
               : "request_denied_or_source_unavailable";
@@ -400,6 +404,9 @@ export function makeMcp(bridge: Bridge, owner: string) {
               "continue_thread",
               "answer_thread_request",
               "get_delivery_receipt",
+              "get_thread_speed_receipt",
+              "read_thread_options",
+              "set_thread_speed_standard",
               "acknowledge_thread_delivery",
             ].includes(name)
           )

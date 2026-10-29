@@ -156,8 +156,26 @@ export class ThreadSettings {
         };
         authorize();
         if (prior) {
-          if (prior.state === "verified" || prior.state === "noop" || prior.state === "rejected")
+          if (
+            [
+              "verified",
+              "noop",
+              "rejected",
+              "drift_after_submission",
+              "observed_after_uncertainty",
+            ].includes(prior.state)
+          )
             return { ...prior, current: before, safe_to_resend: false };
+          if (!prior.submitted_at) {
+            const rejected = {
+              ...prior,
+              state: "rejected",
+              reason: "preparation_interrupted",
+              submission_not_attempted: true,
+            };
+            c.store.put("settings_mutation", key, rejected);
+            return { ...rejected, current: before };
+          }
           const observed =
             prior.expected &&
             same(before.model_selection, prior.expected) &&
@@ -204,31 +222,62 @@ export class ThreadSettings {
             o.id === "serviceTier" ? { ...o, value: "default" } : o,
           ),
         };
-        const rechecked = await this.snapshot(owner, p, client);
+        let rechecked;
+        try {
+          rechecked = await this.snapshot(owner, p, client);
+        } catch (e) {
+          save({
+            ...receipt,
+            state: "rejected",
+            reason: e.reason ?? "preparation_failed",
+            submission_not_attempted: true,
+          });
+          throw e;
+        }
         if (rechecked.fingerprint !== before.fingerprint)
           return save({ ...receipt, state: "rejected", reason: "settings_changed" });
-        authorize();
+        try {
+          authorize();
+        } catch (e) {
+          save({
+            ...receipt,
+            state: "rejected",
+            reason: e.reason ?? "preparation_failed",
+            submission_not_attempted: true,
+          });
+          throw e;
+        }
         const submitted = {
           ...receipt,
           expected,
           state: "submitting",
           submitted_at: new Date(c.now()).toISOString(),
         };
-        c.store.transaction(() => {
-          const { grant } = c.grant(owner, p.host, before.project_id);
-          const day = new Date(c.now()).toISOString().slice(0, 10);
-          const used = c.store
-            .commandBudgetRecords()
-            .filter(
-              (r) =>
-                r.owner === owner &&
-                r.host === p.host &&
-                new Date(r.at).toISOString().slice(0, 10) === day,
-            ).length;
-          if (Number.isFinite(grant.maxPerDay) && used >= grant.maxPerDay)
-            throw fail("command_budget_exhausted");
-          save(submitted);
-        });
+        try {
+          c.store.transaction(() => {
+            const { grant } = c.grant(owner, p.host, before.project_id);
+            const day = new Date(c.now()).toISOString().slice(0, 10);
+            const used = c.store
+              .commandBudgetRecords()
+              .filter(
+                (r) =>
+                  r.owner === owner &&
+                  r.host === p.host &&
+                  new Date(r.at).toISOString().slice(0, 10) === day,
+              ).length;
+            if (Number.isFinite(grant.maxPerDay) && used >= grant.maxPerDay)
+              throw fail("command_budget_exhausted");
+            save(submitted);
+          });
+        } catch (e) {
+          save({
+            ...receipt,
+            state: "rejected",
+            reason: e.reason ?? "preparation_failed",
+            submission_not_attempted: true,
+          });
+          throw e;
+        }
         let native;
         try {
           native = await client.configure(p.thread_id, expected);
