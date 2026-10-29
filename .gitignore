@@ -1,0 +1,8 @@
+node_modules/
+private-state/
+*.db*
+*.log
+*.env
+config.local.json
+*.tgz
+ui-proof/

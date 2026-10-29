@@ -1,0 +1,8 @@
+Kadenco
+Copyright (c) 2026 Midtown Technology Group
+
+Project code is licensed under AGPL version 3 or, at your option, any later version. See LICENSE.
+
+Extracted from the owner's private relay implementation, with generic public examples and no private Git history. Fleet read transport is derived from the owner's existing fleet helper. No T3 application code is bundled.
+
+Dependencies are installed separately using package-lock.json. Preserve notices for exact dependency artifacts. MCP SDK packages include MIT/Apache-2.0 transition notices; see https://github.com/modelcontextprotocol/typescript-sdk/blob/main/LICENSE . This project license does not replace third-party licenses.

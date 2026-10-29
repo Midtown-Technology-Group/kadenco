@@ -1,0 +1,16 @@
+{
+  "stateDirectory": "./private-state",
+  "source": {
+    "type": "local-projection",
+    "databasePath": "/absolute/path/to/your/T3/statev2.sqlite"
+  },
+  "callbackHosts": [],
+  "principals": [
+    {
+      "id": "agent",
+      "tokenSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sessions": []
+    }
+  ],
+  "sessions": []
+}

@@ -1,0 +1,45 @@
+{
+  "name": "kadenco",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^22.18.0 || ^24.11.0 || >=26.0.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/main.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/node": "2.1.1",
+    "@modelcontextprotocol/server": "2.3.1",
+    "ipaddr.js": "^2.2.0",
+    "jose": "6.2.12",
+    "jsonc-parser": "3.3.1",
+    "standardwebhooks": "1.0.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "playwright-core": "1.64.1",
+    "vite-plus": "1.4.0"
+  },
+  "license": "AGPL-3.0-or-later",
+  "description": "Experimental MCP tools, durable events and receipts for T3 Code",
+  "files": [
+    "src",
+    "scripts",
+    "test",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "SECURITY.md",
+    "COMPATIBILITY.md",
+    "EXPORT-MANIFEST.json",
+    "vite.config.ts"
+  ],
+  "overrides": {
+    "@hono/node-server": "2.1.3"
+  }
+}
