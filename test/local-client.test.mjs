@@ -1,11 +1,51 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, utimesSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, utimesSync, rmSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { localClientOptions, withLocalFollowup } from "../src/local-client.mjs";
 import { fleetBackend } from "../src/backend.mjs";
+
+test("credential path replacement and in-place growth cannot substitute unchecked contents", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "credential-race-")),
+    tokenFile = join(directory, "token"),
+    at = Date.now();
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const token =
+    Buffer.from(
+      JSON.stringify({ sub: "mcp-client", exp: at + 600000, scopes: ["orchestration:read"] }),
+    ).toString("base64url") +
+    "." +
+    "s".repeat(64);
+  writeFileSync(tokenFile, token);
+  const options = localClientOptions(
+    { origin: "http://127.0.0.1:3773", tokenFile },
+    () => {
+      renameSync(tokenFile, join(directory, "original"));
+      writeFileSync(tokenFile, "untrusted replacement");
+      return at;
+    },
+    "read",
+  );
+  // Platforms differ on whether renaming updates the opened file's ctime.
+  // A stable original snapshot or fail-closed refusal are both safe.
+  try {
+    assert.equal(Object.values(options.cacheProvider())[0].token, token);
+  } catch (error) {
+    assert.equal(error.message, "existing_local_credential_unavailable_or_stale");
+  }
+  writeFileSync(tokenFile, token);
+  const growing = localClientOptions(
+    { origin: "http://127.0.0.1:3773", tokenFile },
+    () => {
+      writeFileSync(tokenFile, "x".repeat(100000));
+      return at;
+    },
+    "read",
+  );
+  assert.throws(() => growing.cacheProvider(), /unavailable_or_stale/);
+});
 
 test("existing local credential is reused only at its enrolled loopback origin and never renewed", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "t3-client-")),

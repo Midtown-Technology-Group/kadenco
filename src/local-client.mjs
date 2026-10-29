@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { readFileSync, statSync } from "node:fs";
+import { openSync, closeSync, fstatSync, readSync, constants } from "node:fs";
 import { fleetBackend } from "./backend.mjs";
 
 // Consume the operator's EXISTING refresher output. Never issue, refresh, copy,
@@ -22,12 +22,32 @@ export function localClientOptions(config, now = Date.now, scope = "operate", ho
   return {
     hostsProvider: () => ({ hosts: [{ name: host, url: base + "/mcp" }] }),
     cacheProvider: () => {
+      let descriptor;
       try {
-        const stat = statSync(config.tokenFile),
+        // Inspect/read the same opened object. Nonblocking/no-follow flags are
+        // used where supported; neither a swapped path nor file growth may
+        // bypass freshness/size checks. Native authentication remains required.
+        descriptor = openSync(
+          config.tokenFile,
+          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+        );
+        const stat = fstatSync(descriptor, { bigint: true }),
           at = now(),
-          age = at - stat.mtimeMs;
-        if (!stat.isFile() || stat.size > 16384 || age < -60000 || age > 1200000) throw new Error();
-        const token = readFileSync(config.tokenFile, "utf8").trim();
+          age = at - Number(stat.mtimeMs);
+        if (!stat.isFile() || stat.size > 16384n || age < -60000 || age > 1200000)
+          throw new Error();
+        const bytes = Buffer.alloc(Number(stat.size) + 1),
+          count = readSync(descriptor, bytes, 0, bytes.length, 0);
+        const after = fstatSync(descriptor, { bigint: true });
+        if (
+          count > 16384 ||
+          BigInt(count) !== stat.size ||
+          after.size !== stat.size ||
+          after.mtimeNs !== stat.mtimeNs ||
+          after.ctimeNs !== stat.ctimeNs
+        )
+          throw new Error();
+        const token = bytes.toString("utf8", 0, count).trim();
         if (token.length < 100 || /\s/.test(token) || token.split(".").length !== 2)
           throw new Error();
         const claims = JSON.parse(Buffer.from(token.split(".")[0], "base64url").toString());
@@ -55,6 +75,8 @@ export function localClientOptions(config, now = Date.now, scope = "operate", ho
         };
       } catch {
         throw new Error("existing_local_credential_unavailable_or_stale");
+      } finally {
+        if (descriptor !== undefined) closeSync(descriptor);
       }
     },
   };
