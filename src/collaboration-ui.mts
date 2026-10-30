@@ -3,7 +3,7 @@ const el = (id) => document.getElementById(id) as HTMLInputElement;
 const status = (text, error = false) => {
   el("status").textContent = text;
   el("status").classList.toggle("error", error);
-  for (const name of ["share", "join", "request"]) {
+  for (const name of ["share", "request"]) {
     if (
       dialog(name).open &&
       (error || text.startsWith("Guest link") || text === "Copy the selected guest link.")
@@ -16,9 +16,9 @@ const status = (text, error = false) => {
 let requestBusy = false;
 const dialog = (name) => document.getElementById(name + "-dialog") as HTMLDialogElement;
 function closeDialogs() {
-  for (const name of ["share", "join", "request"]) dialog(name).close();
+  for (const name of ["share", "request"]) dialog(name).close();
 }
-for (const name of ["share", "join", "request"]) {
+for (const name of ["share", "request"]) {
   el("close-" + name).onclick = () => {
     if (!locked && !requestBusy && !el("join-thread").disabled) dialog(name).close();
   };
@@ -26,16 +26,6 @@ for (const name of ["share", "join", "request"]) {
     if (locked || requestBusy || el("join-thread").disabled) event.preventDefault();
   });
 }
-el("cancel-join").onclick = () => {
-  if (!locked && !requestBusy && !el("join-thread").disabled) dialog("join").close();
-};
-el("decline-join").onclick = () => {
-  location.hash = "";
-};
-el("review-join").onclick = () => {
-  el("join-status").textContent = "";
-  dialog("join").showModal();
-};
 let inviteStep = "recipient";
 function setInviteStep(review) {
   inviteStep = review ? "access" : "recipient";
@@ -108,7 +98,9 @@ async function work(scope, generation, fn) {
     if (active(scope, generation)) status(e.message + " · No automatic resend.", true);
   } finally {
     locked = false;
-    document.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    document.querySelectorAll("button").forEach((b) => {
+      if (!b.classList.contains("guest-attachment")) b.disabled = false;
+    });
   }
 }
 async function loadMessages(scope, generation) {
@@ -122,7 +114,11 @@ function renderMessages(messages, scope, generation) {
   for (const r of messages) {
     const a = node("article", "", el("requests"));
     a.classList.add("guest-proposal");
-    node("small", `${r.sender_email ?? r.sender} · ${r.state}`, a);
+    const senderLabel =
+      me.owner && r.sender_name && r.sender_email && r.sender_name !== r.sender_email
+        ? `${r.sender_name} (${r.sender_email})`
+        : (r.sender_name ?? r.sender_email ?? r.sender);
+    node("small", `${senderLabel} · ${r.state}`, a);
     node("pre", r.text, a);
     if (["reserved", "uncertain"].includes(r.state))
       node("p", "Unresolved delivery. Keep the same request; never resend under a new ID.", a);
@@ -193,30 +189,90 @@ function renderMessages(messages, scope, generation) {
     }
   }
 }
+function conversationText(parent, text) {
+  // Format a small safe Markdown subset with DOM nodes; never accept raw HTML.
+  let list, code;
+  const inline = (container, value) => {
+    for (const part of value.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)) {
+      if (part.startsWith("**") && part.endsWith("**"))
+        node("strong", part.slice(2, -2), container);
+      else if (part.startsWith("`") && part.endsWith("`"))
+        node("code", part.slice(1, -1), container);
+      else container.append(document.createTextNode(part));
+    }
+  };
+  for (const line of text.split("\n")) {
+    if (line.startsWith("```")) {
+      code = code ? null : node("pre", "", parent);
+      list = null;
+      continue;
+    }
+    if (code) {
+      code.textContent += line + "\n";
+      continue;
+    }
+    if (!line.trim()) {
+      list = null;
+      continue;
+    }
+    const item = line.match(/^(\d+\.|[-*])\s+(.*)$/);
+    if (item) {
+      const kind = /^\d/.test(item[1]) ? "OL" : "UL";
+      if (!list || list.tagName !== kind) list = node(kind.toLowerCase(), "", parent);
+      inline(node("li", "", list), item[2]);
+    } else {
+      list = null;
+      inline(node("p", "", parent), line);
+    }
+  }
+}
 function snapshot(data, scope, generation) {
   if (!active(scope, generation)) return;
   if (data.thread.thread_id !== scope.thread_id) throw Error("Thread identity mismatch");
+  const follow =
+    !current || window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 80;
   current = data;
   el("title").textContent = data.thread.title;
+  document.title = data.thread.title;
+  document.body.classList.toggle("guest-thread", !me.owner);
+  el("guest-header").hidden = me.owner;
+  el("guest-title").textContent = data.thread.title;
+  const remaining = data.permissions.expires_at ? data.permissions.expires_at - Date.now() : NaN;
+  el("guest-expiry").textContent = Number.isFinite(remaining)
+    ? remaining < 3600000
+      ? Math.max(0, Math.ceil(remaining / 60000)) + "m left"
+      : Math.ceil(remaining / 3600000) + "h left"
+    : "";
+  el("guest-model").textContent = data.thread.model ?? "";
   el("disclosure").textContent = data.history;
   if (data.messages) renderMessages(data.messages, scope, generation);
   if (me.owner && data.invitations) renderInvitations(data.invitations, scope, generation);
   el("timeline").replaceChildren();
   for (const item of data.items) {
     const a = node("article", "", el("timeline"));
+    a.classList.add("message-" + item.role);
     node("small", `${item.role} · ${item.status}${item.truncated ? " · truncated" : ""}`, a);
-    node("pre", item.text, a);
+    if (me.owner) node("pre", item.text, a);
+    else conversationText(a, item.text);
   }
   const caps = data.permissions.capabilities,
     canSend = caps.includes("send");
+  el("guest-approval").textContent = canSend
+    ? "Messages use your direct-send permission"
+    : "The owner approves each message";
   el("compose").hidden = !caps.includes("propose");
-  el("submit").textContent = canSend ? "Send to T3" : "Propose message";
+  el("submit").textContent = me.owner ? (canSend ? "Send to T3" : "Propose message") : "\u2191";
+  el("submit").setAttribute("aria-label", canSend ? "Send to T3" : "Propose message");
   el("send-mode").textContent = canSend
     ? "Your permission allows a new T3 turn without owner review. Existing T3 execution approvals still apply."
     : "Your message waits for an authorized reviewer. Proposing it starts no T3 run.";
   el("access").hidden = !me.owner;
   el("copy").hidden = false;
   el("share-guest").hidden = !me.owner;
+  if (!me.owner && follow)
+    requestAnimationFrame(() => {
+      if (active(scope, generation)) window.scrollTo(0, document.documentElement.scrollHeight);
+    });
   status(`${data.thread.status} · ${data.thread.model} · live`);
 }
 async function loadAdmin(scope, generation) {
@@ -282,6 +338,9 @@ el("view").onchange = () => {
 };
 function unavailable() {
   closeDialogs();
+  el("guest-header").hidden = true;
+  el("guest-title").textContent = "";
+  document.title = "Thread unavailable";
   current = null;
   el("title").textContent = "Shared thread unavailable";
   el("disclosure").textContent = "";
@@ -301,6 +360,8 @@ function unavailable() {
 el("retry-access").onclick = () => void open();
 async function open() {
   closeDialogs();
+  document.body.classList.remove("guest-join", "guest-thread");
+  el("guest-header").hidden = true;
   el("sharing-request-card").hidden = true;
   const generation = ++navigation;
   stream?.close();
@@ -388,21 +449,29 @@ async function open() {
   }
   if (hash.get("invitation_id")) {
     el("join-invitation").hidden = false;
-    el("join-identity").textContent =
-      `Signed in as ${me.email}. Only the invited account can join.`;
-    el("join-account").textContent = me.email;
-    el("join-target").textContent = `${scope.host} / ${scope.thread_id}`;
+    document.body.classList.add("guest-join");
+    el("guest-name").value = localStorage.getItem("kadenco-guest-name:" + me.subject) ?? "";
     const invitationId = hash.get("invitation_id");
-    el("join-thread").onclick = async () => {
+    el("join-form").onsubmit = async (event) => {
+      event.preventDefault();
+      if (!el("guest-name").reportValidity()) return;
       if (!active(scope, generation)) return;
+      const displayName = el("guest-name").value.trim();
       el("join-thread").disabled = true;
+      el("guest-name").disabled = true;
       try {
-        await api("invitations/claim", { ...scope, invitation_id: invitationId });
+        await api("invitations/claim", {
+          ...scope,
+          invitation_id: invitationId,
+          display_name: displayName,
+        });
+        localStorage.setItem("kadenco-guest-name:" + me.subject, displayName);
         if (active(scope, generation)) selectTarget(scope);
       } catch (e) {
         if (active(scope, generation)) status(e.message + ". No T3 work started.", true);
       } finally {
         el("join-thread").disabled = false;
+        el("guest-name").disabled = false;
       }
     };
     status("Invitation ready. Join with the account named by the owner.");

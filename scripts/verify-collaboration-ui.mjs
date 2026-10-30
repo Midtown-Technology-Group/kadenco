@@ -66,6 +66,12 @@ const reader = {
             : "Ready for a harmless message. <img src=x onerror=alert(1)>",
           status: "completed",
         },
+        {
+          itemId: "code",
+          type: "assistant_message",
+          text: "```text\ncolumn  value\nalpha   123\n```",
+          status: "completed",
+        },
       ],
     };
   },
@@ -338,14 +344,14 @@ try {
   const invited = await invitedContext.newPage();
   invited.on("pageerror", (error) => errors.push(error.message));
   await invited.goto(invitationUrl);
-  await invited.getByRole("button", { name: "Review access\u2026", exact: true }).click();
-  await invited.getByRole("dialog", { name: "Join shared thread", exact: true }).waitFor();
-  await invited.getByRole("button", { name: "Cancel", exact: true }).click();
-  assert.equal(await invited.locator("#join-dialog").isVisible(), false);
+  await invited.getByRole("heading", { name: "Join a shared thread", exact: true }).waitFor();
   assert.equal(await invited.locator("#timeline").textContent(), "");
-  await invited.getByRole("button", { name: "Review access\u2026", exact: true }).click();
-  await invited.getByRole("button", { name: "Join thread", exact: true }).waitFor();
-  assert.equal(await invited.locator("#timeline").textContent(), "");
+  await invited.getByLabel("Your name", { exact: true }).fill("Thomas Testy");
+  await invited.locator("#guest-name").blur();
+  await invited.screenshot({ path: output + "/exact-guest-join.png", fullPage: false });
+  await invited.setViewportSize({ width: 426, height: 302 });
+  await invited.screenshot({ path: output + "/guest-join-reference-size.png", fullPage: false });
+  await invited.setViewportSize({ width: 1280, height: 720 });
   let releaseClaim, enteredClaim;
   const claimStarted = new Promise((resolve) => (enteredClaim = resolve)),
     claimGate = new Promise((resolve) => (releaseClaim = resolve));
@@ -354,21 +360,40 @@ try {
     await claimGate;
     await route.continue();
   });
-  await invited.getByRole("button", { name: "Join thread", exact: true }).click();
+  await invited.getByRole("button", { name: "Join", exact: true }).click();
   await claimStarted;
-  await invited.getByRole("button", { name: "Cancel", exact: true }).click();
-  assert.equal(await invited.locator("#join-dialog").isVisible(), true);
-  await invited.getByRole("button", { name: "Close access dialog", exact: true }).click();
-  assert.equal(await invited.locator("#join-dialog").isVisible(), true);
-  await invited.keyboard.press("Escape");
-  assert.equal(await invited.locator("#join-dialog").isVisible(), true);
+  assert.equal(await invited.getByRole("button", { name: "Join", exact: true }).isDisabled(), true);
   releaseClaim();
-  await invited.getByRole("heading", { name: "Shared thread canary", exact: true }).waitFor();
+  await invited
+    .locator("#guest-title")
+    .getByText("Shared thread canary", { exact: true })
+    .waitFor();
+  await invited.screenshot({ path: output + "/exact-guest-thread.png", fullPage: false });
+  assert.equal(await invited.locator("#guest-expiry").textContent(), "23h left");
+  assert.equal(await invited.locator("#portal-header").isVisible(), false);
+  assert.equal(await invited.locator("aside").isVisible(), false);
   await owner
     .locator("#invitations")
     .getByText("newguest@example.test - claimed", { exact: false })
     .waitFor();
   await owner.getByRole("button", { name: "Close sharing dialog", exact: true }).click();
+  const grantKey = service.key("newguest", target),
+    namedGrant = store.get("collaboration.grant", grantKey);
+  store.put("collaboration.grant", grantKey, { ...namedGrant, expires_at: Date.now() + 300000 });
+  await invited.locator("#guest-expiry").getByText("5m left", { exact: true }).waitFor();
+  assert.equal(
+    await invited
+      .locator("#timeline pre")
+      .evaluate((el) => getComputedStyle(el).fontFamily.includes("monospace")),
+    true,
+  );
+  await invited.getByLabel("Message", { exact: true }).focus();
+  assert.notEqual(
+    await invited
+      .getByLabel("Message", { exact: true })
+      .evaluate((el) => getComputedStyle(el).outlineStyle),
+    "none",
+  );
   await invited.getByLabel("Message", { exact: true }).fill("New guest proposal from invitation");
   await invited.getByRole("button", { name: "Propose message", exact: true }).click();
   const proposal = owner

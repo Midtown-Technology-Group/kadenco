@@ -8,10 +8,14 @@
     <script type="module" src="/collaborate/app.js"></script>
   </head>
   <body>
-    <header>
+    <header id="portal-header">
       <span class="brand">Kadenco</span>
       <h1>Shared threads</h1>
       <p id="identity">Verifying your MTG sign-in…</p>
+    </header>
+    <header id="guest-header" hidden>
+      <h2 id="guest-title"></h2>
+      <span id="guest-expiry"></span>
     </header>
     <main>
       <aside>
@@ -119,13 +123,18 @@
         <p id="disclosure"></p>
         <div id="timeline" aria-label="Thread messages"></div>
         <section id="join-invitation" hidden>
-          <h2>Join this shared thread</h2>
-          <p id="join-identity"></p>
-          <p>View the conversation and propose messages. The owner decides what is sent to T3.</p>
-          <div class="dialog-actions">
-            <button id="decline-join" type="button" class="secondary">Decline</button
-            ><button id="review-join" type="button">Review access&hellip;</button>
-          </div>
+          <h2>Join a shared thread</h2>
+          <form id="join-form">
+            <label for="guest-name">Your name</label
+            ><input
+              id="guest-name"
+              name="display_name"
+              maxlength="80"
+              required
+              autocomplete="name"
+            /><button id="join-thread" type="submit">Join</button>
+          </form>
+          <p>The owner sees your name and approves each message before the agent gets it.</p>
         </section>
         <dialog
           id="share-dialog"
@@ -194,46 +203,44 @@
             <p id="share-status" role="status" aria-live="polite"></p>
           </section>
         </dialog>
-        <dialog id="join-dialog" aria-labelledby="join-title">
-          <div class="dialog-heading">
-            <span class="eyebrow">ACCESS REQUEST</span
-            ><button
-              id="close-join"
-              type="button"
-              class="icon-button"
-              aria-label="Close access dialog"
-            >
-              &times;
-            </button>
-          </div>
-          <h2 id="join-title">Join shared thread</h2>
-          <p>Review the account and thread before authorizing access.</p>
-          <dl class="scope-summary">
-            <dt>Account</dt>
-            <dd id="join-account"></dd>
-            <dt>Thread</dt>
-            <dd id="join-target"></dd>
-            <dt>Access</dt>
-            <dd>View and propose messages</dd>
-          </dl>
-          <p class="scope-note">
-            The owner approves each proposed message before it reaches T3. This does not link a
-            machine or grant direct execution.
-          </p>
-          <p id="join-status" role="status" aria-live="polite"></p>
-          <div class="dialog-actions">
-            <button id="cancel-join" class="secondary" type="button">Cancel</button
-            ><button id="join-thread" type="button">Join thread</button>
-          </div>
-        </dialog>
+
         <h2 id="requests-title" hidden>Guest proposals and delivery</h2>
         <div id="requests"></div>
         <form id="compose" hidden>
           <label
-            >Message<textarea id="message" maxlength="4000" required rows="4"></textarea>
+            >Message<textarea
+              placeholder="Message"
+              id="message"
+              maxlength="4000"
+              required
+              rows="4"
+            ></textarea>
           </label>
           <p id="send-mode"></p>
-          <button id="submit">Propose message</button>
+          <div class="composer-footer">
+            <button
+              class="guest-attachment"
+              type="button"
+              disabled
+              aria-label="Attachments unavailable in shared threads"
+              title="Attachments unavailable in shared threads"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                aria-hidden="true"
+              >
+                <path d="M8 13l6-6a3 3 0 014 4l-8 8a5 5 0 01-7-7l9-9M6 15l8-8" />
+              </svg>
+            </button>
+            <span id="guest-model"></span>
+            <p id="guest-approval">The owner approves each message</p>
+            <button id="submit" aria-label="Propose message">&#8593;</button>
+          </div>
         </form>
         <details id="access" hidden>
           <summary>Manage access to this thread</summary>

@@ -3,6 +3,12 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.6
+
+- Match native guest join and conversation screens: name/Join form, compact title
+  and expiry, conversation bubbles and bottom composer. Display names remain
+  separate from verified identity and authorization.
+
 ## 0.1.0-alpha.5
 
 - Forward negotiated sharing request/receipt tools through the stdio caller, with

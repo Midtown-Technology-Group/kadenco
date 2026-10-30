@@ -11,7 +11,7 @@ thread's invitation and sends it using their normal communication channel.
 No email is sent by Kadenco. The invitation expires within 24 hours.
 
 The colleague signs in through the existing MTG identity boundary and selects
-**Join thread**. The verified account email must match the invitation. The
+**Join** after entering a display name. The verified account email must match the invitation. The
 first claim binds it to that account subject and grants View + Propose for the
 exact host, thread and native project until the invitation's original expiry.
 The colleague can follow the conversation and submit a proposed message. The
@@ -58,18 +58,19 @@ be duplicated by a fresh request.
 
 ## Access review UI
 
-The alpha.4 candidate follows T3's inline request ? review dialog ? explicit
+The alpha.4 candidate follows T3's inline request, review dialog and explicit
 confirmation pattern. Reference: upstream `LinkRequestCard.tsx` and its
 `WizardHeader`/`WizardPanel`/`WizardFooter` at source
 `6fc9144a60c4a5f45089316ddd5f7371bafd3bf2`. This is an independent HTML/CSS
 implementation; no native T3 source is modified or copied.
 
 Owners choose the colleague, continue to review the exact account/thread,
-View + Propose scope and 23-hour lifetime, then create the invitation. Guests
-see a request card with Decline and Review access. The review modal shows their
-signed-in account and exact target before Join thread. Cancel/Escape grants
-nothing; navigating or losing access closes stale dialogs. Native browser dialog
-behavior traps focus and restores it to the trigger. In-flight submission uses
+View + Propose scope and 23-hour lifetime, then create the invitation.
+In alpha.6, guests enter their display name on the standalone join page and
+select **Join**, alongside the explanation that the owner approves each message.
+The earlier alpha.4 guest Decline/Review access dialog is historical and removed.
+Owner request-review dialogs still trap focus and restore it to the trigger;
+navigating or losing access closes stale dialogs. In-flight submission uses
 the existing synchronous duplicate guard and durable request UUID.
 
 The follow-on thread request interface uses the same invitation authorization.
@@ -96,3 +97,20 @@ This does not inject a custom card into T3's native timeline: no supported
 extension surface for that was found. The requesting thread presents the
 returned review link; the portal owns the matching review modal. No native T3
 source, pairing codes, machine-link grants or credentials are changed.
+
+## Native guest screenshots
+
+Alpha.6 replaces the guest review dialog with the supplied native standalone
+join form: Your name, Join, and the owner-approval explanation. A display name
+is stored on the original exact grant and copied into proposal receipts; it
+never replaces the signed-in subject/email or changes capabilities. Duplicate
+claim preserves the original label. Existing Access sign-in remains required
+before the page is served, so this is not anonymous bearer-link admission.
+
+The joined guest view hides owner/navigation chrome, displays the actual thread
+title and remaining grant lifetime, formats safe conversation text with user
+bubbles, and pins the model/approval composer to the bottom. The model is read
+from native metadata; no provider logo, attachment access or reasoning/tool
+history is invented. Expiry/revocation clears the conversation and header.
+Source identity, exact scope, proposal approval and native execution controls
+remain unchanged. Owner administration remains a separate existing view.

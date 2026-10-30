@@ -41,7 +41,10 @@ export const invitationArgs = targetArgs
   })
   .strict();
 export const claimArgs = targetArgs
-  .extend({ invitation_id: z.string().uuid().toLowerCase() })
+  .extend({
+    invitation_id: z.string().uuid().toLowerCase(),
+    display_name: z.string().trim().min(1).max(80).optional(),
+  })
   .strict();
 export const messageArgs = z
   .object({
@@ -70,6 +73,7 @@ const publicReceipt = (r) => ({
   thread_id: r.thread_id,
   sender: r.sender,
   sender_email: r.sender_email ?? null,
+  sender_name: r.sender_name ?? null,
   text: r.text,
   state: r.state,
   created_at: r.at,
@@ -208,6 +212,7 @@ export class Collaboration {
     return {
       capabilities: this.admin(user) ? ["view", "propose", "send", "review"] : g.capabilities,
       owner: this.admin(user),
+      expires_at: g?.expires_at ?? null,
     };
   }
   async setGrant(user, input) {
@@ -235,6 +240,7 @@ export class Collaboration {
         project_id: source.thread.projectId,
         revision: p.expected_revision + 1,
         changed_by: user.subject,
+        ...(old?.display_name ? { display_name: old.display_name } : {}),
       };
       this.store.put("collaboration.grant", this.key(p.subject, p), record);
       this.store.audit(
@@ -363,6 +369,7 @@ export class Collaboration {
         revision: 1,
         changed_by: r.created_by,
         invitation_id: r.id,
+        display_name: p.display_name ?? user.email,
       };
       this.store.put("collaboration.grant", key, grant);
       this.store.put("collaboration.invitation", r.id, {
@@ -543,6 +550,9 @@ export class Collaboration {
         digest: bodyDigest,
         sender: user.subject,
         sender_email: user.email,
+        sender_name:
+          this.store.get("collaboration.grant", this.key(user.subject, p))?.display_name ??
+          user.email,
         project_id: source.thread.projectId,
         at: this.now(),
         state: p.intent === "send" ? "reserved" : "pending",

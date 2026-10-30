@@ -643,13 +643,18 @@ test("owner creates an email-bound invite before sign-in; one claim grants only 
     f.service.claim(f.users.outsider, { ...f.target, invitation_id: r.id }),
     /invitation_unavailable/,
   );
-  const claim = await f.service.claim(guest, { ...f.target, invitation_id: r.id });
+  const claim = await f.service.claim(guest, {
+    ...f.target,
+    invitation_id: r.id,
+    display_name: "Thomas Testy",
+  });
   assert.deepEqual(claim.capabilities, ["view", "propose"]);
   assert.deepEqual(await f.service.claim(guest, { ...f.target, invitation_id: r.id }), claim);
   assert.equal(f.service.permissions(guest, f.target).capabilities.includes("send"), false);
   await f.service.propose(guest, f.message());
   assert.equal(f.writes.length, 0);
   assert.equal(f.service.messages(f.users.owner, f.target)[0].sender_email, guest.email);
+  assert.equal(f.service.messages(f.users.owner, f.target)[0].sender_name, "Thomas Testy");
   f.service.revokeInvitation(f.users.owner, { ...f.target, invitation_id: r.id });
   await assert.rejects(
     f.service.claim(guest, { ...f.target, invitation_id: r.id }),
@@ -723,4 +728,32 @@ test("claim fences revocation during native read, duplicate subjects and later o
   });
   await assert.rejects(f.service.claim(guest, q), /invitation_unavailable/);
   assert.equal(f.writes.length, 0);
+});
+
+test("owner grant updates preserve the claimed display label without changing verified identity", async (t) => {
+  const f = fixture(t),
+    guest = { subject: "named-guest", email: "guest@example.test" };
+  f.service.identity(guest);
+  const invitation = await f.service.invite(f.users.owner, {
+    ...f.target,
+    request_id: randomUUID(),
+    email: guest.email,
+    expires_at: Date.now() + 60000,
+  });
+  await f.service.claim(guest, {
+    ...f.target,
+    invitation_id: invitation.id,
+    display_name: "Guest Label",
+  });
+  await f.service.setGrant(f.users.owner, {
+    ...f.target,
+    subject: guest.subject,
+    expected_revision: 1,
+    capabilities: ["view", "propose"],
+    expires_at: Date.now() + 120000,
+  });
+  await f.service.propose(guest, f.message());
+  const receipt = f.service.messages(f.users.owner, f.target)[0];
+  assert.equal(receipt.sender_name, "Guest Label");
+  assert.equal(receipt.sender_email, guest.email);
 });
