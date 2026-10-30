@@ -299,6 +299,18 @@ try {
   await owner.getByRole("button", { name: "Create link", exact: true }).click();
   await owner.locator("#copy-invite").waitFor();
   const invitationUrl = await owner.locator("#invite-link").inputValue();
+  await owner.evaluate(() =>
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw Error("clipboard_denied");
+        },
+      },
+    }),
+  );
+  await owner.getByRole("button", { name: "Copy guest link", exact: true }).click();
+  assert.equal(await owner.locator("#share-status").textContent(), "Copy the selected guest link.");
   assert.equal(writes.length, 4);
   await owner.screenshot({ path: output + "/guest-invitation-created.png", fullPage: true });
   const invitedContext = await browser.newContext({
@@ -316,7 +328,23 @@ try {
   await invited.getByRole("button", { name: "Review access\u2026", exact: true }).click();
   await invited.getByRole("button", { name: "Join thread", exact: true }).waitFor();
   assert.equal(await invited.locator("#timeline").textContent(), "");
+  let releaseClaim, enteredClaim;
+  const claimStarted = new Promise((resolve) => (enteredClaim = resolve)),
+    claimGate = new Promise((resolve) => (releaseClaim = resolve));
+  await invited.route("**/collaborate/api/invitations/claim", async (route) => {
+    enteredClaim();
+    await claimGate;
+    await route.continue();
+  });
   await invited.getByRole("button", { name: "Join thread", exact: true }).click();
+  await claimStarted;
+  await invited.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.equal(await invited.locator("#join-dialog").isVisible(), true);
+  await invited.getByRole("button", { name: "Close access dialog", exact: true }).click();
+  assert.equal(await invited.locator("#join-dialog").isVisible(), true);
+  await invited.keyboard.press("Escape");
+  assert.equal(await invited.locator("#join-dialog").isVisible(), true);
+  releaseClaim();
   await invited.getByRole("heading", { name: "Shared thread canary", exact: true }).waitFor();
   await owner
     .locator("#invitations")
@@ -345,6 +373,8 @@ try {
   assert.equal(writes.length, 5);
   await invited.screenshot({ path: output + "/invited-guest-completed.png", fullPage: true });
   await owner.getByRole("button", { name: "Share with guest", exact: true }).click();
+  assert.equal(await owner.locator("#copy-invite").isVisible(), false);
+  assert.equal(await owner.locator("#invite-link").inputValue(), "");
   await owner
     .getByRole("button", { name: "Stop sharing with newguest@example.test", exact: true })
     .click();

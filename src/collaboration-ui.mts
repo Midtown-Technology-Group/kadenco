@@ -4,7 +4,10 @@ const status = (text, error = false) => {
   el("status").textContent = text;
   el("status").classList.toggle("error", error);
   for (const name of ["share", "join"]) {
-    if (dialog(name).open && (error || text.startsWith("Guest link"))) {
+    if (
+      dialog(name).open &&
+      (error || text.startsWith("Guest link") || text === "Copy the selected guest link.")
+    ) {
       el(name + "-status").textContent = text;
       el(name + "-status").classList.toggle("error", error);
     }
@@ -15,12 +18,16 @@ function closeDialogs() {
   for (const name of ["share", "join"]) dialog(name).close();
 }
 for (const name of ["share", "join"]) {
-  el("close-" + name).onclick = () => dialog(name).close();
+  el("close-" + name).onclick = () => {
+    if (!locked && !el("join-thread").disabled) dialog(name).close();
+  };
   dialog(name).addEventListener("cancel", (event) => {
     if (locked || el("join-thread").disabled) event.preventDefault();
   });
 }
-el("cancel-join").onclick = () => dialog("join").close();
+el("cancel-join").onclick = () => {
+  if (!locked && !el("join-thread").disabled) dialog("join").close();
+};
 el("decline-join").onclick = () => {
   location.hash = "";
 };
@@ -399,6 +406,9 @@ el("share-guest").onclick = () => {
   if (me?.owner && current) {
     setInviteStep(false);
     el("invite-form").hidden = false;
+    el("invite-link").value = "";
+    el("invite-link-label").hidden = true;
+    el("copy-invite").hidden = true;
     el("share-status").textContent = "";
     el("guest-share-panel").hidden = false;
     dialog("share").showModal();
