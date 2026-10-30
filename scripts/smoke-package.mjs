@@ -25,6 +25,7 @@ try {
     configPath,
     JSON.stringify({
       port,
+      source: { type: "local-projection", databasePath: "synthetic-unused" },
       stateDirectory: state,
       callbackHosts: [],
       principals: [],
