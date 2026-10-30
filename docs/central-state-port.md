@@ -197,3 +197,59 @@ GitHub pause: authenticated API returned HTTP403 `API rate limit exceeded` at
 The captured response supplied no reset time or Retry-After header. No reset time
 is inferred, no alternate credential is used, and this local slice makes no
 additional API attempts. PR20 stays at e81eed15fc2aa7e463e105d9b444142051dad394.
+
+## Persistent edge and authenticated evidence implementation
+
+The local-only Node modules now provide:
+
+- `journal.ts`: SQLite WAL / synchronous FULL insert-if-absent attempts and
+  immutable outcomes, shared across handles and retained across abrupt process
+  exit. No expiry, automatic clearing or recovery replay is provided. The file
+  must stay on the executor's durable disk; loss of that disk requires manual
+  reconciliation, never an empty replacement treated as safe.
+- `authorization.ts`: exact signed-byte envelopes, live grant/policy revision,
+  expiry/revocation checks and host/project/provider/thread/run bindings. Only
+  continue, create, Standard speed and webhook payloads are accepted; unrelated
+  settings are refused. `consumeAuthorized` compares the reserved central digest
+  and kind and revalidates immediately before the mocked effect. A revocation
+  after this final check remains a native-provider race; no atomic cross-system
+  revocation guarantee is claimed.
+- `snapshot.ts`: bounded signed snapshot packets, opaque ciphertext hashes,
+  complete expected inventory comparison and encryption lineage binding. The
+  expected manifest must come from an independently retained quiesced snapshot;
+  accepting a newly supplied expected manifest from the same packet defeats
+  completeness verification. Signing does not itself prove quiescence.
+
+All cryptographic fixtures generate ephemeral test-only keys. No production key,
+credential, configuration or process was created or changed. These modules are
+not imported by Worker startup or the installed sidecar. The existing Worker
+still refuses activation unconditionally.
+
+Enforceable retirement design: a separately trusted control boundary must deny
+all inventoried old native caller routes and callback-signing routes, disable
+restart/supervisor routes, and negatively test revival of the exact old executable
+and its retained identity. An authenticated report binds the migration ID,
+source snapshot, issuer, issue/expiry times and complete required route inventory;
+`verifyRetirement` rejects missing denials, stale reports and absent revival
+proof. Caller must verify its signed packet using the pinned independent issuer
+key before invoking the structural verifier. The old process cannot self-attest
+retirement. A DO epoch cannot stop alpha6. Actual route enumeration, denial and
+negative probes require a separately reviewed live security transition; none
+are performed by this source work.
+
+Local coverage includes durable reopen and abrupt child exit, partition before
+permit/after effect/before receipt, failed journal reserve/finish, duplicates,
+concurrent handles, immutable outcome, grant revocation/expiry/revision drift,
+wrong exact bindings, central digest mismatch, signed payload tampering, wrong
+keys, incomplete snapshots and retirement negative cases. Journal write failures
+throw and preserve fail-closed dispatch; a failure after an effect retains the
+original attempt marker, so reconnect cannot repeat it.
+
+Unfinished integration ledger: production native operation adapters; central
+persisted project/provider/run/grant bindings (edge validation exists, central
+SQL currently stores digest plus host/thread/originator); authenticated live
+policy source; quiesced source extraction and imported DO inventory readback;
+production key custody and edge journal deployment; current-state rollback
+export; actual externally enforced retirement and end-to-end acceptance. These
+are not represented as completed by local fixtures. No deployment approval is
+being requested before the concrete migration implementation is ready.

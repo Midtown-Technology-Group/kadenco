@@ -5,8 +5,9 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-plugin/types", "node"]
   },
-  "include": ["src/**/*.ts", "spec/**/*.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "spec/**/*.ts", "spec/**/*.mts", "vitest.config.ts"]
 }
