@@ -338,14 +338,14 @@ try {
   const invited = await invitedContext.newPage();
   invited.on("pageerror", (error) => errors.push(error.message));
   await invited.goto(invitationUrl);
-  await invited.getByRole("button", { name: "Review access\u2026", exact: true }).click();
-  await invited.getByRole("dialog", { name: "Join shared thread", exact: true }).waitFor();
-  await invited.getByRole("button", { name: "Cancel", exact: true }).click();
-  assert.equal(await invited.locator("#join-dialog").isVisible(), false);
+  await invited.getByRole("heading", { name: "Join a shared thread", exact: true }).waitFor();
   assert.equal(await invited.locator("#timeline").textContent(), "");
-  await invited.getByRole("button", { name: "Review access\u2026", exact: true }).click();
-  await invited.getByRole("button", { name: "Join thread", exact: true }).waitFor();
-  assert.equal(await invited.locator("#timeline").textContent(), "");
+  await invited.getByLabel("Your name", { exact: true }).fill("Thomas Testy");
+  await invited.locator("#guest-name").blur();
+  await invited.screenshot({ path: output + "/exact-guest-join.png", fullPage: false });
+  await invited.setViewportSize({ width: 426, height: 302 });
+  await invited.screenshot({ path: output + "/guest-join-reference-size.png", fullPage: false });
+  await invited.setViewportSize({ width: 1280, height: 720 });
   let releaseClaim, enteredClaim;
   const claimStarted = new Promise((resolve) => (enteredClaim = resolve)),
     claimGate = new Promise((resolve) => (releaseClaim = resolve));
@@ -354,16 +354,18 @@ try {
     await claimGate;
     await route.continue();
   });
-  await invited.getByRole("button", { name: "Join thread", exact: true }).click();
+  await invited.getByRole("button", { name: "Join", exact: true }).click();
   await claimStarted;
-  await invited.getByRole("button", { name: "Cancel", exact: true }).click();
-  assert.equal(await invited.locator("#join-dialog").isVisible(), true);
-  await invited.getByRole("button", { name: "Close access dialog", exact: true }).click();
-  assert.equal(await invited.locator("#join-dialog").isVisible(), true);
-  await invited.keyboard.press("Escape");
-  assert.equal(await invited.locator("#join-dialog").isVisible(), true);
+  assert.equal(await invited.getByRole("button", { name: "Join", exact: true }).isDisabled(), true);
   releaseClaim();
-  await invited.getByRole("heading", { name: "Shared thread canary", exact: true }).waitFor();
+  await invited
+    .locator("#guest-title")
+    .getByText("Shared thread canary", { exact: true })
+    .waitFor();
+  await invited.screenshot({ path: output + "/exact-guest-thread.png", fullPage: false });
+  assert.equal(await invited.locator("#guest-expiry").textContent(), "23h left");
+  assert.equal(await invited.locator("#portal-header").isVisible(), false);
+  assert.equal(await invited.locator("aside").isVisible(), false);
   await owner
     .locator("#invitations")
     .getByText("newguest@example.test - claimed", { exact: false })

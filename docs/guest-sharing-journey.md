@@ -96,3 +96,20 @@ This does not inject a custom card into T3's native timeline: no supported
 extension surface for that was found. The requesting thread presents the
 returned review link; the portal owns the matching review modal. No native T3
 source, pairing codes, machine-link grants or credentials are changed.
+
+## Native guest screenshots
+
+Alpha.6 replaces the guest review dialog with the supplied native standalone
+join form: Your name, Join, and the owner-approval explanation. A display name
+is stored on the original exact grant and copied into proposal receipts; it
+never replaces the signed-in subject/email or changes capabilities. Duplicate
+claim preserves the original label. Existing Access sign-in remains required
+before the page is served, so this is not anonymous bearer-link admission.
+
+The joined guest view hides owner/navigation chrome, displays the actual thread
+title and remaining grant lifetime, formats safe conversation text with user
+bubbles, and pins the model/approval composer to the bottom. The model is read
+from native metadata; no provider logo, attachment access or reasoning/tool
+history is invented. Expiry/revocation clears the conversation and header.
+Source identity, exact scope, proposal approval and native execution controls
+remain unchanged. Owner administration remains a separate existing view.

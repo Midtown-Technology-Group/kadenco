@@ -643,13 +643,18 @@ test("owner creates an email-bound invite before sign-in; one claim grants only 
     f.service.claim(f.users.outsider, { ...f.target, invitation_id: r.id }),
     /invitation_unavailable/,
   );
-  const claim = await f.service.claim(guest, { ...f.target, invitation_id: r.id });
+  const claim = await f.service.claim(guest, {
+    ...f.target,
+    invitation_id: r.id,
+    display_name: "Thomas Testy",
+  });
   assert.deepEqual(claim.capabilities, ["view", "propose"]);
   assert.deepEqual(await f.service.claim(guest, { ...f.target, invitation_id: r.id }), claim);
   assert.equal(f.service.permissions(guest, f.target).capabilities.includes("send"), false);
   await f.service.propose(guest, f.message());
   assert.equal(f.writes.length, 0);
   assert.equal(f.service.messages(f.users.owner, f.target)[0].sender_email, guest.email);
+  assert.equal(f.service.messages(f.users.owner, f.target)[0].sender_name, "Thomas Testy");
   f.service.revokeInvitation(f.users.owner, { ...f.target, invitation_id: r.id });
   await assert.rejects(
     f.service.claim(guest, { ...f.target, invitation_id: r.id }),
