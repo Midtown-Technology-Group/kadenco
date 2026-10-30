@@ -22,7 +22,10 @@ const run = (command, args, cwd, capture = false) => {
     windowsHide: true,
   });
   if (r.error) throw r.error;
-  if (r.status !== 0) throw Error(`release_command_failed:${command}:${r.status}`);
+  if (r.status !== 0) {
+    if (capture && r.stderr) process.stderr.write(r.stderr.slice(-8192));
+    throw Error(`release_command_failed:${command}:${r.status}`);
+  }
   return r.stdout?.trim();
 };
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -92,7 +95,12 @@ try {
   run(process.execPath, [join(root, "scripts/smoke-package.mjs"), unpacked], root);
   writeFileSync(
     join(output, "sbom.cdx.json"),
-    run(npm, ["sbom", "--omit=dev", "--sbom-format=cyclonedx"], unpacked, true) + "\n",
+    run(
+      npm,
+      ["sbom", "--omit=dev", "--package-lock-only", "--sbom-format=cyclonedx"],
+      unpacked,
+      true,
+    ) + "\n",
   );
   writeFileSync(join(output, "BUILD.json"), JSON.stringify(provenance, null, 2) + "\n");
   cpSync(join(root, "CHANGELOG.md"), join(output, "CHANGELOG.md"));
