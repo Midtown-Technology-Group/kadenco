@@ -162,3 +162,38 @@ workerd tests are clean, but the exact new-head Linux CI log must also be checke
 before calling the CI warning resolved. Real recorded-receipt reconstruction,
 identical/changed receipt replay, different-executor competition and second-begin
 refusal now have explicit tests; reservation reconstruction is labeled as such.
+
+## Local edge preparation (stacked on PR20)
+
+`src/edge.ts` is an inert operation adapter, not an installed executor. It uses
+existing claim/begin/receipt operations, exact returned host/thread binding and a
+required durable atomic attempt journal. Each invocation is bounded; it installs
+no polling or retry loop. Lost begin replies and lost execution/receipt replies
+lead to read-only reconciliation. Reconstructing a consumer must reuse the same
+journal; replacing it is unsafe. The fixture journal is synthetic in-memory only.
+A process crash after begin but before execute sacrifices availability: it does
+not justify repeating an uncertain effect.
+
+`src/migration.ts` compares exact kind/id/hash inventories, snapshot and encryption
+provenance, unresolved effects and a retirement prerequisite. Its inputs are
+untrusted evidence until independently authenticated. `externally_enforced` is a
+reported prerequisite, not proof the module can establish. Every report returns
+`activation_permitted: false`; Worker activation remains unconditionally refused.
+The old alpha6 executable does not consult DO epochs. Its native and signing
+access must be enforceably retired, including restart/revival, before cutover.
+
+Coverage: synthetic partition/duplicate/concurrent-consumer/final-revocation
+cases and one real local SQLite DO reservation -> claim -> begin -> synthetic
+effect -> immutable receipt -> reconnect readback. No production task was sent.
+Remaining: concrete operation payload/schema adapters, project/provider/run and
+grant revision binding in central reservations, persistent edge journal backend,
+authenticated manifest generation over a quiesced source snapshot, bounded import
+verification against the actual DO records, independently verified retirement,
+current-state rollback/export, and installed edge/MCP/portal integration. No
+complete migration or HA claim is made by this slice.
+
+GitHub pause: authenticated API returned HTTP403 `API rate limit exceeded` at
+2026-10-30 22:39:32 UTC (request D7E8:DFC83:9E2468:20924CC:6AE51CA4).
+The captured response supplied no reset time or Retry-After header. No reset time
+is inferred, no alternate credential is used, and this local slice makes no
+additional API attempts. PR20 stays at e81eed15fc2aa7e463e105d9b444142051dad394.

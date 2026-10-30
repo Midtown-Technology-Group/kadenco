@@ -346,3 +346,151 @@ describe("real SQLite DO coordination", () => {
     expect(await response.json()).toEqual({ reason: "forwarding_failed", safe_to_resend: false });
   });
 });
+import { consume, type EdgePorts } from "../src/edge";
+import { verifyMigration } from "../src/migration";
+
+describe("inert edge and migration preparation", () => {
+  const command = { request_id: "stable-id", epoch: 7, host: "local", thread_id: "exact-thread" };
+  function fixture() {
+    const attempts = new Set<string>();
+    let executions = 0,
+      begins = 0,
+      loseBegin = false,
+      loseReceipt = false;
+    const ports: EdgePorts = {
+      journal: {
+        async reserve(id) {
+          if (attempts.has(id)) return false;
+          attempts.add(id);
+          return true;
+        },
+        async finish() {},
+      },
+      async validate() {},
+      async execute() {
+        executions++;
+        return { state: "observed", evidence: "native-receipt" };
+      },
+      async observe() {
+        return { state: "unknown", evidence: "read-only" };
+      },
+      async call(op) {
+        if (op === "receipt") return { state: "pending" };
+        if (op === "claim")
+          return { claimed: true, generation: 1, host: command.host, thread: command.thread_id };
+        if (op === "begin") {
+          begins++;
+          if (loseBegin) throw Error("partition");
+          return { may_attempt: true, request_id: command.request_id, generation: 1 };
+        }
+        if (loseReceipt) throw Error("partition");
+        return { receipt_recorded: true };
+      },
+    };
+    return {
+      ports,
+      counts: () => ({ executions, begins }),
+      loseBegin: () => {
+        loseBegin = true;
+      },
+      loseReceipt: () => {
+        loseReceipt = true;
+      },
+    };
+  }
+  it("lost begin and reconstructed consumer never replay the native effect", async () => {
+    const f = fixture();
+    f.loseBegin();
+    expect((await consume(command, f.ports)).state).toBe("reconcile");
+    await consume(command, { ...f.ports });
+    expect(f.counts()).toEqual({ executions: 0, begins: 1 });
+  });
+  it("lost receipt and duplicate input execute once", async () => {
+    const f = fixture();
+    f.loseReceipt();
+    await consume(command, f.ports);
+    await consume(command, f.ports);
+    expect(f.counts()).toEqual({ executions: 1, begins: 1 });
+  });
+  it("revocation at final validation prevents begin", async () => {
+    const f = fixture();
+    let checks = 0;
+    f.ports.validate = async () => {
+      if (++checks === 2) throw Error("revoked");
+    };
+    await expect(consume(command, f.ports)).rejects.toThrow("revoked");
+    expect(f.counts()).toEqual({ executions: 0, begins: 0 });
+  });
+  it("competing consumers use atomic durable attempt reservation", async () => {
+    const f = fixture();
+    await Promise.all([consume(command, f.ports), consume(command, f.ports)]);
+    expect(f.counts()).toEqual({ executions: 1, begins: 1 });
+  });
+  it("manifest compares exact identities and rejects revival, gaps and uncertain effects", () => {
+    const manifest = {
+      migration_id: "migration",
+      source_snapshot: "snapshot",
+      encryption_provenance: "key-lineage",
+      records: [{ kind: "receipt", id: "id", sha256: "a".repeat(64) }],
+    };
+    const quiet = {
+      snapshot: "snapshot",
+      pending_native_effects: 0,
+      old_writer_retirement: "externally_enforced" as const,
+    };
+    expect(verifyMigration(manifest, manifest, quiet)).toEqual({
+      consistent: true,
+      errors: [],
+      activation_permitted: false,
+    });
+    expect(verifyMigration(manifest, { ...manifest, records: [] }, quiet).consistent).toBe(false);
+    expect(
+      verifyMigration(manifest, manifest, {
+        ...quiet,
+        old_writer_retirement: "unverified",
+        pending_native_effects: 1,
+      }).errors,
+    ).toEqual(["unreconciled_effects", "old_writer_not_retired"]);
+    expect(
+      verifyMigration(
+        manifest,
+        { ...manifest, records: [...manifest.records, ...manifest.records] },
+        quiet,
+      ).consistent,
+    ).toBe(false);
+  });
+});
+
+describe("edge runner against real DO", () => {
+  it("records one synthetic effect and reconnect reads its immutable receipt", async () => {
+    await call("status");
+    await active();
+    const id = "edge-real-" + crypto.randomUUID();
+    await reserve(id);
+    let effects = 0;
+    const seen = new Set<string>();
+    const ports: EdgePorts = {
+      call: (op, body) => call(op, body, "synthetic-agent"),
+      journal: {
+        async reserve(key) {
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        },
+        async finish() {},
+      },
+      async validate() {},
+      async execute() {
+        effects++;
+        return { state: "observed", evidence: "synthetic-only" };
+      },
+      async observe() {
+        return { state: "unknown", evidence: "read-only" };
+      },
+    };
+    const command = { request_id: id, epoch: 7, host: "local", thread_id: "exact-thread" };
+    expect((await consume(command, ports)).state).toBe("recorded");
+    expect((await consume(command, ports)).state).toBe("receipted");
+    expect(effects).toBe(1);
+  });
+});
