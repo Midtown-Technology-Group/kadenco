@@ -14,6 +14,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { askArgs, requestArgs, acknowledgeArgs, conversationArgs } from "../dist/exchange.mjs";
 import { z } from "zod";
 import { ackCommandArgs } from "../dist/commands.mjs";
+import { sharingRequestArgs, sharingReceiptArgs } from "../dist/sharing-requests.mjs";
 import { callerClient } from "./caller-client.mjs";
 
 try {
@@ -29,6 +30,8 @@ try {
       );
       const schemas = remote.hostCaller
         ? {
+            request_thread_sharing: sharingRequestArgs,
+            get_thread_sharing_request: sharingReceiptArgs,
             ask_eddie: hostAskArgs,
             get_eddie_reply: hostGetArgs,
             acknowledge_eddie_reply: hostAckArgs,
@@ -38,6 +41,8 @@ try {
           }
         : {};
       for (const [name, schema, readOnlyHint] of [
+        ["request_thread_sharing", sharingRequestArgs, false],
+        ["get_thread_sharing_request", sharingReceiptArgs, true],
         ["ask_eddie", askArgs, false],
         ["get_eddie_reply", requestArgs, true],
         ["acknowledge_eddie_reply", acknowledgeArgs, false],
@@ -48,6 +53,10 @@ try {
         if (!remote.callerToolNames.includes(name)) continue;
         const description =
           {
+            request_thread_sharing:
+              "Store an exact active-thread sharing request for human scope review. No grant or T3 execution; retain the UUID and present the returned review URL.",
+            get_thread_sharing_request:
+              "Reconcile the exact sharing request receipt. Never create a replacement after uncertainty.",
             ask_eddie:
               "Ask Eddie a passive question. Host-wide callers supply thread_id from the current T3 context; the server validates its active run. Use a stable request UUID; preserve conversation_id and in_reply_to for later rounds.",
             get_eddie_reply: "Retrieve your exact passive reply; never resumes an agent.",
