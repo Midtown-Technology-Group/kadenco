@@ -54,13 +54,24 @@ source deployments remain historical evidence; do not move tags or relabel them.
    a mismatch. Reconcile an uncertain publication/dispatch response before
    retrying; no duplicate workflow dispatch or release on guessed failure.
 
-The repository currently has CI but no artifact-publication workflow or
-published tagged releases verified in this change. The artifact stage above is
-the acceptance contract for that next implementation, not a claim that an
-unsigned source archive or local build is already a CI release. The package
-remains private to prevent accidental npm publication; GitHub source access
-and npm distribution are separate decisions. No new publishing token is needed
-for a future repository-scoped GitHub Actions release.
+The `Release artifact` workflow builds and smoke-tests packages on PRs, and can
+be dispatched on protected main after merge. It has read-only repository
+permissions and uploads one artifact set per exact SHA/attempt. The package
+includes an npm shrinkwrap for production-only, install-script-free installation.
+`BUILD.json`, the CycloneDX production SBOM and `SHA256SUMS` accompany the tarball.
+PR artifacts qualify packaging only; publish the artifact built from the merged
+main commit. Download it by exact run ID, verify all checksums and BUILD source,
+then create an immutable `v<version>` tag at that source and a GitHub prerelease
+with those exact files. Reconcile existing tag/release/assets before publication;
+never replace an asset or move a tag. This uses the existing maintainer GitHub
+connection; the workflow receives no publishing token or production secrets.
+
+Run `node scripts/package-release.mjs` only in a clean Linux checkout after the
+pinned build. It refuses a dirty checkout or an existing output directory. Its
+smoke test imports the extracted package and starts/stops a loopback sidecar
+with a synthetic backend, no sessions and no execution authority. This is
+artifact lifecycle evidence, not real fleet or colleague acceptance. The package
+remains private to prevent accidental npm publication.
 
 ## Deploy, observe and resume
 

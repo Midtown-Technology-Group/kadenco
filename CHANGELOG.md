@@ -5,6 +5,9 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## 0.1.0-alpha.3
 
+- Qualify immutable release packages in clean CI with production-only installation,
+  sidecar lifecycle smoke tests, source/build identity, SBOM and checksums.
+
 Next consolidated candidate after the source-only alpha.2 deployments:
 
 - Email-bound first-time guest invitations, explicit join, in-conversation proposal review and revocation.
