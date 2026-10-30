@@ -9,7 +9,11 @@ const names = [
   "get_eddie_capabilities",
   "acknowledge_eddie_reply",
 ];
-const optionalNames = ["acknowledge_thread_delivery"];
+const optionalNames = [
+  "acknowledge_thread_delivery",
+  "request_thread_sharing",
+  "get_thread_sharing_request",
+];
 export async function connectAgent(path) {
   const launch = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
   if (

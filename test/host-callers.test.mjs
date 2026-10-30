@@ -12,6 +12,8 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { Store } from "../dist/store.mjs";
 import { Bridge } from "../dist/bridge.mjs";
+import { Collaboration } from "../dist/collaboration.mjs";
+import { SharingRequests } from "../dist/sharing-requests.mjs";
 import { HostCallers } from "../dist/host-callers.mjs";
 import { hostCallerOwner } from "../dist/host-caller-scope.mjs";
 import { httpServer } from "../dist/server.mjs";
@@ -563,4 +565,163 @@ test("thread-qualified capability discovery advertises negotiated acknowledgemen
       .available,
     false,
   );
+});
+
+function sharingFixture(t) {
+  const f = fixture(t);
+  f.policy.collaboration = {
+    enabled: true,
+    brokerPrincipal: "eddie",
+    ownerSubjects: ["owner"],
+    origin: "https://portal.example.test",
+    issuer: "https://identity.example.test",
+    audience: "portal",
+    identityProviderId: "entra",
+  };
+  return {
+    ...f,
+    sharing: new SharingRequests(f.bridge),
+    user: { subject: "owner", email: "owner@example.test" },
+    input: {
+      thread_id: "codex",
+      run_id: "run-codex",
+      request_id: randomUUID(),
+      email: "guest@example.test",
+      reason: "Please share this exact thread",
+    },
+  };
+}
+test("thread sharing requests remain inert until owner review and guest acceptance; duplicates reconcile", async (t) => {
+  const f = sharingFixture(t),
+    r = await f.sharing.create("agents", f.input);
+  assert.equal(r.state, "pending");
+  assert.equal(f.store.all("collaboration.invitation").length, 0);
+  assert.equal(f.store.all("collaboration.grant").length, 0);
+  assert.equal(f.store.all("command").length, 0);
+  assert.deepEqual(await f.sharing.create("agents", f.input), r);
+  await assert.rejects(
+    f.sharing.create("agents", { ...f.input, email: "other@example.test" }),
+    /idempotency_conflict/,
+  );
+  assert.throws(() => f.sharing.review({ subject: "stranger" }, r.request_id), /forbidden/);
+  const approved = await f.sharing.decide(f.user, {
+    request_id: r.request_id,
+    decision: "approve",
+  });
+  assert.equal(approved.state, "approved");
+  assert.deepEqual(
+    await f.sharing.decide(f.user, { request_id: r.request_id, decision: "approve" }),
+    approved,
+  );
+  assert.equal(f.store.all("collaboration.invitation").length, 1);
+  assert.equal(f.store.all("collaboration.grant").length, 0);
+  assert.equal(f.store.all("command").length, 0);
+});
+test("sharing requests reject stale runs, rebinding/revocation races and cross-thread receipt reads", async (t) => {
+  const f = sharingFixture(t);
+  await assert.rejects(
+    f.sharing.create("agents", { ...f.input, run_id: "stale" }),
+    /source_run_not_active/,
+  );
+  f.hook(() => {
+    f.policy.principals[1].eddieHostCaller.host = "other";
+  });
+  await assert.rejects(f.sharing.create("agents", f.input), /forbidden/);
+  assert.equal(f.store.all("collaboration.access-request").length, 0);
+});
+test("decline and expired requests grant nothing; approval rechecks caller revocation before invitation commit", async (t) => {
+  const f = sharingFixture(t),
+    r = await f.sharing.create("agents", f.input);
+  assert.throws(
+    () => f.sharing.get("agents", { thread_id: "claude", request_id: r.request_id }),
+    /forbidden/,
+  );
+  assert.equal(
+    (await f.sharing.decide(f.user, { request_id: r.request_id, decision: "decline" })).state,
+    "declined",
+  );
+  await assert.rejects(
+    f.sharing.decide(f.user, { request_id: r.request_id, decision: "approve" }),
+    /idempotency_conflict/,
+  );
+  const next = await f.sharing.create("agents", { ...f.input, request_id: randomUUID() });
+  f.hook(() => {
+    f.policy.principals[1].enabled = false;
+  });
+  await assert.rejects(
+    f.sharing.decide(f.user, { request_id: next.request_id, decision: "approve" }),
+    /forbidden/,
+  );
+  assert.equal(f.store.all("collaboration.invitation").length, 0);
+  assert.equal(f.store.all("collaboration.grant").length, 0);
+});
+
+test("uncertain owner approval reconciles the same invitation and expired requests cannot authorize", async (t) => {
+  const f = sharingFixture(t),
+    r = await f.sharing.create("agents", f.input);
+  const original = Collaboration.prototype.invite;
+  let once = true;
+  t.mock.method(Collaboration.prototype, "invite", async function (...args) {
+    const result = await original.apply(this, args);
+    if (once) {
+      once = false;
+      throw Error("lost_response");
+    }
+    return result;
+  });
+  await assert.rejects(
+    f.sharing.decide(f.user, { request_id: r.request_id, decision: "approve" }),
+    /lost_response/,
+  );
+  assert.equal(
+    f.sharing.get("agents", { thread_id: f.input.thread_id, request_id: r.request_id }).state,
+    "approving",
+  );
+  assert.equal(
+    (await f.sharing.decide(f.user, { request_id: r.request_id, decision: "approve" })).state,
+    "approved",
+  );
+  assert.equal(f.store.all("collaboration.invitation").length, 1);
+  const next = await f.sharing.create("agents", { ...f.input, request_id: randomUUID() });
+  f.store.put("collaboration.access-request", next.request_id, {
+    ...f.store.get("collaboration.access-request", next.request_id),
+    expires_at: 1,
+  });
+  await assert.rejects(
+    f.sharing.decide(f.user, { request_id: next.request_id, decision: "approve" }),
+    /invalid_expiry/,
+  );
+  assert.equal(f.store.all("collaboration.invitation").length, 1);
+});
+
+test("sharing MCP tools require explicit negotiation and never expose owner decisions", async (t) => {
+  const f = sharingFixture(t),
+    server = httpServer(f.bridge);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const client = new Client(
+    { name: "sharing-test", version: "1" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  t.after(async () => {
+    await client.close();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.address().port}/mcp`), {
+      requestInit: {
+        headers: { Authorization: "Bearer " + f.token, "x-kadenco-sharing-requests": "1" },
+      },
+    }),
+  );
+  const tools = (await client.listTools()).tools.map((t) => t.name);
+  assert.equal(tools.includes("request_thread_sharing"), true);
+  assert.equal(tools.includes("get_thread_sharing_request"), true);
+  assert.equal(
+    tools.some((name) => /approve|decision|grant/.test(name)),
+    false,
+  );
+  const r = await client.callTool({ name: "request_thread_sharing", arguments: f.input });
+  assert.equal(r.isError, undefined);
+  assert.equal(r.structuredContent.state, "pending");
+  assert.equal(f.store.all("collaboration.invitation").length, 0);
 });

@@ -2,11 +2,12 @@
 // Browser acceptance against the real HTTP/UI surface with synthetic identities
 // and a recording native boundary. This is not production SSO/execution proof.
 import { chromium } from "playwright-core";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
 import { Store } from "../dist/store.mjs";
+import { SharingRequests } from "../dist/sharing-requests.mjs";
 import { Collaboration } from "../dist/collaboration.mjs";
 import { collaborationServer } from "../dist/collaboration-http.mjs";
 
@@ -91,7 +92,24 @@ const commands = {
     };
   },
 };
-const bridge = { policy: () => policy, store, fleetReads: reader, commands };
+policy.principals.push({
+  id: "agents",
+  eddieHostCaller: { host: "local", reviewer: "eddie", expiresAt: Date.now() + 3600000 },
+});
+const bridge = {
+  policy: () => policy,
+  store,
+  fleetReads: reader,
+  commands,
+  now: Date.now,
+  exchanges: {
+    inbox: () => {},
+    source: async (_identity, p) => {
+      const source = await reader.read("eddie", p);
+      return { ...source, thread: { ...source.thread, activeRunId: "source-run" } };
+    },
+  },
+};
 const service = new Collaboration({ policy: bridge.policy, store, reader, commands });
 for (const subject of ["owner", "proposer", "sender", "viewer"])
   service.identity({ subject, email: subject + "@example.test" });
@@ -350,6 +368,34 @@ try {
     .click();
   await invited.locator("#guest-access").waitFor();
   assert.equal(await invited.locator("#timeline").textContent(), "");
+  const sharing = new SharingRequests(bridge);
+  const request = await sharing.create("agents", {
+    thread_id: target.thread_id,
+    request_id: randomUUID(),
+    run_id: "source-run",
+    email: "threadguest@example.test",
+    reason: "Please let my colleague follow this thread",
+  });
+  const invitationsBefore = store.all("collaboration.invitation").length;
+  await owner.goto(request.review_url);
+  await owner.getByRole("button", { name: "Review request", exact: false }).click();
+  await owner.getByRole("dialog", { name: "Authorize thread sharing", exact: true }).waitFor();
+  await owner.keyboard.press("Escape");
+  assert.equal(store.all("collaboration.invitation").length, invitationsBefore);
+  await owner.getByRole("button", { name: "Review request", exact: false }).click();
+  await owner.screenshot({ path: output + "/thread-sharing-authorization.png", fullPage: false });
+  await owner.getByRole("button", { name: "Authorize sharing", exact: true }).click();
+  await owner.getByLabel("Guest invitation link", { exact: true }).waitFor();
+  assert.equal(store.all("collaboration.invitation").length, invitationsBefore + 1);
+  assert.equal(
+    store.all("collaboration.grant").some((r) => r.email === "threadguest@example.test"),
+    false,
+  );
+  await owner.reload();
+  await owner.getByRole("button", { name: "Review request", exact: false }).click();
+  await owner.getByLabel("Guest invitation link", { exact: true }).waitFor();
+  assert.equal(store.all("collaboration.invitation").length, invitationsBefore + 1);
+  assert.equal(writes.length, 5);
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({

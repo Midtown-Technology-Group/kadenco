@@ -72,5 +72,27 @@ nothing; navigating or losing access closes stale dialogs. Native browser dialog
 behavior traps focus and restores it to the trigger. In-flight submission uses
 the existing synchronous duplicate guard and durable request UUID.
 
-This adapts the existing invitation authorization only. It does not expose a
-native machine-link approval or introduce a thread-initiated access-request API.
+The follow-on thread request interface uses the same invitation authorization.
+`request_thread_sharing` accepts only the bound caller's exact thread, observed
+active run, stable UUID, recipient email and reason. `get_thread_sharing_request`
+reconciles that exact receipt. New tools require the
+`x-kadenco-sharing-requests: 1` discovery capability; existing callers retain
+their prior surface. Updated public terminal adapters support `request_sharing`
+and `get_sharing` using the same connection file and credential.
+
+The receipt returns an owner review URL. The owner sees the reason as untrusted
+agent text, exact host/thread/run, recipient, View + Propose scope and bounded
+lifetime, then explicitly authorizes or declines. Approval reserves an auditable
+state before native reads and creates one invitation under the same UUID;
+uncertain outcomes remain approving until the owner reconciles that request.
+Caller revocation/rebinding, IdP scope changes and project drift fail closed,
+including the final invitation transaction. Decline never creates a grant.
+Requests expire after 24 hours; approval creates an invitation for at most
+23 hours and never extends the request's original expiry. A source read proves
+the observed native run, not an atomic provider guarantee that it remains active
+at storage time. The inert request cannot grant access or start execution.
+
+This does not inject a custom card into T3's native timeline: no supported
+extension surface for that was found. The requesting thread presents the
+returned review link; the portal owns the matching review modal. No native T3
+source, pairing codes, machine-link grants or credentials are changed.

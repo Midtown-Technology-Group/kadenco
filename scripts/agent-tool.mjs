@@ -9,6 +9,8 @@ let client,
 try {
   const [connection, mode, path, ...extra] = process.argv.slice(2);
   const name = {
+    request_sharing: "request_thread_sharing",
+    get_sharing: "get_thread_sharing_request",
     ask: "ask_eddie",
     get: "get_eddie_reply",
     conversation: "get_eddie_conversation",

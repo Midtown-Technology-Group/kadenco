@@ -245,7 +245,8 @@ export class Collaboration {
       return record;
     });
   }
-  async invite(user, input) {
+  async invite(user, input, authorize = (_source?: any) => {}) {
+    authorize();
     const p = invitationArgs.parse(input),
       scope = this.identityScope();
     if (!this.admin(user)) throw fail("forbidden");
@@ -266,6 +267,7 @@ export class Collaboration {
       throw fail("thread_unavailable");
     return this.store.transaction(() => {
       if (!this.admin(user) || this.identityScope() !== scope) throw fail("forbidden");
+      authorize(source);
       this.reader.grant(this.config().brokerPrincipal, p.host, source.thread.projectId);
       if (p.expires_at <= this.now()) throw fail("invalid_expiry");
       const prior = this.store.get("collaboration.invitation", p.request_id);

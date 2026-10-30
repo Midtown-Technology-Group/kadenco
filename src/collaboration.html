@@ -69,6 +69,53 @@
           <p id="guest-identity"></p>
           <button id="retry-access" type="button">Check access again</button>
         </div>
+        <section id="sharing-request-card" hidden class="request-card">
+          <h2>Thread sharing request</h2>
+          <p id="request-reason"></p>
+          <p id="request-source"></p>
+          <div class="dialog-actions">
+            <button id="review-sharing-request" type="button">Review request&hellip;</button>
+          </div>
+        </section>
+        <dialog id="request-dialog" aria-labelledby="request-title">
+          <div class="dialog-heading">
+            <span class="eyebrow">THREAD REQUEST</span
+            ><button
+              id="close-request"
+              class="icon-button"
+              type="button"
+              aria-label="Close request dialog"
+            >
+              &times;
+            </button>
+          </div>
+          <h2 id="request-title">Authorize thread sharing</h2>
+          <p>
+            The requesting agent cannot approve this request. Review the exact target and recipient.
+          </p>
+          <dl class="scope-summary">
+            <dt>Account</dt>
+            <dd id="request-email"></dd>
+            <dt>Thread</dt>
+            <dd id="request-target"></dd>
+            <dt>Run</dt>
+            <dd id="request-run"></dd>
+            <dt>Access</dt>
+            <dd>View and propose messages</dd>
+          </dl>
+          <p class="scope-note">
+            Approval creates an account-bound invitation, valid for up to 23 hours. The colleague
+            must sign in and join. Every proposed message waits for owner approval.
+          </p>
+          <p id="request-status" role="status" aria-live="polite"></p>
+          <div id="request-actions" class="dialog-actions">
+            <button id="decline-sharing-request" class="secondary" type="button">Decline</button
+            ><button id="approve-sharing-request" type="button">Authorize sharing</button>
+          </div>
+          <label id="request-link-label" hidden
+            >Guest invitation link<input id="request-link" readonly
+          /></label>
+        </dialog>
         <p id="disclosure"></p>
         <div id="timeline" aria-label="Thread messages"></div>
         <section id="join-invitation" hidden>

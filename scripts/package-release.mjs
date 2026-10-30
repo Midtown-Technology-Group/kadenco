@@ -56,6 +56,16 @@ try {
     "RELEASE.md",
   ])
     cpSync(join(root, file), join(stage, file), { recursive: true });
+  mkdirSync(join(stage, "scripts"));
+  for (const file of [
+    "agent-client.mjs",
+    "agent-tool.mjs",
+    "caller-client.mjs",
+    "caller-mcp.mjs",
+    "caller.mjs",
+    "pi-eddie.mjs",
+  ])
+    cpSync(join(root, "scripts", file), join(stage, "scripts", file));
   const provenance = {
     version: pkg.version,
     source,
@@ -71,6 +81,7 @@ try {
     scripts: { start: "node dist/main.mjs" },
     files: [
       "dist",
+      "scripts",
       "src",
       "docs",
       "npm-shrinkwrap.json",
