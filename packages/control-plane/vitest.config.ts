@@ -9,8 +9,23 @@ export default defineConfig({
       miniflare: {
         bindings: {
           AUTH_POLICY: JSON.stringify({
+            revision: 1,
             fleet: "test-fleet",
             principals: [
+              {
+                id: "owner2",
+                role: "owner",
+                hosts: ["local"],
+                tokenSha256: hash("synthetic-owner2"),
+                expiresAt: 4102444800000,
+              },
+              {
+                id: "agent2",
+                role: "executor",
+                hosts: ["local"],
+                tokenSha256: hash("synthetic-agent2"),
+                expiresAt: 4102444800000,
+              },
               {
                 id: "owner",
                 role: "owner",

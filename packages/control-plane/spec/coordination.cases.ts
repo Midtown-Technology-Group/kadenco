@@ -147,7 +147,7 @@ describe("real SQLite DO coordination", () => {
       ),
     ).toEqual({ reason: "immutable_outcome" });
   });
-  it("old worker revival cannot mutate after epoch changes; persisted receipts survive reconstruction", async () => {
+  it("old worker revival cannot mutate after epoch changes; reservations survive reconstruction", async () => {
     await active();
     await reserve("epoch");
     await runInDurableObject(stub(), (_obj, state) => {
@@ -169,7 +169,7 @@ describe("real SQLite DO coordination", () => {
         controller = c;
       },
     });
-    const pending = stub().fetch(
+    const pending = exports.default.fetch(
       new Request("https://test.invalid/claim", {
         method: "POST",
         headers: { authorization: "Bearer synthetic-agent", "content-type": "application/json" },
@@ -184,5 +184,165 @@ describe("real SQLite DO coordination", () => {
     );
     controller.close();
     expect(await (await pending).json()).toEqual({ reason: "forbidden" });
+  });
+  it("originator revocation before claim and before begin denies dispatch", async () => {
+    await active();
+    await reserve("origin-revoked");
+    await reserve("origin-pending");
+    const claimed = await claim("origin-revoked");
+    await call("revoke", { principal_id: "owner" }, "synthetic-owner2");
+    expect(await claim("origin-pending")).toEqual({ reason: "forbidden" });
+    expect(await claim("origin-revoked")).toEqual({ reason: "forbidden" });
+    expect(
+      await call(
+        "begin",
+        { epoch: 7, request_id: "origin-revoked", generation: claimed.generation },
+        "synthetic-agent",
+      ),
+    ).toEqual({ reason: "forbidden" });
+  });
+  it("policy tightening persists across stale bootstrap/reconstruction and applies owner expiry and host removal", async () => {
+    await active();
+    await reserve("tightened");
+    const current = await runInDurableObject(stub(), (_obj, state) =>
+      JSON.parse(
+        state.storage.sql.exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one()
+          .value,
+      ),
+    );
+    current.revision = 2;
+    current.principals.find((p: any) => p.id === "owner").expiresAt = 1;
+    expect(
+      await call("tighten_policy", { expected_revision: 1, policy: current }, "synthetic-owner2"),
+    ).toEqual({ revision: 2 });
+    await abortAllDurableObjects();
+    expect(await claim("tightened")).toEqual({ reason: "forbidden" });
+    current.revision = 3;
+    current.principals.find((p: any) => p.id === "agent").hosts = [];
+    expect(
+      await call("tighten_policy", { expected_revision: 2, policy: current }, "synthetic-owner2"),
+    ).toEqual({ revision: 3 });
+    expect(await claim("tightened")).toEqual({ reason: "forbidden" });
+    current.revision = 4;
+    current.principals.find((p: any) => p.id === "agent").hosts = ["local"];
+    expect(
+      await call("tighten_policy", { expected_revision: 3, policy: current }, "synthetic-owner2"),
+    ).toEqual({ reason: "forbidden" });
+  });
+  it("different executors compete once; second begin fails and recorded receipts survive restart", async () => {
+    await active();
+    await reserve("different-executors");
+    const attempts = await Promise.all([
+      claim("different-executors"),
+      call(
+        "claim",
+        { epoch: 7, request_id: "different-executors", lease_ms: 1000 },
+        "synthetic-agent2",
+      ),
+    ]);
+    const winner = attempts.find((r) => r.claimed);
+    expect(attempts.filter((r) => r.claimed)).toHaveLength(1);
+    const token = winner.executor === "agent" ? "synthetic-agent" : "synthetic-agent2";
+    const input = { epoch: 7, request_id: "different-executors", generation: winner.generation };
+    expect(await call("begin", input, token)).toMatchObject({ may_attempt: true });
+    expect(await call("begin", input, token)).toEqual({ reason: "fenced" });
+    const receipt = { native_request_id: "exact-native-id", observed: "terminal" };
+    await call("record_receipt", { ...input, receipt }, token);
+    await abortAllDurableObjects();
+    expect(await call("receipt", { request_id: input.request_id })).toMatchObject({
+      state: "receipted",
+      receipt,
+    });
+    expect(await call("record_receipt", { ...input, receipt }, token)).toMatchObject({
+      receipt_recorded: true,
+    });
+    expect(
+      await call("record_receipt", { ...input, receipt: { observed: "changed" } }, token),
+    ).toEqual({ reason: "immutable_outcome" });
+    expect(await call("receipt", { request_id: input.request_id }, "synthetic-owner2")).toEqual({
+      reason: "forbidden",
+    });
+    expect(
+      await call(
+        "reserve",
+        {
+          epoch: 7,
+          request_id: input.request_id,
+          host: "local",
+          thread_id: "exact-thread",
+          kind: "continue",
+          payload_sha256: "a".repeat(64),
+        },
+        "synthetic-owner2",
+      ),
+    ).toEqual({ reason: "idempotency_conflict" });
+  });
+  it("unauthorized streamed requests finish body transfer before response", async () => {
+    const stream = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = stream.writable.getWriter();
+    const pending = exports.default.fetch(
+      new Request("https://test.invalid/claim", {
+        method: "POST",
+        headers: { authorization: "Bearer invalid", "content-type": "application/json" },
+        body: stream.readable,
+      }),
+    );
+    await writer.write(new TextEncoder().encode("{}"));
+    await writer.close();
+    expect(await (await pending).json()).toEqual({ reason: "forbidden" });
+  });
+  it("malformed JSON stays a client error while storage failure is a sanitized server fault", async () => {
+    const malformed = await exports.default.fetch(
+      new Request("https://test.invalid/status", {
+        method: "POST",
+        headers: { authorization: "Bearer synthetic-owner", "content-type": "application/json" },
+        body: "{",
+      }),
+    );
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toEqual({ reason: "invalid_request" });
+    await call("status");
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("DROP TABLE commands");
+    });
+    const response = await stub().fetch(
+      new Request("https://test.invalid/status", {
+        method: "POST",
+        headers: { authorization: "Bearer synthetic-owner", "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ reason: "internal_error", safe_to_resend: false });
+    await abortAllDurableObjects();
+  });
+  it("forwarding rejection yields an uncertain controlled response without exposing failure text", async () => {
+    await call("status");
+    const config = await runInDurableObject(
+      stub(),
+      (_obj, state) =>
+        state.storage.sql.exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one()
+          .value,
+    );
+    const handler = (await import("../src/worker")).default;
+    const response = await handler.fetch(
+      new Request("https://test.invalid/status", {
+        method: "POST",
+        headers: { authorization: "Bearer synthetic-owner", "content-type": "application/json" },
+        body: "{}",
+      }),
+      {
+        AUTH_POLICY: config,
+        FLEETS: {
+          getByName: () => ({
+            fetch: async () => {
+              throw Error("sensitive detail");
+            },
+          }),
+        },
+      } as any,
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ reason: "forwarding_failed", safe_to_resend: false });
   });
 });

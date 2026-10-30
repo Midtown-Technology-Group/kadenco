@@ -129,3 +129,36 @@ Primary references:
 - https://github.com/openai/tunnel-client/blob/master/docs/deployment/kubernetes-dedicated.md
 - https://github.com/openai/tunnel-client/blob/master/docs/configuration.md
 - https://github.com/openai/tunnel-client/blob/master/docs/protocol.md
+
+## Review corrections: originating authority and tightening
+
+Commands now retain the originating principal identity. Claim and one-use begin
+revalidate that principal's current persisted role, host scope, expiry and
+revocation in the same SQL transaction as dispatch-state mutation. Rows created
+by an earlier schema without a known originator remain fenced; no guessed owner
+backfill is permitted. Duplicate reservation by a different owner conflicts even
+with identical payload identity. Owners read only their own receipts; executors
+read only receipts assigned to them, under current executor authorization.
+Receipt recording is bookkeeping after uncertainty and does not authorize another
+effect; a still-authorized executor can retain that evidence after originator
+revocation. This is not independent native execution verification.
+
+The policy has a monotonic revision and an owner-only compare-and-set tightening
+operation. It can remove principals, remove hosts and shorten expiry. Existing
+IDs, token hashes, fleet binding and roles cannot change or be added; role changes
+are incomparable capabilities and require a separate reviewed mechanism. Stale
+bootstrap manifests never overwrite persisted tightening. This is a candidate
+protocol, not permission to map production principals. The later operation port
+must bind the exact originating project/provider/native run and grant revision/
+expiry, and validate all those current native grants before effects. Host-only
+coordination metadata is not a substitute for that native authorization layer.
+
+Review identified an uncaught CI workerd request-stream error despite passing
+tests. The front Worker now owns and completes the bounded body before passing bytes
+to the DO, so a forwarded stream cannot outlive its producer request. Early
+errors also cancel unread bodies. A streamed-body transfer regression exercises
+the real front Worker and finishes its producer before awaiting rejection. Local
+workerd tests are clean, but the exact new-head Linux CI log must also be checked
+before calling the CI warning resolved. Real recorded-receipt reconstruction,
+identical/changed receipt replay, different-executor competition and second-begin
+refusal now have explicit tests; reservation reconstruction is labeled as such.

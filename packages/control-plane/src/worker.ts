@@ -7,7 +7,7 @@ type Principal = {
   hosts: string[];
   expiresAt: number;
 };
-type Policy = { fleet: string; principals: Principal[] };
+type Policy = { revision: number; fleet: string; principals: Principal[] };
 type Env = Cloudflare.Env & { AUTH_POLICY?: string };
 const fail = (reason: string): never => {
   throw new Error(reason);
@@ -20,6 +20,7 @@ function policy(raw: string | undefined): Policy {
   if (!raw || raw.length > 65536) fail("configuration_required");
   const p = JSON.parse(raw!) as Policy;
   str(p.fleet);
+  if (number(p.revision) < 1) fail("configuration_required");
   if (!Array.isArray(p.principals) || p.principals.length > 100) fail("configuration_required");
   const ids = new Set(),
     tokens = new Set();
@@ -66,11 +67,17 @@ async function bounded(request: Request) {
     bytes.set(part, offset);
     offset += part.length;
   }
-  const value = JSON.parse(new TextDecoder().decode(bytes));
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    fail("invalid_request");
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("invalid_request");
   return value as Record<string, unknown>;
 }
 function keys(p: Record<string, unknown>, names: string[]) {
+  if (!p || typeof p !== "object" || Array.isArray(p)) fail("invalid_request");
   if (Object.keys(p).some((k) => !names.includes(k))) fail("invalid_request");
 }
 const json = (value: unknown, status = 200) =>
@@ -83,10 +90,28 @@ export class FleetState extends DurableObject<Env> {
     CREATE TABLE IF NOT EXISTS revoked(id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS control(id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL,mode TEXT NOT NULL,migration TEXT);
     INSERT OR IGNORE INTO control VALUES(1,0,'staging',NULL);
-    CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,host TEXT NOT NULL,thread TEXT NOT NULL,kind TEXT NOT NULL,digest TEXT NOT NULL,state TEXT NOT NULL,executor TEXT,generation INTEGER NOT NULL DEFAULT 0,lease_until INTEGER,receipt TEXT);
+    CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,host TEXT NOT NULL,thread TEXT NOT NULL,kind TEXT NOT NULL,digest TEXT NOT NULL,originator TEXT,state TEXT NOT NULL,executor TEXT,generation INTEGER NOT NULL DEFAULT 0,lease_until INTEGER,receipt TEXT);
     CREATE TABLE IF NOT EXISTS imported(kind TEXT NOT NULL,id TEXT NOT NULL,ciphertext TEXT NOT NULL,PRIMARY KEY(kind,id));
     CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT NOT NULL,action TEXT NOT NULL,subject TEXT NOT NULL,at INTEGER NOT NULL);
   `);
+    if (
+      !ctx.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(commands)")
+        .toArray()
+        .some((c) => c.name === "originator")
+    )
+      ctx.storage.sql.exec("ALTER TABLE commands ADD COLUMN originator TEXT");
+  }
+  currentPolicy() {
+    return policy(
+      this.sql().exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one().value,
+    );
+  }
+  originAuthorized(r: { originator: string | null; host: string }) {
+    const origin =
+      this.currentPolicy().principals.find((p) => p.id === r.originator && p.role === "owner") ??
+      fail("forbidden");
+    this.authorized(origin, r.host);
   }
   sql() {
     return this.ctx.storage.sql;
@@ -115,6 +140,7 @@ export class FleetState extends DurableObject<Env> {
           thread: string;
           kind: string;
           digest: string;
+          originator: string | null;
           state: string;
           executor: string | null;
           generation: number;
@@ -142,6 +168,29 @@ export class FleetState extends DurableObject<Env> {
         ...state,
         commands: this.sql().exec<{ n: number }>("SELECT COUNT(*) n FROM commands").one().n,
       };
+    }
+    if (op === "tighten_policy") {
+      keys(p, ["expected_revision", "policy"]);
+      if (a.role !== "owner") fail("forbidden");
+      const old = this.currentPolicy(),
+        next = policy(JSON.stringify(p.policy));
+      if (number(p.expected_revision) !== old.revision || next.revision !== old.revision + 1)
+        fail("fenced");
+      if (next.fleet !== old.fleet) fail("forbidden");
+      for (const n of next.principals) {
+        const prior = old.principals.find((v) => v.id === n.id);
+        if (
+          !prior ||
+          prior.role !== n.role ||
+          prior.tokenSha256 !== n.tokenSha256 ||
+          n.expiresAt > prior.expiresAt ||
+          n.hosts.some((h) => !prior.hosts.includes(h))
+        )
+          fail("forbidden");
+      }
+      this.sql().exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(next));
+      this.audit(a, op, String(next.revision));
+      return { revision: next.revision };
     }
     if (op === "revoke") {
       keys(p, ["principal_id"]);
@@ -194,6 +243,7 @@ export class FleetState extends DurableObject<Env> {
       keys(p, ["request_id"]);
       const r = this.row(str(p.request_id));
       this.authorized(a, r.host);
+      if (a.role === "owner" ? r.originator !== a.id : r.executor !== a.id) fail("forbidden");
       return { ...r, receipt: r.receipt ? JSON.parse(r.receipt) : null, safe_to_resend: false };
     }
     if (state.mode !== "active") fail("not_active");
@@ -213,23 +263,31 @@ export class FleetState extends DurableObject<Env> {
       )
         fail("invalid_request");
       const old = this.sql()
-        .exec<{ host: string; thread: string; kind: string; digest: string }>(
-          "SELECT host,thread,kind,digest FROM commands WHERE id=?",
-          id,
-        )
+        .exec<{
+          host: string;
+          thread: string;
+          kind: string;
+          digest: string;
+          originator: string | null;
+        }>("SELECT host,thread,kind,digest,originator FROM commands WHERE id=?", id)
         .toArray()[0];
       if (
         old &&
-        (old.host !== host || old.thread !== thread || old.kind !== kind || old.digest !== digest)
+        (old.originator !== a.id ||
+          old.host !== host ||
+          old.thread !== thread ||
+          old.kind !== kind ||
+          old.digest !== digest)
       )
         fail("idempotency_conflict");
       this.sql().exec(
-        "INSERT OR IGNORE INTO commands(id,host,thread,kind,digest,state) VALUES(?,?,?,?,?,'pending')",
+        "INSERT OR IGNORE INTO commands(id,host,thread,kind,digest,originator,state) VALUES(?,?,?,?,?,?,'pending')",
         id,
         host,
         thread,
         kind,
         digest,
+        a.id,
       );
       this.audit(a, op, id);
       return this.row(id);
@@ -238,6 +296,7 @@ export class FleetState extends DurableObject<Env> {
       r = this.row(id);
     this.authorized(a, r.host);
     if (a.role !== "executor") fail("forbidden");
+    if (op === "claim" || op === "begin") this.originAuthorized(r);
     if (op === "claim") {
       keys(p, ["epoch", "request_id", "lease_ms"]);
       const ttl = number(p.lease_ms);
@@ -303,6 +362,7 @@ export class FleetState extends DurableObject<Env> {
         }),
       );
     } catch (e) {
+      if (request.body && !request.bodyUsed) await request.body.cancel();
       const reason = e instanceof Error ? e.message : "invalid_request";
       const allowed = [
         "configuration_required",
@@ -317,21 +377,48 @@ export class FleetState extends DurableObject<Env> {
         "cutover_not_implemented",
         "immutable_outcome",
       ];
-      return json(
-        { reason: allowed.includes(reason) ? reason : "invalid_request" },
-        reason === "forbidden" ? 403 : 409,
-      );
+      if (!allowed.includes(reason)) {
+        console.error("control-plane unexpected error", typeof e);
+        return json({ reason: "internal_error", safe_to_resend: false }, 500);
+      }
+      return json({ reason }, reason === "forbidden" ? 403 : 409);
     }
   }
 }
 export default {
   async fetch(request: Request, env: Env) {
     try {
-      if (request.method !== "POST") return json({ reason: "method_not_allowed" }, 405);
+      if (request.method !== "POST") {
+        await request.body?.cancel();
+        return json({ reason: "method_not_allowed" }, 405);
+      }
       const config = policy(env.AUTH_POLICY);
-      return env.FLEETS.getByName(config.fleet).fetch(request);
-    } catch {
-      return json({ reason: "configuration_required" }, 503);
+      // Own and finish the bounded incoming stream before handing bytes to another actor.
+      // This avoids a forwarded stream outliving the request that produced it.
+      const body = await bounded(request);
+      const target = env.FLEETS.getByName(config.fleet);
+      try {
+        return await target.fetch(
+          new Request(request.url, {
+            method: "POST",
+            headers: request.headers,
+            body: JSON.stringify(body),
+          }),
+        );
+      } catch {
+        return json({ reason: "forwarding_failed", safe_to_resend: false }, 503);
+      }
+    } catch (e) {
+      if (request.body && !request.bodyUsed) await request.body.cancel();
+      const reason = e instanceof Error ? e.message : "configuration_required";
+      return json(
+        {
+          reason: ["invalid_request", "body_too_large"].includes(reason)
+            ? reason
+            : "configuration_required",
+        },
+        reason === "body_too_large" ? 413 : reason === "invalid_request" ? 400 : 503,
+      );
     }
   },
 } satisfies ExportedHandler<Env>;
