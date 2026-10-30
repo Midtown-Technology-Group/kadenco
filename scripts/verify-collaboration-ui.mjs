@@ -281,6 +281,21 @@ try {
     );
   }, target);
   await owner.getByLabel("Colleague work email", { exact: true }).fill("newguest@example.test");
+  assert.equal(
+    await owner.getByRole("dialog", { name: "Share with guest", exact: true }).isVisible(),
+    true,
+  );
+  await owner.keyboard.press("Escape");
+  assert.equal(await owner.locator("#share-dialog").isVisible(), false);
+  assert.equal(await owner.evaluate(() => document.activeElement.id), "share-guest");
+  await owner.getByRole("button", { name: "Share with guest", exact: true }).click();
+  await owner.getByRole("button", { name: "Continue", exact: true }).click();
+  await owner
+    .locator("#invite-review")
+    .getByText("View and propose messages", { exact: true })
+    .waitFor();
+  assert.equal(writes.length, 4);
+  await owner.screenshot({ path: output + "/share-access-review.png", fullPage: false });
   await owner.getByRole("button", { name: "Create link", exact: true }).click();
   await owner.locator("#copy-invite").waitFor();
   const invitationUrl = await owner.locator("#invite-link").inputValue();
@@ -293,6 +308,12 @@ try {
   const invited = await invitedContext.newPage();
   invited.on("pageerror", (error) => errors.push(error.message));
   await invited.goto(invitationUrl);
+  await invited.getByRole("button", { name: "Review access\u2026", exact: true }).click();
+  await invited.getByRole("dialog", { name: "Join shared thread", exact: true }).waitFor();
+  await invited.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.equal(await invited.locator("#join-dialog").isVisible(), false);
+  assert.equal(await invited.locator("#timeline").textContent(), "");
+  await invited.getByRole("button", { name: "Review access\u2026", exact: true }).click();
   await invited.getByRole("button", { name: "Join thread", exact: true }).waitFor();
   assert.equal(await invited.locator("#timeline").textContent(), "");
   await invited.getByRole("button", { name: "Join thread", exact: true }).click();
@@ -301,6 +322,7 @@ try {
     .locator("#invitations")
     .getByText("newguest@example.test - claimed", { exact: false })
     .waitFor();
+  await owner.getByRole("button", { name: "Close sharing dialog", exact: true }).click();
   await invited.getByLabel("Message", { exact: true }).fill("New guest proposal from invitation");
   await invited.getByRole("button", { name: "Propose message", exact: true }).click();
   const proposal = owner
@@ -322,6 +344,7 @@ try {
   await invited.getByRole("heading", { name: "Shared thread canary", exact: true }).waitFor();
   assert.equal(writes.length, 5);
   await invited.screenshot({ path: output + "/invited-guest-completed.png", fullPage: true });
+  await owner.getByRole("button", { name: "Share with guest", exact: true }).click();
   await owner
     .getByRole("button", { name: "Stop sharing with newguest@example.test", exact: true })
     .click();

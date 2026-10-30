@@ -55,3 +55,22 @@ The browser requests a 23-hour invitation to leave clock-skew margin below the
 24-hour server maximum. It retains uncertain request IDs until their expiry;
 only expired requests are discarded, so near-expiry live invitations cannot
 be duplicated by a fresh request.
+
+## Access review UI
+
+The alpha.4 candidate follows T3's inline request ? review dialog ? explicit
+confirmation pattern. Reference: upstream `LinkRequestCard.tsx` and its
+`WizardHeader`/`WizardPanel`/`WizardFooter` at source
+`6fc9144a60c4a5f45089316ddd5f7371bafd3bf2`. This is an independent HTML/CSS
+implementation; no native T3 source is modified or copied.
+
+Owners choose the colleague, continue to review the exact account/thread,
+View + Propose scope and 23-hour lifetime, then create the invitation. Guests
+see a request card with Decline and Review access. The review modal shows their
+signed-in account and exact target before Join thread. Cancel/Escape grants
+nothing; navigating or losing access closes stale dialogs. Native browser dialog
+behavior traps focus and restores it to the trigger. In-flight submission uses
+the existing synchronous duplicate guard and durable request UUID.
+
+This adapts the existing invitation authorization only. It does not expose a
+native machine-link approval or introduce a thread-initiated access-request API.

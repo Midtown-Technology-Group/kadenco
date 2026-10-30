@@ -3,6 +3,11 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.4
+
+- T3-inspired sharing and access-review dialogs with explicit scope, cancellation,
+  keyboard focus management and no authorization changes.
+
 ## 0.1.0-alpha.3
 
 - Qualify immutable release packages in clean CI with production-only installation,

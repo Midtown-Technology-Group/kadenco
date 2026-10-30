@@ -3,6 +3,53 @@ const el = (id) => document.getElementById(id) as HTMLInputElement;
 const status = (text, error = false) => {
   el("status").textContent = text;
   el("status").classList.toggle("error", error);
+  for (const name of ["share", "join"]) {
+    if (dialog(name).open && (error || text.startsWith("Guest link"))) {
+      el(name + "-status").textContent = text;
+      el(name + "-status").classList.toggle("error", error);
+    }
+  }
+};
+const dialog = (name) => document.getElementById(name + "-dialog") as HTMLDialogElement;
+function closeDialogs() {
+  for (const name of ["share", "join"]) dialog(name).close();
+}
+for (const name of ["share", "join"]) {
+  el("close-" + name).onclick = () => dialog(name).close();
+  dialog(name).addEventListener("cancel", (event) => {
+    if (locked || el("join-thread").disabled) event.preventDefault();
+  });
+}
+el("cancel-join").onclick = () => dialog("join").close();
+el("decline-join").onclick = () => {
+  location.hash = "";
+};
+el("review-join").onclick = () => {
+  el("join-status").textContent = "";
+  dialog("join").showModal();
+};
+let inviteStep = "recipient";
+function setInviteStep(review) {
+  inviteStep = review ? "access" : "recipient";
+  el("invite-recipient").hidden = review;
+  el("invite-review").hidden = !review;
+  el("invite-back").hidden = !review;
+  el("invite-next").hidden = review;
+  el("create-invite").hidden = !review;
+  el("recipient-step").removeAttribute("aria-current");
+  el("access-step").removeAttribute("aria-current");
+  el(review ? "access-step" : "recipient-step").setAttribute("aria-current", "step");
+}
+el("invite-next").onclick = () => {
+  if (!el("invite-email").reportValidity()) return;
+  el("review-email").textContent = el("invite-email").value.trim().toLowerCase();
+  el("review-target").textContent = `${target.host} / ${target.thread_id}`;
+  setInviteStep(true);
+  el("create-invite").focus();
+};
+el("invite-back").onclick = () => {
+  setInviteStep(false);
+  el("invite-email").focus();
 };
 let me,
   target,
@@ -226,6 +273,7 @@ el("view").onchange = () => {
   if (!el("view").checked) for (const cap of ["propose", "send", "review"]) el(cap).checked = false;
 };
 function unavailable() {
+  closeDialogs();
   current = null;
   el("title").textContent = "Shared thread unavailable";
   el("disclosure").textContent = "";
@@ -244,6 +292,7 @@ function unavailable() {
 }
 el("retry-access").onclick = () => void open();
 async function open() {
+  closeDialogs();
   const generation = ++navigation;
   stream?.close();
   current = null;
@@ -277,6 +326,8 @@ async function open() {
     el("join-invitation").hidden = false;
     el("join-identity").textContent =
       `Signed in as ${me.email}. Only the invited account can join.`;
+    el("join-account").textContent = me.email;
+    el("join-target").textContent = `${scope.host} / ${scope.thread_id}`;
     const invitationId = hash.get("invitation_id");
     el("join-thread").onclick = async () => {
       if (!active(scope, generation)) return;
@@ -345,10 +396,20 @@ async function open() {
   }
 }
 el("share-guest").onclick = () => {
-  if (me?.owner && current) el("guest-share-panel").hidden = false;
+  if (me?.owner && current) {
+    setInviteStep(false);
+    el("invite-form").hidden = false;
+    el("share-status").textContent = "";
+    el("guest-share-panel").hidden = false;
+    dialog("share").showModal();
+  }
 };
 el("invite-form").onsubmit = (event) => {
   event.preventDefault();
+  if (inviteStep !== "access") {
+    el("invite-next").click();
+    return;
+  }
   const scope = target,
     generation = navigation;
   if (!me?.owner || !current) return;
@@ -379,6 +440,7 @@ el("invite-form").onsubmit = (event) => {
     el("invite-link").value = link.href;
     el("invite-link-label").hidden = false;
     el("copy-invite").hidden = false;
+    el("invite-form").hidden = true;
     await loadAdmin(scope, generation);
     if (active(scope, generation))
       status(
