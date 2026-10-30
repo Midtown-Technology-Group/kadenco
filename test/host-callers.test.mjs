@@ -725,3 +725,57 @@ test("sharing MCP tools require explicit negotiation and never expose owner deci
   assert.equal(r.structuredContent.state, "pending");
   assert.equal(f.store.all("collaboration.invitation").length, 0);
 });
+
+test("terminal sharing modes traverse agent client, stdio and HTTP using one retained request", async (t) => {
+  const f = sharingFixture(t),
+    server = httpServer(f.bridge);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const directory = mkdtempSync(join(tmpdir(), "kadenco-sharing-cli-")),
+    launch = join(directory, "launch.mjs"),
+    connection = join(directory, "connection.json"),
+    input = join(directory, "input.json");
+  writeFileSync(
+    launch,
+    `process.env.EDDIE_T3_CALLER_TOKEN=${JSON.stringify(f.token)};process.env.EDDIE_T3_CALLER_ENDPOINT=${JSON.stringify(`http://127.0.0.1:${server.address().port}/mcp`)};await import(${JSON.stringify(pathToFileURL(resolve("scripts/caller-mcp.mjs")).href)});`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    connection,
+    JSON.stringify({ host: "local", command: process.execPath, args: [launch] }),
+  );
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const run = async (mode, data) => {
+    writeFileSync(input, JSON.stringify(data));
+    const child = spawn(process.execPath, ["scripts/agent-tool.mjs", connection, mode, input], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "",
+      err = "";
+    child.stdout.on("data", (b) => (out += b));
+    child.stderr.on("data", (b) => (err += b));
+    const code = await new Promise((resolve, reject) => {
+      child.once("exit", resolve);
+      child.once("error", reject);
+    });
+    assert.equal(code, 0, err);
+    assert.equal((out + err).includes(f.token), false);
+    return JSON.parse(out);
+  };
+  const created = await run("request_sharing", f.input);
+  assert.equal(created.state, "pending");
+  assert.equal(created.execution_started, false);
+  const receipt = await run("get_sharing", {
+    request_id: f.input.request_id,
+    thread_id: f.input.thread_id,
+  });
+  assert.deepEqual(receipt, created);
+  assert.deepEqual(await run("request_sharing", f.input), created);
+  assert.equal(f.store.all("collaboration.access-request").length, 1);
+  assert.equal(f.store.all("collaboration.invitation").length, 0);
+  assert.equal(f.store.all("collaboration.grant").length, 0);
+  assert.equal(f.store.all("command").length, 0);
+});

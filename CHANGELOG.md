@@ -3,6 +3,11 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.5
+
+- Forward negotiated sharing request/receipt tools through the stdio caller, with
+  a full terminal-to-MCP regression. Alpha.4 backend/UI shipped without this path.
+
 ## 0.1.0-alpha.4
 
 - Durable exact-thread sharing requests with owner scope review, explicit approval,
