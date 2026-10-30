@@ -11,6 +11,7 @@ ui-proof/
 .vp/
 coverage/
 dist/
+dist-disabled/
 release-output/
 
 .wrangler/

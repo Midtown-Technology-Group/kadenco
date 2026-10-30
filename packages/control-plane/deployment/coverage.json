@@ -1,0 +1,237 @@
+{
+  "surfaces": [
+    {
+      "status": "deferred",
+      "name": "events/subscriptions/passive inbox",
+      "source": "src/bridge.mts, src/fleet-events.mts",
+      "reason": "Opaque state migration only. Distributed observation cursor/outbox claims, callback signing continuity and dedup not ported. Must not start a second monitor."
+    },
+    {
+      "status": "deferred",
+      "name": "collaboration",
+      "source": "src/collaboration.mts, src/collaboration-http.mts, src/sharing-requests.mts",
+      "reason": "Identity/grants/invitations/proposals retained in snapshot only. Access/Entra verification, review dispatch and SSE remain local."
+    },
+    {
+      "status": "deferred",
+      "name": "owner/caller MCP routes",
+      "source": "src/server.mts, src/host-callers.mts",
+      "reason": "Role-specific MCP registration, delivery/reply acknowledgements, waiting and request receipts not exposed centrally. Existing caller connection untouched."
+    },
+    {
+      "status": "local-integrated",
+      "name": "policy revocation",
+      "source": "packages/control-plane/src/worker.ts, packages/control-plane/src/authorization.ts",
+      "reason": "Persisted scope tightening, grant revision and origin/executor revocation checks. Production identity policy mapping not provisioned."
+    },
+    {
+      "status": "deferred",
+      "name": "diagnostics",
+      "source": "src/diagnostics.mts, src/synchronous-timings.mts",
+      "reason": "Retained encrypted rows migrate, but runtime metrics/stall profiling and central retention queries are not replaced."
+    },
+    {
+      "status": "deferred",
+      "name": "budgets",
+      "source": "src/commands.mts, src/thread-settings.mts, src/bridge.mts",
+      "reason": "Existing sidecar budget enforcement reused by adapters; no distributed transactional budget authority. Multiple executors must remain disabled."
+    },
+    {
+      "status": "local-integrated",
+      "name": "creation/continuations/thread settings",
+      "source": "packages/control-plane/src/native-adapter.ts",
+      "reason": "Exact schemas and existing enforcing services through mocked transport; production service composition and routes disabled."
+    },
+    {
+      "status": "fixture-only",
+      "name": "state migration/rollback",
+      "source": "packages/control-plane/operator/local.mts",
+      "reason": "Quiescence/segmented import/readback/current-state export tested. Not a production restore tool or live rollback promise."
+    },
+    {
+      "status": "deferred",
+      "name": "cadence oversight",
+      "source": "src/server.mts",
+      "reason": "No goal-level central overview is claimed; associated stored records retained opaquely if present."
+    }
+  ],
+  "schema": 1,
+  "replacement_ready": false,
+  "owner_tools": [
+    {
+      "central_route": "deferred",
+      "name": "acknowledge_eddie_reply",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "acknowledge_thread_delivery",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "answer_thread_request",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "ask_eddie",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "continue_thread",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "create_thread",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_delivery_receipt",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_eddie_capabilities",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_eddie_conversation",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_eddie_reply",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_fleet_communication_status",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_fleet_event_status",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_inbox_subscription_status",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_task_logs",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_task_result",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_thread_capabilities",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_thread_creation_options",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_thread_lane",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_thread_sharing_request",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_thread_speed_receipt",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "get_visibility_diagnostics",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "inventory_threads",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "list_eddie_requests",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "list_fleet_hosts",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "list_sessions",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "read_eddie_request",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "read_thread",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "read_thread_options",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "read_thread_requests",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "reply_to_request",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "request_followup",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "request_thread_sharing",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "resolve_thread",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "search_threads",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    },
+    {
+      "central_route": "deferred",
+      "name": "set_thread_speed_standard",
+      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+    }
+  ]
+}

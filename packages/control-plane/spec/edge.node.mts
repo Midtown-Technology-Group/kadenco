@@ -406,3 +406,63 @@ test("segmented migration authenticates large inventories and refuses dropped or
   assert.equal(writes, 0);
   assert.equal((await importSegments(packets, key, expected, call)).verified_records, 60);
 });
+
+import {
+  bootstrap,
+  quiesce,
+  snapshot,
+  migrate,
+  rollback,
+  fixtureRoot,
+} from "../operator/local.mts";
+test("operator fixture staging imports to real workerd and rollback exports current receipts", async () => {
+  const root = bootstrap();
+  try {
+    assert.throws(() => snapshot(root), /fixture_not_quiesced/);
+    quiesce(root);
+    snapshot(root);
+    assert.equal((await migrate(root)).verified_records, 3);
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(join(root, "fixture.db"));
+    db.prepare("INSERT INTO records VALUES(?,?,?)").run(
+      "command",
+      "new-current-receipt",
+      "new-current-evidence",
+    );
+    db.close();
+    assert.equal(rollback(root).records, 4);
+    const output = new DatabaseSync(join(root, "rollback-current.db"), { readOnly: true });
+    assert.equal(
+      output.prepare("SELECT value FROM records WHERE id=?").get("new-current-receipt")?.value,
+      "new-current-evidence",
+    );
+    output.close();
+    assert.throws(() => rollback(root), /rollback_candidate_exists/);
+    assert.throws(() => fixtureRoot(tmpdir()), /fixture_path_required|ENOENT/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("coverage ledger accounts for every registered tool and disabled entry refuses all requests", async () => {
+  const { readFileSync } = await import("node:fs");
+  const server = readFileSync(new URL("../../../src/server.mts", import.meta.url), "utf8");
+  const tools = [
+    ...new Set([...server.matchAll(/register\(\s*"([a-z_]+)"/g)].map((m) => m[1])),
+  ].sort();
+  const coverage = JSON.parse(
+    readFileSync(new URL("../deployment/coverage.json", import.meta.url), "utf8"),
+  );
+  assert.deepEqual(coverage.owner_tools.map((t: { name: string }) => t.name).sort(), tools);
+  assert.equal(coverage.replacement_ready, false);
+  const disabled = (await import("../deployment/disabled.ts")).default;
+  assert.equal(disabled.fetch().status, 503);
+  const { spawnSync } = await import("node:child_process");
+  const denied = spawnSync(process.execPath, [
+    new URL("../operator/deny-deploy.mjs", import.meta.url).pathname.replace(
+      /^\/([A-Za-z]:)/,
+      "$1",
+    ),
+  ]);
+  assert.notEqual(denied.status, 0);
+});
