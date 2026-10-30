@@ -8,7 +8,7 @@ modified or copied. It joins the alpha.3 candidate.
 From an opened thread, the owner chooses **Share with guest**, enters the
 colleague's work email and chooses **Create link**. The owner copies that
 thread's invitation and sends it using their normal communication channel.
-No email is sent by Kadenco. The invitation expires within24 hours.
+No email is sent by Kadenco. The invitation expires within 24 hours.
 
 The colleague signs in through the existing MTG identity boundary and selects
 **Join thread**. The verified account email must match the invitation. The
@@ -42,3 +42,16 @@ revocation clears the guest view. Regression tests cover wrong/foreign identity,
 expiry, duplicate claim, request conflict, existing grant and a revocation race.
 Live acceptance still requires a real colleague's own sign-in and an explicit
 owner invitation; synthetic evidence is not a live-user or native-execution claim.
+
+Identity provenance: Kadenco validates the signed Access application JWT and
+independently resolves its identity with Access. Subject and email must match
+that response, and the identity must come from the configured exact Entra IdP.
+Cloudflare documents the application-token email as verified by the IdP:
+[application token claims](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/).
+There is no assumed `verified_primary_email` claim. This trusts the configured
+Entra identity boundary; it does not provide independent mailbox verification.
+
+The browser requests a 23-hour invitation to leave clock-skew margin below the
+24-hour server maximum. It retains uncertain request IDs until their expiry;
+only expired requests are discarded, so near-expiry live invitations cannot
+be duplicated by a fresh request.

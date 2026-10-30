@@ -356,6 +356,10 @@ el("invite-form").onsubmit = (event) => {
     const key = pendingKey(scope) + ":invitation",
       email = el("invite-email").value.trim().toLowerCase();
     let request = JSON.parse(localStorage.getItem(key) ?? "null");
+    if (request && request.expires_at <= Date.now()) {
+      localStorage.removeItem(key);
+      request = null;
+    }
     if (request && request.email !== email)
       throw Error("Reconcile the previous invitation before inviting a different account");
     if (!request) {
@@ -363,7 +367,7 @@ el("invite-form").onsubmit = (event) => {
         ...scope,
         email,
         request_id: crypto.randomUUID(),
-        expires_at: Date.now() + 86400000,
+        expires_at: Date.now() + 82800000,
       };
       localStorage.setItem(key, JSON.stringify(request));
     }

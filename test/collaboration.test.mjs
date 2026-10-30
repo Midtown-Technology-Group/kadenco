@@ -424,6 +424,7 @@ test("MTG authentication validates issuer/audience/signature/expiry and exact En
     await assert.rejects(authenticate(token, c), /authentication_required/);
   for (const patch of [
     { user_uuid: "other" },
+    { email: "spoofed@example.test" },
     { idp: { id: randomUUID(), type: "azureAD" } },
     { idp: { id: c.identityProviderId, type: "onetimepin" } },
     { service_token_status: true },

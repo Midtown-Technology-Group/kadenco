@@ -73,6 +73,9 @@ export function accessIdentity({
       });
       if (!response.ok) throw fail("authentication_required");
       const identity = await boundedJson(response);
+      // Access documents its signed app-token email as IdP-verified. Require
+      // the matching independently resolved identity and exact configured Entra
+      // provider; do not infer authority from arbitrary custom verification claims.
       if (
         identity.service_token_status ||
         identity.service_token_id ||

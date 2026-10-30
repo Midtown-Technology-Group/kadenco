@@ -260,6 +260,26 @@ try {
   await owner.goto(base + "/collaborate/#" + new URLSearchParams(target));
   await owner.getByRole("heading", { name: "Shared thread canary", exact: true }).waitFor();
   await owner.getByRole("button", { name: "Share with guest", exact: true }).click();
+  await owner.evaluate(async (target) => {
+    const me = await (await fetch("/collaborate/api/me")).json();
+    const key =
+      "t3-collaboration:" +
+      me.identity_scope +
+      ":" +
+      me.subject +
+      ":" +
+      new URLSearchParams(target) +
+      ":invitation";
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        ...target,
+        email: "old@example.test",
+        request_id: crypto.randomUUID(),
+        expires_at: Date.now() - 1000,
+      }),
+    );
+  }, target);
   await owner.getByLabel("Colleague work email", { exact: true }).fill("newguest@example.test");
   await owner.getByRole("button", { name: "Create link", exact: true }).click();
   await owner.locator("#copy-invite").waitFor();
