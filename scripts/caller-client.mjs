@@ -28,7 +28,11 @@ export async function callerClient() {
     await client.connect(
       new StreamableHTTPClientTransport(url, {
         requestInit: {
-          headers: { Authorization: "Bearer " + token, "x-kadenco-delivery-ack": "1" },
+          headers: {
+            Authorization: "Bearer " + token,
+            "x-kadenco-delivery-ack": "1",
+            "x-kadenco-sharing-requests": "1",
+          },
         },
         fetch: (url, options) =>
           fetch(url, { ...options, redirect: "error", signal: AbortSignal.timeout(30000) }),
@@ -42,6 +46,8 @@ export async function callerClient() {
       names.some(
         (n) =>
           ![
+            "request_thread_sharing",
+            "get_thread_sharing_request",
             "ask_eddie",
             "get_eddie_reply",
             "acknowledge_eddie_reply",

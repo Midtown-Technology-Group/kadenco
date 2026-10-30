@@ -5,6 +5,9 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## 0.1.0-alpha.4
 
+- Durable exact-thread sharing requests with owner scope review, explicit approval,
+  decline, duplicate suppression and uncertain-outcome reconciliation.
+
 - T3-inspired sharing and access-review dialogs with explicit scope, cancellation,
   keyboard focus management and no authorization changes.
 

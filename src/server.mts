@@ -19,6 +19,7 @@ import {
   localhostOriginValidation,
 } from "@modelcontextprotocol/node";
 import { z } from "zod";
+import { SharingRequests, sharingRequestArgs, sharingReceiptArgs } from "./sharing-requests.mjs";
 import { threadOptionsArgs, standardSpeedArgs, speedReceiptArgs } from "./thread-settings.mjs";
 import {
   exchangeEvent,
@@ -256,7 +257,12 @@ function safeResult(data) {
   };
 }
 
-export function makeMcp(bridge: Bridge, owner: string, deliveryAcknowledgements = false) {
+export function makeMcp(
+  bridge: Bridge,
+  owner: string,
+  deliveryAcknowledgements = false,
+  sharingRequests = false,
+) {
   const principal = bridge.policy().principals.find((p) => p.id === owner && p.enabled !== false);
   const capabilities: ServerCapabilities & { events?: Record<string, never> } =
     principal?.eddieHostCaller ? {} : { events: {} };
@@ -447,6 +453,23 @@ export function makeMcp(bridge: Bridge, owner: string, deliveryAcknowledgements 
     );
   if (principal?.eddieHostCaller) {
     const callers = new HostCallers(bridge, deliveryAcknowledgements);
+    if (sharingRequests && bridge.policy().collaboration?.enabled) {
+      const sharing = new SharingRequests(bridge);
+      register(
+        "request_thread_sharing",
+        "Store a human approval request to share this exact active thread with a named colleague. Returns a review URL; never grants access or starts work. Retain the request UUID after uncertainty.",
+        sharingRequestArgs,
+        false,
+        (p) => sharing.create(owner, p),
+      );
+      register(
+        "get_thread_sharing_request",
+        "Read this caller/thread exact sharing-request receipt. Human approval and guest acceptance are separate; never resend under a new UUID.",
+        sharingReceiptArgs,
+        true,
+        (p) => sharing.get(owner, p),
+      );
+    }
     if (deliveryAcknowledgements)
       register(
         "acknowledge_thread_delivery",
@@ -856,7 +879,13 @@ export function httpServer(bridge) {
     try {
       const handler = toNodeHandler(
         createMcpHandler(
-          () => makeMcp(bridge, owner, req.headers["x-kadenco-delivery-ack"] === "1"),
+          () =>
+            makeMcp(
+              bridge,
+              owner,
+              req.headers["x-kadenco-delivery-ack"] === "1",
+              req.headers["x-kadenco-sharing-requests"] === "1",
+            ),
           {
             legacy: "reject",
             maxRequestBodySize: 65536,

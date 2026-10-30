@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { localhostHostValidation } from "@modelcontextprotocol/node";
+import { SharingRequests } from "./sharing-requests.mjs";
 import { Collaboration, targetArgs } from "./collaboration.mjs";
 
 const fail = (reason) => Object.assign(new Error(reason), { reason });
@@ -102,6 +103,7 @@ export function collaborationServer(
     reader: bridge.fleetReads,
     commands: bridge.commands,
   });
+  const sharing = new SharingRequests(bridge);
   const host = localhostHostValidation(),
     streams = new Set<ServerResponse>(),
     perUser = new Map();
@@ -145,6 +147,8 @@ export function collaborationServer(
       }
       const p = Object.fromEntries(url.searchParams);
       if (req.method === "GET") {
+        if (url.pathname === "/collaborate/api/sharing-request")
+          return json(res, 200, sharing.review(user, p.request_id));
         if (url.pathname === "/collaborate/api/me") return json(res, 200, service.identity(user));
         if (url.pathname === "/collaborate/api/threads")
           return json(res, 200, { threads: service.list(user) });
@@ -232,7 +236,10 @@ export function collaborationServer(
         const body = await boundedJson({ body: req.iterator({ destroyOnReturn: false }) }, 16384);
         live();
         let data;
-        if (url.pathname === "/collaborate/api/grants") data = await service.setGrant(user, body);
+        if (url.pathname === "/collaborate/api/sharing-decisions")
+          data = await sharing.decide(user, body);
+        else if (url.pathname === "/collaborate/api/grants")
+          data = await service.setGrant(user, body);
         else if (url.pathname === "/collaborate/api/invitations")
           data = await service.invite(user, body);
         else if (url.pathname === "/collaborate/api/invitations/claim")

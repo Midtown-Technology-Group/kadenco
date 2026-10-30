@@ -3,7 +3,7 @@ const el = (id) => document.getElementById(id) as HTMLInputElement;
 const status = (text, error = false) => {
   el("status").textContent = text;
   el("status").classList.toggle("error", error);
-  for (const name of ["share", "join"]) {
+  for (const name of ["share", "join", "request"]) {
     if (
       dialog(name).open &&
       (error || text.startsWith("Guest link") || text === "Copy the selected guest link.")
@@ -13,20 +13,21 @@ const status = (text, error = false) => {
     }
   }
 };
+let requestBusy = false;
 const dialog = (name) => document.getElementById(name + "-dialog") as HTMLDialogElement;
 function closeDialogs() {
-  for (const name of ["share", "join"]) dialog(name).close();
+  for (const name of ["share", "join", "request"]) dialog(name).close();
 }
-for (const name of ["share", "join"]) {
+for (const name of ["share", "join", "request"]) {
   el("close-" + name).onclick = () => {
-    if (!locked && !el("join-thread").disabled) dialog(name).close();
+    if (!locked && !requestBusy && !el("join-thread").disabled) dialog(name).close();
   };
   dialog(name).addEventListener("cancel", (event) => {
-    if (locked || el("join-thread").disabled) event.preventDefault();
+    if (locked || requestBusy || el("join-thread").disabled) event.preventDefault();
   });
 }
 el("cancel-join").onclick = () => {
-  if (!locked && !el("join-thread").disabled) dialog("join").close();
+  if (!locked && !requestBusy && !el("join-thread").disabled) dialog("join").close();
 };
 el("decline-join").onclick = () => {
   location.hash = "";
@@ -300,6 +301,7 @@ function unavailable() {
 el("retry-access").onclick = () => void open();
 async function open() {
   closeDialogs();
+  el("sharing-request-card").hidden = true;
   const generation = ++navigation;
   stream?.close();
   current = null;
@@ -329,6 +331,61 @@ async function open() {
   }
   const scope = Object.freeze({ host: hash.get("host"), thread_id: hash.get("thread_id") });
   target = scope;
+  if (hash.get("sharing_request_id")) {
+    const requestId = hash.get("sharing_request_id");
+    try {
+      const r = await api("sharing-request?" + query({ request_id: requestId }));
+      if (!active(scope, generation)) return;
+      if (r.host !== scope.host || r.thread_id !== scope.thread_id)
+        throw Error("identity_mismatch");
+      el("sharing-request-card").hidden = false;
+      el("request-reason").textContent = r.reason;
+      el("request-source").textContent = `${r.host} / ${r.thread_id} - ${r.state}`;
+      el("request-email").textContent = r.email;
+      el("request-target").textContent = `${r.host} / ${r.thread_id}`;
+      el("request-run").textContent = r.run_id;
+      el("request-status").textContent = `Request: ${r.state}. No access granted by this request.`;
+      el("request-link-label").hidden = true;
+      el("request-actions").hidden = !["pending", "approving"].includes(r.state);
+      const showResult = (result) => {
+        el("request-status").textContent = `Request: ${result.state}. No T3 work started.`;
+        el("request-actions").hidden = true;
+        if (result.invitation_id) {
+          const url = new URL("/collaborate/", location.origin);
+          url.hash = query({ ...scope, invitation_id: result.invitation_id });
+          el("request-link").value = url.href;
+          el("request-link-label").hidden = false;
+        }
+      };
+      if (r.state === "approved") showResult(r);
+      el("review-sharing-request").onclick = () => dialog("request").showModal();
+      let deciding = false;
+      const decide = async (decision) => {
+        if (deciding || !active(scope, generation)) return;
+        deciding = true;
+        requestBusy = true;
+        el("approve-sharing-request").disabled = el("decline-sharing-request").disabled = true;
+        try {
+          const result = await api("sharing-decisions", { request_id: requestId, decision });
+          if (active(scope, generation)) showResult(result);
+        } catch (e) {
+          if (active(scope, generation))
+            el("request-status").textContent =
+              `${e.message}. Review the same request to reconcile; no automatic retry.`;
+        } finally {
+          deciding = false;
+          requestBusy = false;
+          el("approve-sharing-request").disabled = el("decline-sharing-request").disabled = false;
+        }
+      };
+      el("approve-sharing-request").onclick = () => void decide("approve");
+      el("decline-sharing-request").onclick = () => void decide("decline");
+      status("Sharing request awaits your review. Agent text is evidence, not authority.");
+    } catch (e) {
+      if (active(scope, generation)) status(e.message, true);
+    }
+    return;
+  }
   if (hash.get("invitation_id")) {
     el("join-invitation").hidden = false;
     el("join-identity").textContent =
