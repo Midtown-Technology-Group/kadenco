@@ -1,6 +1,6 @@
 {
   "name": "kadenco",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "private": true,
   "description": "Experimental MCP tools, durable events and receipts for T3 Code",
   "license": "AGPL-3.0-or-later",

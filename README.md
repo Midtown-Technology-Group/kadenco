@@ -11,7 +11,7 @@ and run the compiled output. See [CONTRIBUTING.md](CONTRIBUTING.md) for syntheti
 browser validation and [the sidecar contract](docs/t3-sidecar.md) for lifecycle,
 integration boundaries and remaining dynamic types.
 
-Experimental standalone release candidate, 0.1.0-alpha.3. No T3 source edits.
+Experimental standalone release candidate, 0.1.0-alpha.4. No T3 source edits.
 
 MCP tools for native T3 inventory/results, persistent signed events, explicit bounded delegation and durable receipts. Not a replacement agent, orchestrator, queue or memory system. Existing Eddie tool/environment names are retained as compatibility identifiers; they do not require an OpenAI dot. A persistent agent needs an MCP client plus a compatible wake-up runtime. OpenAI MCP Events is the implemented event protocol; other runtimes need compatible webhook ingress or explicit read-only polling. Basic MCP tool support alone is insufficient.
 

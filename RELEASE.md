@@ -23,8 +23,8 @@ selected runtime and verified live result are separate evidence stages.
   qualification of the supported read/event/acknowledgement paths. Do not use
   a stability label to hide unresolved visibility or delivery limitations.
 
-`0.1.0-alpha.3` is the next candidate, consolidating the repaired acknowledgement,
-visibility diagnostics and coalescing work. Previous alpha.2 SHA-qualified
+`0.1.0-alpha.4` is the next candidate, adding native-inspired authorization UI
+to the published alpha.3 package. Previous alpha.2 SHA-qualified
 source deployments remain historical evidence; do not move tags or relabel them.
 
 ## Prepare and qualify

@@ -75,28 +75,110 @@
           <h2>Join this shared thread</h2>
           <p id="join-identity"></p>
           <p>View the conversation and propose messages. The owner decides what is sent to T3.</p>
-          <button id="join-thread" type="button">Join thread</button>
+          <div class="dialog-actions">
+            <button id="decline-join" type="button" class="secondary">Decline</button
+            ><button id="review-join" type="button">Review access&hellip;</button>
+          </div>
         </section>
-        <section id="guest-share-panel" hidden>
-          <h2>Share with guest</h2>
-          <p>
-            Your MTG colleague can follow this conversation and propose messages. You choose what
-            gets sent. The invitation expires within 24 hours and can be claimed by the named
-            account only.
+        <dialog
+          id="share-dialog"
+          aria-labelledby="share-title"
+          aria-describedby="share-description"
+        >
+          <section id="guest-share-panel" hidden>
+            <div class="dialog-heading">
+              <span class="eyebrow">THREAD SHARING</span
+              ><button
+                id="close-share"
+                type="button"
+                class="icon-button"
+                aria-label="Close sharing dialog"
+              >
+                &times;
+              </button>
+            </div>
+            <h2 id="share-title">Share with guest</h2>
+            <p id="share-description">
+              Your MTG colleague can follow this conversation and propose messages. You choose what
+              gets sent. The invitation expires within 24 hours and can be claimed by the named
+              account only.
+            </p>
+            <ol class="dialog-steps" aria-label="Sharing steps">
+              <li id="recipient-step" aria-current="step">1 &#183; Colleague</li>
+              <li id="access-step">2 &#183; Access</li>
+            </ol>
+            <form id="invite-form">
+              <div id="invite-recipient">
+                <label
+                  >Colleague work email<input
+                    id="invite-email"
+                    type="email"
+                    maxlength="254"
+                    required
+                /></label>
+              </div>
+              <div id="invite-review" hidden>
+                <dl class="scope-summary">
+                  <dt>Account</dt>
+                  <dd id="review-email"></dd>
+                  <dt>Thread</dt>
+                  <dd id="review-target"></dd>
+                  <dt>Access</dt>
+                  <dd>View and propose messages</dd>
+                  <dt>Expires</dt>
+                  <dd>Within 23 hours</dd>
+                </dl>
+                <p class="scope-note">
+                  Every proposed message waits for owner approval. Access can be revoked from this
+                  thread.
+                </p>
+              </div>
+              <div class="dialog-actions">
+                <button id="invite-back" class="secondary" type="button" hidden>Back</button
+                ><button id="invite-next" type="button">Continue</button
+                ><button id="create-invite" hidden>Create link</button>
+              </div>
+            </form>
+            <label id="invite-link-label" hidden
+              >Guest link<input id="invite-link" readonly
+            /></label>
+            <button id="copy-invite" type="button" hidden>Copy guest link</button>
+            <div id="invitations"></div>
+            <p id="share-status" role="status" aria-live="polite"></p>
+          </section>
+        </dialog>
+        <dialog id="join-dialog" aria-labelledby="join-title">
+          <div class="dialog-heading">
+            <span class="eyebrow">ACCESS REQUEST</span
+            ><button
+              id="close-join"
+              type="button"
+              class="icon-button"
+              aria-label="Close access dialog"
+            >
+              &times;
+            </button>
+          </div>
+          <h2 id="join-title">Join shared thread</h2>
+          <p>Review the account and thread before authorizing access.</p>
+          <dl class="scope-summary">
+            <dt>Account</dt>
+            <dd id="join-account"></dd>
+            <dt>Thread</dt>
+            <dd id="join-target"></dd>
+            <dt>Access</dt>
+            <dd>View and propose messages</dd>
+          </dl>
+          <p class="scope-note">
+            The owner approves each proposed message before it reaches T3. This does not link a
+            machine or grant direct execution.
           </p>
-          <form id="invite-form">
-            <label
-              >Colleague work email<input
-                id="invite-email"
-                type="email"
-                maxlength="254"
-                required /></label
-            ><button>Create link</button>
-          </form>
-          <label id="invite-link-label" hidden>Guest link<input id="invite-link" readonly /></label>
-          <button id="copy-invite" type="button" hidden>Copy guest link</button>
-          <div id="invitations"></div>
-        </section>
+          <p id="join-status" role="status" aria-live="polite"></p>
+          <div class="dialog-actions">
+            <button id="cancel-join" class="secondary" type="button">Cancel</button
+            ><button id="join-thread" type="button">Join thread</button>
+          </div>
+        </dialog>
         <h2 id="requests-title" hidden>Guest proposals and delivery</h2>
         <div id="requests"></div>
         <form id="compose" hidden>
