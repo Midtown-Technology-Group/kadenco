@@ -12,3 +12,6 @@ ui-proof/
 coverage/
 dist/
 release-output/
+
+.wrangler/
+packages/control-plane/worker-configuration.d.ts
