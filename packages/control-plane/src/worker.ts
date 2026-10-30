@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { DurableObject } from "cloudflare:workers";
+import { operationBinding, authorizeBinding, type OperationBinding } from "./binding";
 type Principal = {
   id: string;
   tokenSha256: string;
   role: "owner" | "executor";
   hosts: string[];
+  scopes?: OperationBinding[];
   expiresAt: number;
 };
 type Policy = { revision: number; fleet: string; principals: Principal[] };
@@ -38,6 +40,9 @@ function policy(raw: string | undefined): Policy {
     ids.add(a.id);
     tokens.add(a.tokenSha256);
     a.hosts.forEach((h) => str(h));
+    if (a.scopes && (!Array.isArray(a.scopes) || a.scopes.length > 100))
+      fail("configuration_required");
+    a.scopes?.forEach(operationBinding);
     number(a.expiresAt);
   }
   return p;
@@ -101,17 +106,29 @@ export class FleetState extends DurableObject<Env> {
         .some((c) => c.name === "originator")
     )
       ctx.storage.sql.exec("ALTER TABLE commands ADD COLUMN originator TEXT");
+    if (
+      !ctx.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(commands)")
+        .toArray()
+        .some((c) => c.name === "binding")
+    )
+      ctx.storage.sql.exec("ALTER TABLE commands ADD COLUMN binding TEXT");
   }
   currentPolicy() {
     return policy(
       this.sql().exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one().value,
     );
   }
-  originAuthorized(r: { originator: string | null; host: string }) {
+  originAuthorized(r: { originator: string | null; host: string; binding: string | null }) {
     const origin =
       this.currentPolicy().principals.find((p) => p.id === r.originator && p.role === "owner") ??
       fail("forbidden");
     this.authorized(origin, r.host);
+    authorizeBinding(
+      operationBinding(r.binding ? JSON.parse(r.binding) : null),
+      origin.scopes,
+      Date.now(),
+    );
   }
   sql() {
     return this.ctx.storage.sql;
@@ -141,6 +158,7 @@ export class FleetState extends DurableObject<Env> {
           kind: string;
           digest: string;
           originator: string | null;
+          binding: string | null;
           state: string;
           executor: string | null;
           generation: number;
@@ -184,7 +202,13 @@ export class FleetState extends DurableObject<Env> {
           prior.role !== n.role ||
           prior.tokenSha256 !== n.tokenSha256 ||
           n.expiresAt > prior.expiresAt ||
-          n.hosts.some((h) => !prior.hosts.includes(h))
+          n.hosts.some((h) => !prior.hosts.includes(h)) ||
+          (n.scopes ?? []).some(
+            (scope) =>
+              !(prior.scopes ?? []).some(
+                (oldScope) => JSON.stringify(oldScope) === JSON.stringify(scope),
+              ),
+          )
         )
           fail("forbidden");
       }
@@ -201,6 +225,35 @@ export class FleetState extends DurableObject<Env> {
       return { revoked: true };
     }
     // Imported values remain opaque original AES-GCM envelopes; no decryption key in this slice.
+    if (op === "inventory") {
+      keys(p, ["after_kind", "after_id"]);
+      if (a.role !== "owner" || state.mode !== "staging") fail("forbidden");
+      const kind = p.after_kind === undefined ? "" : str(p.after_kind),
+        id = p.after_id === undefined ? "" : str(p.after_id, 2048);
+      const rows = this.sql()
+        .exec<{ kind: string; id: string; ciphertext: string }>(
+          "SELECT kind,id,ciphertext FROM imported WHERE kind>? OR (kind=? AND id>?) ORDER BY kind,id LIMIT 101",
+          kind,
+          kind,
+          id,
+        )
+        .toArray();
+      const records: typeof rows = [];
+      let bytes = 128;
+      for (const row of rows.slice(0, 100)) {
+        const size = new TextEncoder().encode(JSON.stringify(row)).byteLength + 1;
+        if (bytes + size > 60000) break;
+        records.push(row);
+        bytes += size;
+      }
+      const last = records.at(-1);
+      if (rows.length && !last) fail("body_too_large");
+      return {
+        records,
+        next: rows.length > records.length ? { after_kind: last!.kind, after_id: last!.id } : null,
+        active: false,
+      };
+    }
     if (op === "import") {
       keys(p, ["migration_id", "records"]);
       if (a.role !== "owner" || state.mode !== "staging") fail("forbidden");
@@ -249,7 +302,7 @@ export class FleetState extends DurableObject<Env> {
     if (state.mode !== "active") fail("not_active");
     if (number(p.epoch) !== state.epoch) fail("fenced");
     if (op === "reserve") {
-      keys(p, ["epoch", "request_id", "host", "thread_id", "kind", "payload_sha256"]);
+      keys(p, ["epoch", "request_id", "host", "thread_id", "kind", "payload_sha256", "binding"]);
       if (a.role !== "owner") fail("forbidden");
       const id = str(p.request_id),
         host = str(p.host),
@@ -257,6 +310,8 @@ export class FleetState extends DurableObject<Env> {
         kind = str(p.kind),
         digest = str(p.payload_sha256);
       this.authorized(a, host);
+      const binding = operationBinding(p.binding);
+      authorizeBinding(binding, a.scopes, Date.now());
       if (
         !["continue", "create", "settings_standard", "webhook"].includes(kind) ||
         !/^[a-f0-9]{64}$/.test(digest)
@@ -269,7 +324,8 @@ export class FleetState extends DurableObject<Env> {
           kind: string;
           digest: string;
           originator: string | null;
-        }>("SELECT host,thread,kind,digest,originator FROM commands WHERE id=?", id)
+          binding: string | null;
+        }>("SELECT host,thread,kind,digest,originator,binding FROM commands WHERE id=?", id)
         .toArray()[0];
       if (
         old &&
@@ -277,17 +333,19 @@ export class FleetState extends DurableObject<Env> {
           old.host !== host ||
           old.thread !== thread ||
           old.kind !== kind ||
-          old.digest !== digest)
+          old.digest !== digest ||
+          old.binding !== JSON.stringify(binding))
       )
         fail("idempotency_conflict");
       this.sql().exec(
-        "INSERT OR IGNORE INTO commands(id,host,thread,kind,digest,originator,state) VALUES(?,?,?,?,?,?,'pending')",
+        "INSERT OR IGNORE INTO commands(id,host,thread,kind,digest,originator,binding,state) VALUES(?,?,?,?,?,?,?,'pending')",
         id,
         host,
         thread,
         kind,
         digest,
         a.id,
+        JSON.stringify(binding),
       );
       this.audit(a, op, id);
       return this.row(id);

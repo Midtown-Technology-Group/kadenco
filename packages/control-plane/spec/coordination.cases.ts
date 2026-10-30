@@ -7,7 +7,21 @@ const call = async (op: string, body: object = {}, token = "synthetic-owner") =>
     new Request("https://test.invalid/" + op, {
       method: "POST",
       headers: { authorization: "Bearer " + token, "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(
+        op === "reserve"
+          ? {
+              binding: {
+                project: "project",
+                provider: "provider",
+                run: "run",
+                grant: "grant",
+                revision: 1,
+                expires: 4102444700000,
+              },
+              ...body,
+            }
+          : body,
+      ),
     }),
   );
   return (await response.json()) as any;
@@ -492,5 +506,210 @@ describe("edge runner against real DO", () => {
     expect((await consume(command, ports)).state).toBe("recorded");
     expect((await consume(command, ports)).state).toBe("receipted");
     expect(effects).toBe(1);
+  });
+});
+
+import { importVerified } from "../src/import-service.ts";
+import { signedSnapshot, manifestOf } from "../src/snapshot.ts";
+import {
+  consumeAuthorized,
+  seal,
+  validateOperation,
+  type Envelope,
+  type Grant,
+} from "../src/authorization.ts";
+import { dispatchExisting } from "../src/native-adapter.ts";
+import { randomBytes } from "node:crypto";
+describe("integrated local source acceptance", () => {
+  it("signed inventory roundtrip rejects partial import and keeps activation closed", async () => {
+    await runInDurableObject(stub(), (_o, s) => {
+      s.storage.sql.exec("DELETE FROM imported");
+      s.storage.sql.exec("UPDATE control SET mode='staging',migration=NULL WHERE id=1");
+    });
+    const snapshot = {
+      migration_id: "roundtrip",
+      source_snapshot: "quiesced-fixture",
+      encryption_provenance: "test-key-lineage",
+      records: Array.from({ length: 105 }, (_, i) => ({
+        kind: "receipt",
+        id: String(i).padStart(3, "0"),
+        ciphertext: "original-" + i,
+      })),
+    };
+    const key = randomBytes(32),
+      packet = signedSnapshot(snapshot, key),
+      expected = manifestOf(snapshot);
+    await expect(
+      importVerified(packet, key, expected, async (op, p) =>
+        op === "import" ? { stored: 0, active: false } : call(op, p),
+      ),
+    ).rejects.toThrow("partial_import");
+    expect(await importVerified(packet, key, expected, call)).toEqual({
+      verified_records: 105,
+      activation_permitted: false,
+    });
+    expect(await call("activate", { expected_epoch: 7, migration_id: "roundtrip" })).toHaveProperty(
+      "reason",
+    );
+  });
+  it("central bound reservation through persistent SQLite edge journal and exact mock native service", async () => {
+    await active();
+    const key = randomBytes(32);
+    const e: Envelope = {
+      request_id: crypto.randomUUID(),
+      fleet: "test-fleet",
+      principal: "owner",
+      host: "local",
+      project: "project",
+      provider: "provider",
+      thread_id: "exact-thread",
+      run: "run",
+      grant: "grant",
+      revision: 1,
+      expires: 4102444700000,
+      kind: "continue",
+      payload: { text: "harmless fixture" },
+    };
+    const g: Grant = { ...e, expires: 4102444800000, revoked: false, kinds: ["continue"] };
+    const binding = {
+      project: e.project,
+      provider: e.provider,
+      run: e.run,
+      grant: e.grant,
+      revision: e.revision,
+      expires: e.expires,
+    };
+    expect(
+      await call("reserve", {
+        epoch: 7,
+        request_id: e.request_id,
+        host: e.host,
+        thread_id: e.thread_id,
+        kind: e.kind,
+        payload_sha256: validateOperation(e, g, Date.now()),
+        binding,
+      }),
+    ).toHaveProperty("state", "pending");
+    const observed: unknown[] = [];
+    const services = {
+      async continue(owner: string, p: unknown) {
+        observed.push({ owner, p });
+        return { native_submitted: true, request_id: e.request_id };
+      },
+      creation: {
+        async create() {
+          throw Error("unexpected");
+        },
+      },
+      settings: {
+        async standard() {
+          throw Error("unexpected");
+        },
+      },
+      async receipt() {
+        return null;
+      },
+    };
+    const ports = {
+      call: (op: string, p: object) => call(op, p, "synthetic-agent"),
+      journal: {
+        async reserve(id: string) {
+          return runInDurableObject(stub(), (_o, s) => {
+            s.storage.sql.exec(
+              "CREATE TABLE IF NOT EXISTS edge_attempts(id TEXT PRIMARY KEY,outcome TEXT)",
+            );
+            return (
+              s.storage.sql
+                .exec("INSERT OR IGNORE INTO edge_attempts VALUES(?,NULL) RETURNING id", id)
+                .toArray().length === 1
+            );
+          });
+        },
+        async finish(id: string, outcome: unknown) {
+          await runInDurableObject(stub(), (_o, s) => {
+            s.storage.sql.exec(
+              "UPDATE edge_attempts SET outcome=? WHERE id=?",
+              JSON.stringify(outcome),
+              id,
+            );
+          });
+        },
+      },
+      async validate() {},
+      execute: () => dispatchExisting(e, services),
+      async observe() {
+        return { state: "unknown" as const, evidence: "read-only" };
+      },
+    };
+    expect(
+      (await consumeAuthorized(seal(e, key), key, async () => g, Date.now, 7, ports)).state,
+    ).toBe("recorded");
+    await abortAllDurableObjects();
+    expect(
+      (await consumeAuthorized(seal(e, key), key, async () => g, Date.now, 7, ports)).state,
+    ).toBe("receipted");
+    expect(observed).toEqual([
+      {
+        owner: "owner",
+        p: {
+          host: "local",
+          thread_id: "exact-thread",
+          request_id: e.request_id,
+          source_run_id: "run",
+          message: "harmless fixture",
+          execution: "allow_new_turn",
+        },
+      },
+    ]);
+  });
+  it("central operation scope drift and stale origin policy block dispatch", async () => {
+    await active();
+    for (const field of ["project", "provider", "run", "grant", "revision"]) {
+      const binding = {
+        project: "project",
+        provider: "provider",
+        run: "run",
+        grant: "grant",
+        revision: 1,
+        expires: 4102444700000,
+        [field]: field === "revision" ? 2 : "wrong",
+      };
+      expect(
+        await call("reserve", {
+          epoch: 7,
+          request_id: crypto.randomUUID(),
+          host: "local",
+          thread_id: "exact-thread",
+          kind: "continue",
+          payload_sha256: "a".repeat(64),
+          binding,
+        }),
+      ).toEqual({ reason: "forbidden" });
+    }
+  });
+});
+
+describe("persisted operation scope revocation", () => {
+  it("removing a grant after reserve denies begin without effect", async () => {
+    await active();
+    await reserve("scope-revoked");
+    const c = await claim("scope-revoked");
+    expect(c.claimed).toBe(true);
+    await runInDurableObject(stub(), (_o, s) => {
+      const row = s.storage.sql
+        .exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1")
+        .one();
+      const p = JSON.parse(row.value);
+      p.principals.find((a: { id: string }) => a.id === "owner").scopes = [];
+      p.revision++;
+      s.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(p));
+    });
+    expect(
+      await call(
+        "begin",
+        { epoch: 7, request_id: "scope-revoked", generation: c.generation },
+        "synthetic-agent",
+      ),
+    ).toEqual({ reason: "forbidden" });
   });
 });

@@ -253,3 +253,81 @@ production key custody and edge journal deployment; current-state rollback
 export; actual externally enforced retirement and end-to-end acceptance. These
 are not represented as completed by local fixtures. No deployment approval is
 being requested before the concrete migration implementation is ready.
+
+## Integrated local acceptance (supersedes prior source-gap ledger)
+
+The isolated branch now stores explicit operation bindings in central SQL.
+Reserve checks the current origin scope; claim/begin revalidate current persisted
+principal, grant, revision, project/provider/run and expiry. Legacy rows without
+bindings cannot dispatch. Policy tightening cannot add scopes; stale bootstrap
+cannot resurrect removed scopes. Old epoch and revoked origin tests remain in
+place. This is separate from the sidecar's native budget/runtime enforcement.
+
+`native-adapter.ts` consumes the existing sidecar schemas and calls the existing
+Commands/Creation/ThreadSettings services, preserving stable request IDs and
+explicit execution semantics. It invents no models/options, bypasses no budgets,
+and never treats unknown results as safe to resend. Webhooks remain on the
+existing outbox/signing delivery boundary; this native adapter explicitly refuses
+to turn a webhook envelope into a T3 command. The injected services must be the
+existing policy-enforcing services, never a raw native transport substitute.
+
+`migration-service.ts` extracts a transactionally consistent synthetic Store
+inventory under BEGIN IMMEDIATE with an externally enforced quiescence lease
+checked on both sides. It preserves original encrypted record bytes and retained
+audit/diagnostic rows and derives the snapshot identity from exact bytes.
+`import-service.ts` authenticates the snapshot, imports bounded batches and
+exhausts staged DO inventory pagination before exact hash comparison. Missing,
+changed or partial readback fails. Nothing activates on a partial import or even
+on a successful comparison. Snapshot packets are bounded to 1MiB and 100000
+records; larger real estates require segmented authenticated manifests before
+transfer. No production snapshot was read to exercise this path.
+
+Acceptance exercises a signed central reservation -> SQLite durable attempt ->
+exact mock sidecar continue arguments -> immutable receipt -> DO reconstruction
+-> receipt reconciliation, with one observed mock dispatch. Another case imports
+105 encrypted fixture records over multiple inventory pages. Node fixtures test
+transaction rollback on quiescence lease loss and exact create/Standard schema
+mapping; unspecified create options/runtime are rejected, never guessed.
+
+Deployment prerequisites (none executed):
+
+1. Review/merge the isolated source with exact-head CI and security review after
+   GitHub access recovers; PR20 remains unchanged. Qualify the pinned supported
+   Node22 runtime and install the policy-enforcing sidecar service dependency.
+2. Inventory the real state volume and implement/qualify segmented manifests if
+   it exceeds the explicit snapshot limit; map the existing principals and exact
+   operation grants without expansion. Provision independently controlled trust
+   keys through the approved secret path, not chat or source.
+3. Establish and verify externally enforced retirement across every old native,
+   signing and restart route, including retained-identity revival probes. A
+   signed report is evidence only; it cannot itself deny those routes.
+4. Review an explicit activation implementation and live migration/rollback
+   procedure retaining current receipts/dedup state. The present Worker always
+   rejects activation; no test certificate can change that. Then obtain the
+   applicable security/provisioning/cutover approval and run real acceptance.
+
+Local integrated source paths now exist; deployment wiring, segmented large-state
+transfer, the deliberately absent activation implementation and real acceptance
+remain unfinished. No claim is made that the entire central-state port is done.
+
+Large-state source gap resolved locally: `segmentSnapshot` and `importSegments`
+now authenticate each bounded packet with index/total, migration/snapshot/lineage
+and the independently retained full-manifest digest. All segments are verified
+before the first import; missing, reordered or mixed segments fail closed. A
+1.8MiB synthetic encrypted inventory succeeds without raising the per-packet
+limit. The 100000-record total and bounded page/import limits remain explicit.
+Actual production volume compatibility still needs a read-only approved preflight.
+
+Final local acceptance for this revision: 21 workerd/SQLite DO tests and 10 Node
+integration/crash tests, strict package typechecking, root format/lint and both
+root compilers, Worker dry-run build. CI now builds the existing root sidecar
+schemas before control-plane tests on a clean checkout. No GitHub API attempt,
+push or live deployment is part of this local revision. PR20 stays at e81eed1.
+
+The requested central bindings, snapshot extraction/readback and existing-native
+service adapter source paths are implemented and connected in local acceptance.
+Still intentionally absent: production wiring/keys, a production activation
+endpoint, enforceable real old-writer retirement, and live acceptance. Central
+MCP/portal/event-loop service migration beyond these operation/import interfaces
+is not implied by these tests. Provisioning/cutover must not proceed by merely
+changing the staging flag or cloning a local database.

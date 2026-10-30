@@ -101,7 +101,7 @@ test("crash windows retain persistent attempt and never reexecute", async () => 
   }
 });
 const e: Envelope = {
-  request_id: "12345678-1234-1234-1234-123456789abc",
+  request_id: "12345678-1234-4234-8234-123456789abc",
   fleet: "fleet",
   principal: "owner",
   grant: "grant",
@@ -296,4 +296,113 @@ test("authenticated runner binds central digest and revalidates policy before ef
     ),
     /reservation_envelope_mismatch/,
   );
+});
+
+test("quiesced synthetic Store extraction preserves ciphertext and audit and rolls back lease loss", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { extractSnapshot } = await import("../src/migration-service.ts");
+  const db = new DatabaseSync(":memory:");
+  db.exec(
+    "CREATE TABLE records(kind TEXT,id TEXT,value TEXT);CREATE TABLE audit(seq INTEGER,action TEXT);INSERT INTO records VALUES('subscription','standing-id','original-aes-envelope');INSERT INTO audit VALUES(1,'existing-audit')",
+  );
+  let checks = 0;
+  assert.throws(
+    () =>
+      extractSnapshot(db, "m", "lineage", () => {
+        if (++checks === 2) throw Error("lease_lost");
+      }),
+    /lease_lost/,
+  );
+  const snapshot = extractSnapshot(db, "m", "lineage", () => {});
+  assert.equal(snapshot.records[0].ciphertext, "original-aes-envelope");
+  assert.equal(snapshot.records[1].kind, "$audit");
+  assert.equal(snapshot.source_snapshot.length, 64);
+  db.close();
+});
+test("native adapter requires existing strict schemas and preserves exact settings/create options", async () => {
+  const { dispatchExisting } = await import("../src/native-adapter.ts");
+  const seen: unknown[] = [];
+  const services = {
+    async continue() {
+      return {};
+    },
+    creation: {
+      async create(owner: string, p: unknown) {
+        seen.push({ owner, p });
+        return { native_submitted: true };
+      },
+    },
+    settings: {
+      async standard(owner: string, p: unknown) {
+        seen.push({ owner, p });
+        return { state: "verified", native_submitted: true };
+      },
+    },
+    async receipt() {
+      return null;
+    },
+  };
+  await dispatchExisting(
+    {
+      ...e,
+      kind: "settings_standard",
+      payload: { speed: "standard", expected_fingerprint: "a".repeat(64) },
+    },
+    services,
+  );
+  await dispatchExisting(
+    {
+      ...e,
+      kind: "create",
+      run: null,
+      payload: {
+        text: "hi",
+        title: "test",
+        model: "existing-model",
+        options: [{ id: "speed", value: "standard" }],
+        runtime_mode: "approval-required",
+      },
+    },
+    services,
+  );
+  assert.equal(seen.length, 2);
+  await assert.rejects(
+    dispatchExisting({ ...e, kind: "create", payload: { text: "hi", title: "test" } }, services),
+  );
+  const unknown = await dispatchExisting(e, services);
+  assert.equal(unknown.state, "unknown");
+});
+
+test("segmented migration authenticates large inventories and refuses dropped or mixed segments before writes", async () => {
+  const { segmentSnapshot, importSegments } = await import("../src/import-service.ts");
+  const key = randomBytes(32);
+  const snapshot = {
+    migration_id: "large",
+    source_snapshot: "snapshot",
+    encryption_provenance: "lineage",
+    records: Array.from({ length: 60 }, (_, i) => ({
+      kind: "receipt",
+      id: String(i),
+      ciphertext: "x".repeat(30000),
+    })),
+  };
+  const packets = segmentSnapshot(snapshot, key),
+    expected = manifestOf(snapshot);
+  assert.ok(packets.length > 1);
+  let writes = 0;
+  const rows: typeof snapshot.records = [];
+  const call = async (op: string, p: object) => {
+    if (op === "import") {
+      writes++;
+      const r = p as { records: typeof rows };
+      rows.push(...r.records);
+      return { stored: r.records.length, active: false };
+    }
+    return { records: rows, next: null, active: false };
+  };
+  await assert.rejects(importSegments(packets.slice(1), key, expected, call));
+  assert.equal(writes, 0);
+  await assert.rejects(importSegments([...packets].reverse(), key, expected, call));
+  assert.equal(writes, 0);
+  assert.equal((await importSegments(packets, key, expected, call)).verified_records, 60);
 });

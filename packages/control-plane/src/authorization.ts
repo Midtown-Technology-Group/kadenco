@@ -74,8 +74,8 @@ export function validateOperation(e: Envelope, g: Grant, now: number) {
     throw Error("invalid_operation");
   const permitted = {
     continue: ["text"],
-    create: ["text", "title"],
-    settings_standard: ["speed"],
+    create: ["text", "title", "model", "options", "runtime_mode"],
+    settings_standard: ["speed", "expected_fingerprint"],
     webhook: ["event_id", "body_sha256"],
   }[e.kind];
   if (!e.payload || Object.keys(e.payload).some((k) => !permitted.includes(k)))
