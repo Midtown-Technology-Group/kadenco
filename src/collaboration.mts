@@ -240,6 +240,7 @@ export class Collaboration {
         project_id: source.thread.projectId,
         revision: p.expected_revision + 1,
         changed_by: user.subject,
+        ...(old?.display_name ? { display_name: old.display_name } : {}),
       };
       this.store.put("collaboration.grant", this.key(p.subject, p), record);
       this.store.audit(

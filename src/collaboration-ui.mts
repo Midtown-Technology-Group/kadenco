@@ -239,7 +239,9 @@ function snapshot(data, scope, generation) {
   el("guest-title").textContent = data.thread.title;
   const remaining = data.permissions.expires_at ? data.permissions.expires_at - Date.now() : NaN;
   el("guest-expiry").textContent = Number.isFinite(remaining)
-    ? Math.max(0, Math.ceil(remaining / 3600000)) + "h left"
+    ? remaining < 3600000
+      ? Math.max(0, Math.ceil(remaining / 60000)) + "m left"
+      : Math.ceil(remaining / 3600000) + "h left"
     : "";
   el("guest-model").textContent = data.thread.model ?? "";
   el("disclosure").textContent = data.history;

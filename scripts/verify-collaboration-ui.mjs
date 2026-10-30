@@ -66,6 +66,12 @@ const reader = {
             : "Ready for a harmless message. <img src=x onerror=alert(1)>",
           status: "completed",
         },
+        {
+          itemId: "code",
+          type: "assistant_message",
+          text: "```text\ncolumn  value\nalpha   123\n```",
+          status: "completed",
+        },
       ],
     };
   },
@@ -371,6 +377,23 @@ try {
     .getByText("newguest@example.test - claimed", { exact: false })
     .waitFor();
   await owner.getByRole("button", { name: "Close sharing dialog", exact: true }).click();
+  const grantKey = service.key("newguest", target),
+    namedGrant = store.get("collaboration.grant", grantKey);
+  store.put("collaboration.grant", grantKey, { ...namedGrant, expires_at: Date.now() + 300000 });
+  await invited.locator("#guest-expiry").getByText("5m left", { exact: true }).waitFor();
+  assert.equal(
+    await invited
+      .locator("#timeline pre")
+      .evaluate((el) => getComputedStyle(el).fontFamily.includes("monospace")),
+    true,
+  );
+  await invited.getByLabel("Message", { exact: true }).focus();
+  assert.notEqual(
+    await invited
+      .getByLabel("Message", { exact: true })
+      .evaluate((el) => getComputedStyle(el).outlineStyle),
+    "none",
+  );
   await invited.getByLabel("Message", { exact: true }).fill("New guest proposal from invitation");
   await invited.getByRole("button", { name: "Propose message", exact: true }).click();
   const proposal = owner
