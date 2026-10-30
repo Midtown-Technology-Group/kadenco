@@ -73,6 +73,9 @@ export function accessIdentity({
       });
       if (!response.ok) throw fail("authentication_required");
       const identity = await boundedJson(response);
+      // Access documents its signed app-token email as IdP-verified. Require
+      // the matching independently resolved identity and exact configured Entra
+      // provider; do not infer authority from arbitrary custom verification claims.
       if (
         identity.service_token_status ||
         identity.service_token_id ||
@@ -192,7 +195,13 @@ export function collaborationServer(
               if (ended) return;
               res.write(
                 "event: snapshot\ndata: " +
-                  JSON.stringify({ ...data, messages: service.messages(user, target) }) +
+                  JSON.stringify({
+                    ...data,
+                    messages: service.messages(user, target),
+                    ...(service.admin(user)
+                      ? { invitations: service.invitations(user, target) }
+                      : {}),
+                  }) +
                   "\n\n",
               );
             } catch (e) {
@@ -224,6 +233,12 @@ export function collaborationServer(
         live();
         let data;
         if (url.pathname === "/collaborate/api/grants") data = await service.setGrant(user, body);
+        else if (url.pathname === "/collaborate/api/invitations")
+          data = await service.invite(user, body);
+        else if (url.pathname === "/collaborate/api/invitations/claim")
+          data = await service.claim(user, body);
+        else if (url.pathname === "/collaborate/api/invitations/revoke")
+          data = service.revokeInvitation(user, body);
         else if (url.pathname === "/collaborate/api/messages")
           data = await service.propose(user, body);
         else if (url.pathname === "/collaborate/api/decisions")
@@ -254,6 +269,8 @@ export function collaborationServer(
         "body_too_large",
         "invalid_expiry",
         "identity_not_seen",
+        "invitation_unavailable",
+        "grant_already_exists",
         "revision_conflict",
         "idempotency_conflict",
         "not_found",

@@ -28,6 +28,21 @@ export const grantArgs = z
       (!p.capabilities.length || p.capabilities.includes("view")) &&
       (!p.capabilities.includes("send") || p.capabilities.includes("propose")),
   );
+export const invitationArgs = targetArgs
+  .extend({
+    request_id: z.string().uuid().toLowerCase(),
+    email: z
+      .string()
+      .trim()
+      .email()
+      .max(254)
+      .transform((v) => v.toLowerCase()),
+    expires_at: z.number().int().positive(),
+  })
+  .strict();
+export const claimArgs = targetArgs
+  .extend({ invitation_id: z.string().uuid().toLowerCase() })
+  .strict();
 export const messageArgs = z
   .object({
     ...target,
@@ -54,6 +69,7 @@ const publicReceipt = (r) => ({
   host: r.host,
   thread_id: r.thread_id,
   sender: r.sender,
+  sender_email: r.sender_email ?? null,
   text: r.text,
   state: r.state,
   created_at: r.at,
@@ -229,9 +245,180 @@ export class Collaboration {
       return record;
     });
   }
+  async invite(user, input) {
+    const p = invitationArgs.parse(input),
+      scope = this.identityScope();
+    if (!this.admin(user)) throw fail("forbidden");
+    if (p.expires_at <= this.now() || p.expires_at > this.now() + 86400000)
+      throw fail("invalid_expiry");
+    const existing = this.store.get("collaboration.invitation", p.request_id);
+    const same = (r) =>
+      r.identity_scope === scope && r.created_by === user.subject && r.digest === digest(p);
+    if (existing) {
+      if (!same(existing)) throw fail("idempotency_conflict");
+      return existing;
+    }
+    const source = await this.reader.read(this.config().brokerPrincipal, {
+      host: p.host,
+      thread_id: p.thread_id,
+    });
+    if (source.thread.threadId !== p.thread_id || source.thread.archived)
+      throw fail("thread_unavailable");
+    return this.store.transaction(() => {
+      if (!this.admin(user) || this.identityScope() !== scope) throw fail("forbidden");
+      this.reader.grant(this.config().brokerPrincipal, p.host, source.thread.projectId);
+      if (p.expires_at <= this.now()) throw fail("invalid_expiry");
+      const prior = this.store.get("collaboration.invitation", p.request_id);
+      if (prior) {
+        if (!same(prior)) throw fail("idempotency_conflict");
+        return prior;
+      }
+      const pending = this.store
+        .all("collaboration.invitation")
+        .filter(
+          (r) =>
+            r.identity_scope === scope &&
+            r.host === p.host &&
+            r.thread_id === p.thread_id &&
+            r.state === "pending" &&
+            r.expires_at > this.now(),
+        );
+      if (pending.length >= 20) throw fail("pending_limit");
+      const record = {
+        ...p,
+        id: p.request_id,
+        identity_scope: scope,
+        project_id: source.thread.projectId,
+        created_by: user.subject,
+        digest: digest(p),
+        state: "pending",
+        at: this.now(),
+      };
+      this.store.put("collaboration.invitation", record.id, record);
+      this.store.audit("collaboration.invite", record.id, "view,propose");
+      return record;
+    });
+  }
+  invitation(user, p) {
+    const r = this.store.get("collaboration.invitation", p.invitation_id);
+    if (
+      !r ||
+      r.identity_scope !== this.identityScope() ||
+      r.host !== p.host ||
+      r.thread_id !== p.thread_id ||
+      r.email !== user.email.toLowerCase() ||
+      r.expires_at <= this.now() ||
+      !this.config().ownerSubjects.includes(r.created_by) ||
+      !["pending", "claimed"].includes(r.state)
+    )
+      throw fail("invitation_unavailable");
+    if (user.expiresAt !== undefined && user.expiresAt <= this.now())
+      throw fail("authentication_required");
+    if (user.identity_scope && user.identity_scope !== r.identity_scope)
+      throw fail("authentication_required");
+    if (r.claimed_by && r.claimed_by !== user.subject) throw fail("invitation_unavailable");
+    return r;
+  }
+  async claim(user, input) {
+    const p = claimArgs.parse(input),
+      original = this.invitation(user, p);
+    const source = await this.reader.read(this.config().brokerPrincipal, {
+      host: p.host,
+      thread_id: p.thread_id,
+    });
+    if (
+      source.thread.threadId !== p.thread_id ||
+      source.thread.projectId !== original.project_id ||
+      source.thread.archived
+    )
+      throw fail("thread_unavailable");
+    return this.store.transaction(() => {
+      const r = this.invitation(user, p);
+      this.reader.grant(this.config().brokerPrincipal, p.host, r.project_id);
+      const key = this.key(user.subject, p),
+        prior = this.store.get("collaboration.grant", key);
+      if (r.state === "claimed") {
+        if (prior?.invitation_id !== r.id || prior.revision !== r.grant_revision)
+          throw fail("invitation_unavailable");
+        this.grant(user, p, "propose");
+        return {
+          host: p.host,
+          thread_id: p.thread_id,
+          capabilities: prior.capabilities,
+          expires_at: prior.expires_at,
+        };
+      }
+      // An invitation never replaces or revives an existing owner-managed grant.
+      if (prior) throw fail("grant_already_exists");
+      const grant = {
+        host: p.host,
+        thread_id: p.thread_id,
+        subject: user.subject,
+        capabilities: ["view", "propose"],
+        expires_at: r.expires_at,
+        identity_scope: r.identity_scope,
+        project_id: r.project_id,
+        revision: 1,
+        changed_by: r.created_by,
+        invitation_id: r.id,
+      };
+      this.store.put("collaboration.grant", key, grant);
+      this.store.put("collaboration.invitation", r.id, {
+        ...r,
+        state: "claimed",
+        claimed_by: user.subject,
+        grant_revision: 1,
+      });
+      this.store.audit("collaboration.invitation.claim", r.id, user.subject);
+      return {
+        host: p.host,
+        thread_id: p.thread_id,
+        capabilities: grant.capabilities,
+        expires_at: grant.expires_at,
+      };
+    });
+  }
+  revokeInvitation(user, input) {
+    const p = claimArgs.parse(input);
+    if (!this.admin(user)) throw fail("forbidden");
+    return this.store.transaction(() => {
+      const r = this.store.get("collaboration.invitation", p.invitation_id);
+      if (
+        !r ||
+        r.identity_scope !== this.identityScope() ||
+        r.host !== p.host ||
+        r.thread_id !== p.thread_id
+      )
+        throw fail("invitation_unavailable");
+      const key = r.claimed_by && this.key(r.claimed_by, p),
+        grant = key && this.store.get("collaboration.grant", key);
+      if (grant?.invitation_id === r.id && grant.revision === r.grant_revision)
+        this.store.put("collaboration.grant", key, {
+          ...grant,
+          capabilities: [],
+          revision: grant.revision + 1,
+          changed_by: user.subject,
+        });
+      this.store.put("collaboration.invitation", r.id, { ...r, state: "revoked" });
+      this.store.audit("collaboration.invitation.revoke", r.id, user.subject);
+      return { revoked: true };
+    });
+  }
+  invitations(user, p) {
+    if (!this.admin(user)) throw fail("forbidden");
+    return this.store
+      .all("collaboration.invitation")
+      .filter(
+        (r) =>
+          r.identity_scope === this.identityScope() &&
+          r.host === p.host &&
+          r.thread_id === p.thread_id,
+      );
+  }
   administration(user, p) {
     if (!this.admin(user)) throw fail("forbidden");
     return {
+      invitations: this.invitations(user, p),
       identities: this.store
         .all("collaboration.identity")
         .filter((i) => i.identity_scope === this.identityScope()),
@@ -353,6 +540,7 @@ export class Collaboration {
         identity_scope: this.identityScope(),
         digest: bodyDigest,
         sender: user.subject,
+        sender_email: user.email,
         project_id: source.thread.projectId,
         at: this.now(),
         state: p.intent === "send" ? "reserved" : "pending",

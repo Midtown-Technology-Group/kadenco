@@ -257,6 +257,76 @@ try {
   assert.equal(writes.at(-1).thread_id, "fast-thread");
   assert.equal(writes.at(-1).source_run_id, "source-fast-thread");
   assert.equal(writes.length, 4);
+  await owner.goto(base + "/collaborate/#" + new URLSearchParams(target));
+  await owner.getByRole("heading", { name: "Shared thread canary", exact: true }).waitFor();
+  await owner.getByRole("button", { name: "Share with guest", exact: true }).click();
+  await owner.evaluate(async (target) => {
+    const me = await (await fetch("/collaborate/api/me")).json();
+    const key =
+      "t3-collaboration:" +
+      me.identity_scope +
+      ":" +
+      me.subject +
+      ":" +
+      new URLSearchParams(target) +
+      ":invitation";
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        ...target,
+        email: "old@example.test",
+        request_id: crypto.randomUUID(),
+        expires_at: Date.now() - 1000,
+      }),
+    );
+  }, target);
+  await owner.getByLabel("Colleague work email", { exact: true }).fill("newguest@example.test");
+  await owner.getByRole("button", { name: "Create link", exact: true }).click();
+  await owner.locator("#copy-invite").waitFor();
+  const invitationUrl = await owner.locator("#invite-link").inputValue();
+  assert.equal(writes.length, 4);
+  await owner.screenshot({ path: output + "/guest-invitation-created.png", fullPage: true });
+  const invitedContext = await browser.newContext({
+    extraHTTPHeaders: { "cf-access-jwt-assertion": "newguest" },
+  });
+  contexts.push(invitedContext);
+  const invited = await invitedContext.newPage();
+  invited.on("pageerror", (error) => errors.push(error.message));
+  await invited.goto(invitationUrl);
+  await invited.getByRole("button", { name: "Join thread", exact: true }).waitFor();
+  assert.equal(await invited.locator("#timeline").textContent(), "");
+  await invited.getByRole("button", { name: "Join thread", exact: true }).click();
+  await invited.getByRole("heading", { name: "Shared thread canary", exact: true }).waitFor();
+  await owner
+    .locator("#invitations")
+    .getByText("newguest@example.test - claimed", { exact: false })
+    .waitFor();
+  await invited.getByLabel("Message", { exact: true }).fill("New guest proposal from invitation");
+  await invited.getByRole("button", { name: "Propose message", exact: true }).click();
+  const proposal = owner
+    .locator("#requests article")
+    .filter({ hasText: "New guest proposal from invitation" });
+  await proposal.getByRole("button", { name: "Approve and send", exact: true }).waitFor();
+  assert.equal(writes.length, 4);
+  assert.equal(
+    await invited.getByRole("button", { name: "Approve and send", exact: true }).count(),
+    0,
+  );
+  await owner.screenshot({ path: output + "/guest-proposal-awaiting-review.png", fullPage: true });
+  submission = "accepted";
+  await proposal.getByRole("button", { name: "Approve and send", exact: true }).click();
+  await proposal.getByRole("button", { name: "Check exact delivery receipt", exact: true }).click();
+  await invited.getByText("Execution: completed", { exact: true }).waitFor();
+  assert.equal(writes.length, 5);
+  await invited.reload();
+  await invited.getByRole("heading", { name: "Shared thread canary", exact: true }).waitFor();
+  assert.equal(writes.length, 5);
+  await invited.screenshot({ path: output + "/invited-guest-completed.png", fullPage: true });
+  await owner
+    .getByRole("button", { name: "Stop sharing with newguest@example.test", exact: true })
+    .click();
+  await invited.locator("#guest-access").waitFor();
+  assert.equal(await invited.locator("#timeline").textContent(), "");
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
