@@ -287,6 +287,17 @@ async function open() {
     }
   }
 }
+el("copy-sign-in").onclick = async () => {
+  if (!me?.owner) return;
+  try {
+    await navigator.clipboard.writeText(el("sign-in-link").value);
+    status("Sign-in link copied. Grant the signed-in account access to each thread separately.");
+  } catch {
+    el("sign-in-link").focus();
+    el("sign-in-link").select();
+    status("Copy the selected sign-in link. No thread access has been granted.");
+  }
+};
 el("open").onsubmit = (event) => {
   event.preventDefault();
   selectTarget({ host: el("host").value.trim(), thread_id: el("thread").value.trim() });
@@ -372,6 +383,8 @@ try {
   me = await api("me");
   el("identity").textContent = `Signed in as ${me.email}`;
   el("open").hidden = !me.owner;
+  el("sharing-help").hidden = !me.owner;
+  el("sign-in-link").value = new URL("/collaborate/", location.origin).href;
   const { threads } = await api("threads");
   for (const t of threads) {
     const a = node("a", `${t.host} / ${t.thread_id}`, el("threads"));

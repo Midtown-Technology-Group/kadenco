@@ -10,6 +10,7 @@ Next consolidated candidate after the source-only alpha.2 deployments:
 - Host-bound delivery acknowledgement and exact native-message evidence recovery.
 - Worker timing diagnostics, fewer repeated grant checks and bounded I/O yields.
 - Coalesced fleet observations and replaceable pending coverage notices.
+- Owner sharing onboarding with a colleague sign-in link and exact-thread grant guidance.
 - Version/changelog consistency checks and documented release/rollback cadence.
 
 Protocol compatibility identifier remains 0.11.0. Event-loop stalls remain an

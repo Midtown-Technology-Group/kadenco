@@ -145,6 +145,11 @@ try {
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(base + "/collaborate/#" + new URLSearchParams(target));
     await page.getByRole("heading", { name: "Shared thread canary", exact: true }).waitFor();
+    if (subject === "owner") {
+      assert.equal(await page.locator("#sharing-help").isVisible(), true);
+      assert.equal(await page.locator("#sign-in-link").inputValue(), base + "/collaborate/");
+      assert.equal(await page.locator("#sign-in-link").getAttribute("readonly"), "");
+    }
     return page;
   };
   const guestContext = await browser.newContext({
@@ -154,6 +159,7 @@ try {
   const guest = await guestContext.newPage();
   await guest.goto(base + "/collaborate/#" + new URLSearchParams(target));
   await guest.locator("#guest-access").waitFor();
+  assert.equal(await guest.locator("#sharing-help").isVisible(), false);
   assert.equal(await guest.locator("#timeline").textContent(), "");
   assert.equal(await guest.locator("#compose").isVisible(), false);
   assert.match(await guest.locator("#guest-identity").textContent(), /guest@example.test/);
