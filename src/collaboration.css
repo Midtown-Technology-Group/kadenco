@@ -128,3 +128,11 @@ fieldset {
     align-items: flex-start;
   }
 }
+
+.guest-proposal {
+  border-color: #9f7ed0;
+  background: #191726;
+}
+.thread-head {
+  flex-wrap: wrap;
+}

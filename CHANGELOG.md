@@ -7,6 +7,8 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 Next consolidated candidate after the source-only alpha.2 deployments:
 
+- Email-bound first-time guest invitations, explicit join, in-conversation proposal review and revocation.
+
 - Host-bound delivery acknowledgement and exact native-message evidence recovery.
 - Worker timing diagnostics, fewer repeated grant checks and bounded I/O yields.
 - Coalesced fleet observations and replaceable pending coverage notices.

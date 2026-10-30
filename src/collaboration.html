@@ -18,27 +18,31 @@
         <h2>Your threads</h2>
         <nav id="threads"></nav>
         <section id="sharing-help" hidden>
-          <h2>Share with a colleague</h2>
-          <ol>
-            <li>
-              Send the sign-in link below and ask your colleague to sign in once with their MTG
-              account.
-            </li>
-            <li>
-              Open the exact host and thread below. Expand
-              <strong>Manage access to this thread</strong>, select their account, choose
-              permissions and an expiry, then save.
-            </li>
-            <li>
-              Use <strong>Copy link</strong> on the opened thread and send it to your colleague.
-            </li>
-          </ol>
-          <label>Colleague sign-in link<input id="sign-in-link" readonly /></label>
-          <button id="copy-sign-in" type="button">Copy sign-in link</button>
-          <p>
-            Signing in or receiving a link grants no thread access. Start with View when your
-            colleague only needs to follow progress.
-          </p>
+          <h2>Sharing</h2>
+          <p>Open a thread and choose <strong>Share with guest</strong> to invite a colleague.</p>
+          <details>
+            <summary>Manual access management</summary>
+            <ol>
+              <li>
+                Send the sign-in link below and ask your colleague to sign in once with their MTG
+                account.
+              </li>
+              <li>
+                Open the exact host and thread below. Expand
+                <strong>Manage access to this thread</strong>, select their account, choose
+                permissions and an expiry, then save.
+              </li>
+              <li>
+                Use <strong>Copy link</strong> on the opened thread and send it to your colleague.
+              </li>
+            </ol>
+            <label>Colleague sign-in link<input id="sign-in-link" readonly /></label>
+            <button id="copy-sign-in" type="button">Copy sign-in link</button>
+            <p>
+              Signing in or receiving a link grants no thread access. Start with View when your
+              colleague only needs to follow progress.
+            </p>
+          </details>
         </section>
         <form id="open" hidden>
           <h2>Open a thread</h2>
@@ -50,7 +54,8 @@
       <section>
         <div class="thread-head">
           <h2 id="title">Choose a shared thread</h2>
-          <button id="copy" hidden>Copy link</button>
+          <button id="copy" hidden>Copy link</button
+          ><button id="share-guest" hidden>Share with guest</button>
         </div>
         <p id="status" role="status" aria-live="polite">
           Only threads explicitly shared with you appear here.
@@ -66,6 +71,34 @@
         </div>
         <p id="disclosure"></p>
         <div id="timeline" aria-label="Thread messages"></div>
+        <section id="join-invitation" hidden>
+          <h2>Join this shared thread</h2>
+          <p id="join-identity"></p>
+          <p>View the conversation and propose messages. The owner decides what is sent to T3.</p>
+          <button id="join-thread" type="button">Join thread</button>
+        </section>
+        <section id="guest-share-panel" hidden>
+          <h2>Share with guest</h2>
+          <p>
+            Your MTG colleague can follow this conversation and propose messages. You choose what
+            gets sent. The invitation expires within 24 hours and can be claimed by the named
+            account only.
+          </p>
+          <form id="invite-form">
+            <label
+              >Colleague work email<input
+                id="invite-email"
+                type="email"
+                maxlength="254"
+                required /></label
+            ><button>Create link</button>
+          </form>
+          <label id="invite-link-label" hidden>Guest link<input id="invite-link" readonly /></label>
+          <button id="copy-invite" type="button" hidden>Copy guest link</button>
+          <div id="invitations"></div>
+        </section>
+        <h2 id="requests-title" hidden>Guest proposals and delivery</h2>
+        <div id="requests"></div>
         <form id="compose" hidden>
           <label
             >Message<textarea id="message" maxlength="4000" required rows="4"></textarea>
@@ -73,8 +106,6 @@
           <p id="send-mode"></p>
           <button id="submit">Propose message</button>
         </form>
-        <h2 id="requests-title" hidden>Messages and delivery</h2>
-        <div id="requests"></div>
         <details id="access" hidden>
           <summary>Manage access to this thread</summary>
           <p>

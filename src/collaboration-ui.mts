@@ -66,7 +66,8 @@ function renderMessages(messages, scope, generation) {
   el("requests-title").hidden = !messages.length;
   for (const r of messages) {
     const a = node("article", "", el("requests"));
-    node("small", `${r.sender} · ${r.state}`, a);
+    a.classList.add("guest-proposal");
+    node("small", `${r.sender_email ?? r.sender} · ${r.state}`, a);
     node("pre", r.text, a);
     if (["reserved", "uncertain"].includes(r.state))
       node("p", "Unresolved delivery. Keep the same request; never resend under a new ID.", a);
@@ -144,6 +145,7 @@ function snapshot(data, scope, generation) {
   el("title").textContent = data.thread.title;
   el("disclosure").textContent = data.history;
   if (data.messages) renderMessages(data.messages, scope, generation);
+  if (me.owner && data.invitations) renderInvitations(data.invitations, scope, generation);
   el("timeline").replaceChildren();
   for (const item of data.items) {
     const a = node("article", "", el("timeline"));
@@ -159,6 +161,7 @@ function snapshot(data, scope, generation) {
     : "Your message waits for an authorized reviewer. Proposing it starts no T3 run.";
   el("access").hidden = !me.owner;
   el("copy").hidden = false;
+  el("share-guest").hidden = !me.owner;
   status(`${data.thread.status} · ${data.thread.model} · live`);
 }
 async function loadAdmin(scope, generation) {
@@ -170,7 +173,30 @@ async function loadAdmin(scope, generation) {
     const option = node("option", user.email, el("user"));
     option.value = user.subject;
   }
+  renderInvitations(data.invitations ?? [], scope, generation);
   showGrant();
+}
+function renderInvitations(invitations, scope, generation) {
+  if (!active(scope, generation)) return;
+  el("invitations").replaceChildren();
+  for (const invitation of invitations) {
+    const row = node("article", "", el("invitations"));
+    node(
+      "p",
+      `${invitation.email} - ${invitation.state} - expires ${new Date(invitation.expires_at).toLocaleString()}`,
+      row,
+    );
+    if (invitation.state !== "revoked") {
+      const revoke = node("button", "Stop sharing with " + invitation.email, row);
+      revoke.onclick = () =>
+        work(scope, generation, async () => {
+          await api("invitations/revoke", { ...scope, invitation_id: invitation.id });
+          await loadAdmin(scope, generation);
+          if (active(scope, generation))
+            status("Invitation revoked. Previously accepted T3 work is not cancelled.");
+        });
+    }
+  }
 }
 function showGrant() {
   if (!adminData) return;
@@ -206,6 +232,9 @@ function unavailable() {
   el("compose").hidden = true;
   el("access").hidden = true;
   el("copy").hidden = true;
+  el("share-guest").hidden = true;
+  el("guest-share-panel").hidden = true;
+  el("join-invitation").hidden = true;
   el("requests-title").hidden = true;
   el("timeline").replaceChildren();
   el("requests").replaceChildren();
@@ -219,10 +248,18 @@ async function open() {
   stream?.close();
   current = null;
   adminData = null;
+  el("invite-email").value = "";
+  el("invite-link").value = "";
+  el("invite-link-label").hidden = true;
+  el("copy-invite").hidden = true;
+  el("invitations").replaceChildren();
   el("message").value = "";
   el("compose").hidden = true;
   el("access").hidden = true;
   el("copy").hidden = true;
+  el("share-guest").hidden = true;
+  el("guest-share-panel").hidden = true;
+  el("join-invitation").hidden = true;
   el("requests").replaceChildren();
   el("timeline").replaceChildren();
   el("guest-access").hidden = true;
@@ -236,6 +273,26 @@ async function open() {
   }
   const scope = Object.freeze({ host: hash.get("host"), thread_id: hash.get("thread_id") });
   target = scope;
+  if (hash.get("invitation_id")) {
+    el("join-invitation").hidden = false;
+    el("join-identity").textContent =
+      `Signed in as ${me.email}. Only the invited account can join.`;
+    const invitationId = hash.get("invitation_id");
+    el("join-thread").onclick = async () => {
+      if (!active(scope, generation)) return;
+      el("join-thread").disabled = true;
+      try {
+        await api("invitations/claim", { ...scope, invitation_id: invitationId });
+        if (active(scope, generation)) selectTarget(scope);
+      } catch (e) {
+        if (active(scope, generation)) status(e.message + ". No T3 work started.", true);
+      } finally {
+        el("join-thread").disabled = false;
+      }
+    };
+    status("Invitation ready. Join with the account named by the owner.");
+    return;
+  }
   status("Loading shared thread…");
   try {
     const data = await api("view?" + query(scope));
@@ -287,6 +344,55 @@ async function open() {
     }
   }
 }
+el("share-guest").onclick = () => {
+  if (me?.owner && current) el("guest-share-panel").hidden = false;
+};
+el("invite-form").onsubmit = (event) => {
+  event.preventDefault();
+  const scope = target,
+    generation = navigation;
+  if (!me?.owner || !current) return;
+  void work(scope, generation, async () => {
+    const key = pendingKey(scope) + ":invitation",
+      email = el("invite-email").value.trim().toLowerCase();
+    let request = JSON.parse(localStorage.getItem(key) ?? "null");
+    if (request && request.email !== email)
+      throw Error("Reconcile the previous invitation before inviting a different account");
+    if (!request) {
+      request = {
+        ...scope,
+        email,
+        request_id: crypto.randomUUID(),
+        expires_at: Date.now() + 86400000,
+      };
+      localStorage.setItem(key, JSON.stringify(request));
+    }
+    const invitation = await api("invitations", request);
+    if (!active(scope, generation)) return;
+    localStorage.removeItem(key);
+    const link = new URL("/collaborate/", location.origin);
+    link.hash = query({ ...scope, invitation_id: invitation.id });
+    el("invite-link").value = link.href;
+    el("invite-link-label").hidden = false;
+    el("copy-invite").hidden = false;
+    await loadAdmin(scope, generation);
+    if (active(scope, generation))
+      status(
+        "Guest link ready. Only the named signed-in account can claim it; every proposal waits for review.",
+      );
+  });
+};
+el("copy-invite").onclick = async () => {
+  if (!me?.owner || !current) return;
+  try {
+    await navigator.clipboard.writeText(el("invite-link").value);
+    status("Guest link copied.");
+  } catch {
+    el("invite-link").focus();
+    el("invite-link").select();
+    status("Copy the selected guest link.");
+  }
+};
 el("copy-sign-in").onclick = async () => {
   if (!me?.owner) return;
   try {

@@ -625,3 +625,101 @@ test("stream authentication resuming after stop cannot enroll a new stream or de
   await closed;
   assert.equal(f.writes.length, 0);
 });
+
+test("owner creates an email-bound invite before sign-in; one claim grants only view/propose and dispatches nothing", async (t) => {
+  const f = fixture(t),
+    guest = { subject: "new-guest", email: "Doug@midtowntg.com" };
+  const invite = {
+    ...f.target,
+    request_id: randomUUID(),
+    email: "doug@midtowntg.com",
+    expires_at: Date.now() + 600000,
+  };
+  const r = await f.service.invite(f.users.owner, invite);
+  assert.equal(r.state, "pending");
+  assert.deepEqual(await f.service.invite(f.users.owner, invite), r);
+  await assert.rejects(
+    f.service.claim(f.users.outsider, { ...f.target, invitation_id: r.id }),
+    /invitation_unavailable/,
+  );
+  const claim = await f.service.claim(guest, { ...f.target, invitation_id: r.id });
+  assert.deepEqual(claim.capabilities, ["view", "propose"]);
+  assert.deepEqual(await f.service.claim(guest, { ...f.target, invitation_id: r.id }), claim);
+  assert.equal(f.service.permissions(guest, f.target).capabilities.includes("send"), false);
+  await f.service.propose(guest, f.message());
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.service.messages(f.users.owner, f.target)[0].sender_email, guest.email);
+  f.service.revokeInvitation(f.users.owner, { ...f.target, invitation_id: r.id });
+  await assert.rejects(
+    f.service.claim(guest, { ...f.target, invitation_id: r.id }),
+    /invitation_unavailable/,
+  );
+  await assert.rejects(f.service.view(guest, f.target), /forbidden/);
+});
+
+test("invites reject nonowners, excess expiry, reused identity, foreign target, existing grant and expiry", async (t) => {
+  const f = fixture(t),
+    invite = {
+      ...f.target,
+      request_id: randomUUID(),
+      email: f.users.outsider.email,
+      expires_at: Date.now() + 600000,
+    };
+  await assert.rejects(f.service.invite(f.users.proposer, invite), /forbidden/);
+  await assert.rejects(
+    f.service.invite(f.users.owner, { ...invite, expires_at: Date.now() + 86400001 }),
+    /invalid_expiry/,
+  );
+  const r = await f.service.invite(f.users.owner, invite),
+    p = { ...f.target, invitation_id: r.id };
+  await assert.rejects(
+    f.service.claim(f.users.outsider, { ...p, thread_id: "foreign" }),
+    /invitation_unavailable/,
+  );
+  await assert.rejects(
+    f.service.invite(f.users.owner, { ...invite, email: "other@example.test" }),
+    /idempotency_conflict/,
+  );
+  await f.grant("outsider", ["view"]);
+  await assert.rejects(f.service.claim(f.users.outsider, p), /grant_already_exists/);
+  f.advance(700000);
+  await assert.rejects(f.service.claim(f.users.outsider, p), /invitation_unavailable/);
+});
+
+test("claim fences revocation during native read, duplicate subjects and later owner grant changes", async (t) => {
+  const f = fixture(t),
+    guest = { subject: "new", email: "guest@example.test" };
+  const r = await f.service.invite(f.users.owner, {
+    ...f.target,
+    request_id: randomUUID(),
+    email: guest.email,
+    expires_at: Date.now() + 600000,
+  });
+  const p = { ...f.target, invitation_id: r.id };
+  f.hook(async () => f.service.revokeInvitation(f.users.owner, p));
+  await assert.rejects(f.service.claim(guest, p), /invitation_unavailable/);
+  assert.equal(f.store.all("collaboration.grant").length, 0);
+  f.hook(async () => {});
+  const next = await f.service.invite(f.users.owner, {
+    ...f.target,
+    request_id: randomUUID(),
+    email: guest.email,
+    expires_at: Date.now() + 600000,
+  });
+  const q = { ...f.target, invitation_id: next.id };
+  await Promise.all([f.service.claim(guest, q), f.service.claim(guest, q)]);
+  await assert.rejects(
+    f.service.claim({ ...guest, subject: "other" }, q),
+    /invitation_unavailable/,
+  );
+  f.service.identity(guest);
+  await f.service.setGrant(f.users.owner, {
+    ...f.target,
+    subject: guest.subject,
+    capabilities: [],
+    expected_revision: 1,
+    expires_at: Date.now() + 600000,
+  });
+  await assert.rejects(f.service.claim(guest, q), /invitation_unavailable/);
+  assert.equal(f.writes.length, 0);
+});

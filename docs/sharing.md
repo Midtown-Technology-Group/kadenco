@@ -3,6 +3,8 @@
 The owner and colleague use their own existing MTG sign-ins. A link identifies a
 thread; it does not carry permission or an owner credential.
 
+For the streamlined invitation flow, see [Guest sharing journey](guest-sharing-journey.md). It allows an owner to invite a verified colleague before their first portal sign-in. The manual access-management flow below remains available.
+
 1. Open the configured collaboration portal at `/collaborate/`. As owner, copy
    the **Colleague sign-in link** and send it to your colleague. This link has
    no thread target, token or credential. They sign in once so their verified
