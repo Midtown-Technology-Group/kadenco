@@ -27,7 +27,7 @@ Public startup uses read-only local durable projections and optional configured 
 
 Read COMPATIBILITY.md and SECURITY.md. Native APIs/schema can change. Strict active-run steering is disabled: installed native behavior can start/queue a turn in races. continue_thread explicitly authorizes a new turn. Stored, native accepted, observed, agent-acknowledged and completed are distinct. Reconcile a stable UUID after uncertainty; never automatically resend. HTTP 200 webhook delivery does not prove agent execution. Aggregate monitoring currently requires live command scope as well as read scope. Diagnostics retain seven days or 25,000 records globally. Native completion observation retains 20 recent runs; this is not lossless telemetry.
 
-Collaboration remains opt-in and disabled by default. The current identity verifier requires a configured Entra/Access identity boundary. Do not assume arbitrary external guest admission. Sharing links grant no authority.
+Collaboration remains opt-in and disabled by default. The current identity verifier requires a configured Entra/Access identity boundary. Do not assume arbitrary external guest admission. Sharing links grant no authority. See [sharing with MTG colleagues](docs/sharing.md) for the owner and colleague flow.
 
 ## Release status
 

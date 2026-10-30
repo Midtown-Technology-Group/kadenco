@@ -17,6 +17,29 @@
       <aside>
         <h2>Your threads</h2>
         <nav id="threads"></nav>
+        <section id="sharing-help" hidden>
+          <h2>Share with a colleague</h2>
+          <ol>
+            <li>
+              Send the sign-in link below and ask your colleague to sign in once with their MTG
+              account.
+            </li>
+            <li>
+              Open the exact host and thread below. Expand
+              <strong>Manage access to this thread</strong>, select their account, choose
+              permissions and an expiry, then save.
+            </li>
+            <li>
+              Use <strong>Copy link</strong> on the opened thread and send it to your colleague.
+            </li>
+          </ol>
+          <label>Colleague sign-in link<input id="sign-in-link" readonly /></label>
+          <button id="copy-sign-in" type="button">Copy sign-in link</button>
+          <p>
+            Signing in or receiving a link grants no thread access. Start with View when your
+            colleague only needs to follow progress.
+          </p>
+        </section>
         <form id="open" hidden>
           <h2>Open a thread</h2>
           <label>Host<input id="host" required maxlength="100" value="local" /></label
