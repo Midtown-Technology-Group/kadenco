@@ -466,3 +466,289 @@ test("coverage ledger accounts for every registered tool and disabled entry refu
   ]);
   assert.notEqual(denied.status, 0);
 });
+
+test("edge MCP/collaboration adapters retain role authentication and deny requests when central lease fails", async () => {
+  const { composeEdgeRoutes } = await import("../src/edge-routes.ts");
+  const { Bridge } = await import("../../../dist/bridge.mjs");
+  const { Store } = await import("../../../dist/store.mjs");
+  const store = new Store(":memory:", randomBytes(32));
+  let allowed = false;
+  const policy = {
+    sessions: [],
+    principals: [{ id: "owner", tokenSha256: "a".repeat(64), sessions: [] }],
+    collaboration: {
+      enabled: true,
+      brokerPrincipal: "owner",
+      ownerSubjects: ["owner"],
+      origin: "https://fixture.invalid",
+    },
+    callbackHosts: [],
+  };
+  const bridge = new Bridge({
+    store,
+    policy: () => policy,
+    backend: {},
+    post: async () => ({ status: 200 }),
+  } as any);
+  const routes = composeEdgeRoutes(
+    bridge,
+    async () => {
+      if (!allowed) throw Error("fenced");
+    },
+    { authenticate: async () => ({ subject: "guest", email: "guest@example.test" }) } as any,
+  );
+  const servers = [routes.mcp.server, routes.collaboration.server];
+  try {
+    for (const server of servers)
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = (server: (typeof servers)[number]) =>
+      "http://127.0.0.1:" + (server.address() as { port: number }).port;
+    assert.equal((await fetch(url(servers[0]) + "/mcp")).status, 503);
+    assert.equal((await fetch(url(servers[1]) + "/collaborate/api/me")).status, 503);
+    allowed = true;
+    assert.equal((await fetch(url(servers[0]) + "/mcp")).status, 401);
+    const response = await fetch(url(servers[1]) + "/collaborate/api/me");
+    assert.notEqual(response.status, 503);
+    assert.equal(store.all("command").length, 0);
+  } finally {
+    for (const server of servers) {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    routes.collaboration.inner.emit("close");
+    store.close();
+  }
+});
+
+test("bounded observation hands off exact events once; callback adapter rechecks pending routing and keeps signing identity", async () => {
+  const { observeExisting, deliverClaimed, existingCallback } =
+    await import("../src/edge-services.ts");
+  const { Store } = await import("../../../dist/store.mjs");
+  const store = new Store(":memory:", randomBytes(32));
+  const event = {
+    eventId: "preserved-event",
+    name: "t3.eddie.requested",
+    data: { request_id: "request", host: "local", thread_id: "thread", run_id: "run" },
+  };
+  const subscription = {
+    id: "standing",
+    owner: "owner",
+    host: "local",
+    threadId: "thread",
+    active: true,
+    expires: null,
+    nonExpiring: true,
+    name: event.name,
+    url: "https://callback.example.test/events",
+    secret: "whsec_" + randomBytes(32).toString("base64"),
+  };
+  store.put("subscription", subscription.id, subscription);
+  store.put("delivery", "delivery", {
+    id: "delivery",
+    subId: subscription.id,
+    status: "pending",
+    event,
+  });
+  let posts = 0,
+    pending = true,
+    checks = 0;
+  const bridge = {
+    store,
+    now: Date.now,
+    async observe() {},
+    fleetEvents: { async observe() {} },
+    exchanges: {
+      async deliverable() {
+        checks++;
+        if (!pending) throw Object.assign(Error("closed"), { reason: "input_request_not_pending" });
+      },
+    },
+    async post(_url: string, headers: Record<string, string>, body: string) {
+      posts++;
+      assert.equal(headers["webhook-id"], event.eventId);
+      assert.equal(headers["X-MCP-Subscription-Id"], subscription.id);
+      assert.ok(headers["webhook-signature"]);
+      assert.equal(JSON.parse(body).eventId, event.eventId);
+      return { status: 204 };
+    },
+  } as any;
+  const binding = {
+    project: "project",
+    provider: "provider",
+    run: "run",
+    grant: "grant",
+    revision: 1,
+    expires: 4102444800000,
+  };
+  const ports = {
+    epoch: 7,
+    async refreshLease() {},
+    async ownerCall() {
+      return { stored: true };
+    },
+    async executorCall(op: string) {
+      return op === "observation_cursor" ? { cursor: 0 } : { stored: true, id: "central-delivery" };
+    },
+    binding: () => binding,
+  };
+  try {
+    assert.equal((await observeExisting(bridge, ports)).length, 1);
+    assert.equal((await observeExisting(bridge, ports)).length, 0);
+    const post = existingCallback(bridge);
+    const call = async (op: string, p: object) =>
+      op === "outbox_claim"
+        ? {
+            claimed: true,
+            generation: 1,
+            callback_reference: "standing",
+            callback_scope: { owner: "owner", host: "local", thread: "thread", name: event.name },
+            event: { event_id: event.eventId, data: event },
+          }
+        : op === "outbox_begin"
+          ? { may_attempt: true }
+          : { ...(p as object) };
+    const delivered = await deliverClaimed("central-delivery", {
+      epoch: 7,
+      call,
+      postExisting: post,
+    });
+    assert.equal(delivered.http_status, 204);
+    assert.equal(posts, 1);
+    pending = false;
+    const stopped = await deliverClaimed("central-delivery", {
+      epoch: 7,
+      call,
+      postExisting: post,
+    });
+    assert.equal(stopped.source_reason, "input_request_not_pending");
+    assert.equal(posts, 1);
+    assert.equal(checks, 2);
+  } finally {
+    store.close();
+  }
+});
+
+test("real MCP native call cannot bypass the default central mutation gate", async () => {
+  const { composeEdgeRoutes } = await import("../src/edge-routes.ts");
+  const { Bridge } = await import("../../../dist/bridge.mjs");
+  const { Store } = await import("../../../dist/store.mjs");
+  const { createHash, randomUUID } = await import("node:crypto");
+  const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
+  const token = "synthetic-edge-owner",
+    store = new Store(":memory:", randomBytes(32));
+  let effects = 0;
+  const policy = {
+    sessions: [],
+    principals: [
+      {
+        id: "owner",
+        tokenSha256: createHash("sha256").update(token).digest("hex"),
+        sessions: [],
+        commandHosts: [{ host: "local" }],
+      },
+    ],
+    collaboration: {
+      enabled: true,
+      brokerPrincipal: "owner",
+      ownerSubjects: ["owner"],
+      origin: "https://fixture.invalid",
+    },
+    callbackHosts: [],
+  };
+  const bridge = new Bridge({
+    store,
+    policy: () => policy,
+    backend: {},
+    post: async () => ({ status: 200 }),
+  } as any);
+  bridge.fleetReads = {} as any;
+  bridge.commands = {
+    async continue() {
+      effects++;
+      return { native_submitted: true };
+    },
+    creation: {},
+    settings: {},
+  } as any;
+  const routes = composeEdgeRoutes(bridge, async () => {}, {
+    authenticate: async () => ({ subject: "owner", email: "owner@example.test" }),
+  } as any);
+  const server = routes.mcp.server;
+  let client: InstanceType<typeof Client> | undefined;
+  try {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = new URL("http://127.0.0.1:" + (server.address() as { port: number }).port + "/mcp");
+    client = new Client(
+      { name: "fixture", version: "1" },
+      { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+    );
+    await client.connect(
+      new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { authorization: "Bearer " + token } },
+      }),
+    );
+    const result = await client.callTool({
+      name: "continue_thread",
+      arguments: {
+        host: "local",
+        thread_id: "thread",
+        source_run_id: "run",
+        request_id: randomUUID(),
+        message: "harmless",
+        execution: "allow_new_turn",
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.equal(effects, 0);
+  } finally {
+    await client?.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    routes.collaboration.inner.emit("close");
+    store.close();
+  }
+});
+
+test("mutation gate retains collaboration's final authorization callback and selection restrictions", async () => {
+  const { gateEdgeMutations } = await import("../src/mutation-gate.ts");
+  let authorized = 0,
+    native = 0;
+  const bridge = {
+    commands: {
+      async continue(
+        _owner: string,
+        _p: unknown,
+        options: { authorize: () => void; currentSelectionOnly: boolean; collaborator: boolean },
+      ) {
+        assert.equal(options.currentSelectionOnly, true);
+        assert.equal(options.collaborator, true);
+        options.authorize();
+        native++;
+        return { native_submitted: true };
+      },
+      creation: {},
+      settings: {},
+    },
+  } as any;
+  const gated = gateEdgeMutations(bridge, async (_kind, _owner, _input, execute) => execute());
+  const opts = {
+    authorize: () => {
+      authorized++;
+    },
+    currentSelectionOnly: true,
+    collaborator: true,
+  };
+  await gated.commands!.continue("owner", {} as any, opts);
+  assert.equal(authorized, 1);
+  assert.equal(native, 1);
+  await assert.rejects(
+    gated.commands!.continue("owner", {} as any, {
+      ...opts,
+      authorize: () => {
+        throw Error("revoked");
+      },
+    }),
+    /revoked/,
+  );
+  assert.equal(native, 1);
+});

@@ -6,6 +6,7 @@
   "scripts": {
     "deploy": "node operator/deny-deploy.mjs",
     "test": "npm run build && vitest run && node --experimental-strip-types --test spec/edge.node.mts",
+    "test:parity": "node operator/parity.mjs",
     "operator:fixture": "node --experimental-strip-types operator/local.mts --fixture",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types",

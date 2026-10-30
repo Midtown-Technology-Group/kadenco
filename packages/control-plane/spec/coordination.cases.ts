@@ -713,3 +713,452 @@ describe("persisted operation scope revocation", () => {
     ).toEqual({ reason: "forbidden" });
   });
 });
+
+describe("central observation, outbox and shared budgets", () => {
+  const binding = {
+    project: "project",
+    provider: "provider",
+    run: "run",
+    grant: "grant",
+    revision: 1,
+    expires: 4102444700000,
+  };
+  async function reset() {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      for (const table of [
+        "subscriptions",
+        "observations",
+        "outbox",
+        "edge_lease",
+        "budget_reservations",
+        "commands",
+        "revoked",
+        "auth_policy",
+      ])
+        s.storage.sql.exec(`DELETE FROM ${table}`);
+      s.storage.sql.exec("UPDATE control SET mode='active',epoch=7 WHERE id=1");
+    });
+    await call("status");
+  }
+  const subscribe = (id = "standing") =>
+    call("subscribe_central", {
+      epoch: 7,
+      id,
+      host: "local",
+      thread_id: "thread",
+      binding,
+      expires: null,
+      name: "t3.thread.activity",
+      callback_reference: "existing-signer-reference",
+    });
+  const observe = (id = "standing", cursor = 1) =>
+    call(
+      "observe_central",
+      {
+        epoch: 7,
+        subscription_id: id,
+        expected_cursor: cursor - 1,
+        cursor,
+        run: "run",
+        kind: "completed",
+        native_request_id: "native-event",
+        event: {
+          eventId: "existing-event-id",
+          name: "t3.thread.activity",
+          data: { result: "harmless" },
+        },
+      },
+      "synthetic-agent",
+    );
+  it("preserves subscription identity/null expiry; duplicate observation and cursor race do not duplicate delivery", async () => {
+    await reset();
+    expect(await subscribe()).toMatchObject({ id: "standing", expires: null });
+    const first = await observe();
+    expect(first.duplicate).toBe(false);
+    expect(await observe()).toMatchObject({ duplicate: true, id: first.id });
+    expect(
+      await call("subscribe_central", {
+        epoch: 7,
+        id: "standing",
+        host: "local",
+        thread_id: "other",
+        binding,
+        expires: null,
+        name: "t3.thread.activity",
+        callback_reference: "existing-signer-reference",
+      }),
+    ).toEqual({ reason: "idempotency_conflict" });
+    const claims = await Promise.all([
+      call("outbox_claim", { epoch: 7, id: first.id }, "synthetic-agent"),
+      call("outbox_claim", { epoch: 7, id: first.id }, "synthetic-agent2"),
+    ]);
+    expect(claims.filter((v) => v.claimed)).toHaveLength(1);
+  });
+  it("callback retry retains event ID, HTTP ack is not agent completion, and revocation denies dispatch", async () => {
+    await reset();
+    await subscribe();
+    const event = await observe();
+    const claim = await call("outbox_claim", { epoch: 7, id: event.id }, "synthetic-agent");
+    const args = { epoch: 7, id: event.id, generation: claim.generation };
+    const first = await call("outbox_begin", args, "synthetic-agent");
+    expect(first.may_attempt).toBe(true);
+    expect(
+      await call("outbox_result", { ...args, http_status: 503 }, "synthetic-agent"),
+    ).toMatchObject({ state: "pending", agent_completed: false });
+    await runInDurableObject(stub(), (_o, s) =>
+      s.storage.sql.exec("UPDATE outbox SET next=0,lease=NULL WHERE id=?", event.id),
+    );
+    const retry = await call("outbox_claim", { epoch: 7, id: event.id }, "synthetic-agent2");
+    const second = await call(
+      "outbox_begin",
+      { epoch: 7, id: event.id, generation: retry.generation },
+      "synthetic-agent2",
+    );
+    expect(second.event_id).toBe(first.event_id);
+    expect(
+      await call(
+        "outbox_result",
+        { epoch: 7, id: event.id, generation: retry.generation, http_status: 204 },
+        "synthetic-agent2",
+      ),
+    ).toMatchObject({ delivery_acknowledged: true, agent_completed: false });
+    expect(await call("outbox_claim", { epoch: 7, id: event.id }, "synthetic-agent")).toMatchObject(
+      { claimed: false, state: "acknowledged" },
+    );
+    await call("revoke", { principal_id: "owner" });
+    expect(await observe()).toEqual({ reason: "forbidden" });
+  });
+  it("expired subscription and another owner's scope cannot deliver", async () => {
+    await reset();
+    await subscribe();
+    const event = await observe();
+    await runInDurableObject(stub(), (_o, s) =>
+      s.storage.sql.exec("UPDATE subscriptions SET expires=1 WHERE id='standing'"),
+    );
+    expect(await call("outbox_claim", { epoch: 7, id: event.id }, "synthetic-agent")).toEqual({
+      reason: "forbidden",
+    });
+    expect(
+      await call("unsubscribe_central", { epoch: 7, id: "standing" }, "synthetic-owner2"),
+    ).toEqual({ reason: "forbidden" });
+  });
+  it("atomic host budget covers different command kinds and duplicates retain spent uncertainty", async () => {
+    await reset();
+    await runInDurableObject(stub(), (_o, s) => {
+      const raw = s.storage.sql
+        .exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1")
+        .one();
+      const p = JSON.parse(raw.value);
+      p.principals.find((v: { id: string }) => v.id === "owner").maxPerDay = 1;
+      s.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(p));
+    });
+    const first = await reserve("budget-one");
+    expect(first.state).toBe("pending");
+    expect((await reserve("budget-one")).state).toBe("pending");
+    expect(
+      await call("reserve", {
+        epoch: 7,
+        request_id: "budget-two",
+        host: "local",
+        thread_id: "exact-thread",
+        kind: "settings_standard",
+        payload_sha256: "a".repeat(64),
+      }),
+    ).toEqual({ reason: "command_budget_exhausted" });
+    await abortAllDurableObjects();
+    expect((await reserve("budget-one")).state).toBe("pending");
+    expect(await reserve("budget-three")).toEqual({ reason: "command_budget_exhausted" });
+  });
+  it("cooperating edge lease fences another executor and stale renewal", async () => {
+    await reset();
+    const lease = await call("edge_lease", { epoch: 7 }, "synthetic-agent");
+    expect(lease.holder).toBe("agent");
+    expect(await call("edge_lease", { epoch: 7 }, "synthetic-agent2")).toEqual({
+      reason: "fenced",
+    });
+    expect(
+      await call("edge_lease", { epoch: 7, generation: lease.generation + 1 }, "synthetic-agent"),
+    ).toEqual({ reason: "fenced" });
+  });
+});
+
+describe("central per-thread provider caps", () => {
+  it("shares the thread/provider cap across continue and settings without changing host unlimited policy", async () => {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      s.storage.sql.exec("DELETE FROM auth_policy");
+      s.storage.sql.exec("DELETE FROM commands");
+      s.storage.sql.exec("DELETE FROM budget_reservations");
+      s.storage.sql.exec("DELETE FROM revoked");
+    });
+    await call("status");
+    await active();
+    await runInDurableObject(stub(), (_o, s) => {
+      const raw = s.storage.sql
+        .exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1")
+        .one();
+      const p = JSON.parse(raw.value);
+      p.principals.find((v: { id: string }) => v.id === "owner").threadBudgets = [
+        { thread: "exact-thread", provider: "provider", maxPerDay: 1, expiresAt: 4102444800000 },
+      ];
+      s.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(p));
+    });
+    expect((await reserve("thread-budget-one")).state).toBe("pending");
+    expect(
+      await call("reserve", {
+        epoch: 7,
+        request_id: "thread-budget-two",
+        host: "local",
+        thread_id: "exact-thread",
+        kind: "settings_standard",
+        payload_sha256: "a".repeat(64),
+      }),
+    ).toEqual({ reason: "command_budget_exhausted" });
+  });
+});
+
+import { observeExisting, deliverClaimed, existingCallback } from "../src/edge-services.ts";
+describe("real central outbox with existing edge service adapters", () => {
+  it("observes, claims and signs one original callback without starting native work", async () => {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      for (const table of ["auth_policy", "revoked", "subscriptions", "observations", "outbox"])
+        s.storage.sql.exec(`DELETE FROM ${table}`);
+    });
+    await call("status");
+    await active();
+    const event = {
+      eventId: "original-callback-id",
+      name: "t3.eddie.requested",
+      data: { request_id: "native-request", host: "local", thread_id: "thread", run_id: "run" },
+    };
+    const sub = {
+      id: "original-standing-sub",
+      owner: "owner",
+      host: "local",
+      threadId: "thread",
+      active: true,
+      expires: null,
+      nonExpiring: true,
+      name: event.name,
+      url: "https://fixture.invalid/callback",
+      secret: "whsec_" + randomBytes(32).toString("base64"),
+    };
+    const records = new Map<string, any>([
+      ["subscription:" + sub.id, sub],
+      ["delivery:queued", { id: "queued", subId: sub.id, status: "pending", event }],
+    ]);
+    let posts = 0;
+    const bridge = {
+      now: Date.now,
+      store: {
+        get: (kind: string, id: string) => records.get(kind + ":" + id),
+        all: (kind: string) =>
+          [...records].filter(([key]) => key.startsWith(kind + ":")).map(([, v]) => v),
+        put: (kind: string, id: string, v: unknown) => records.set(kind + ":" + id, v),
+      },
+      async observe() {},
+      fleetEvents: { async observe() {} },
+      exchanges: { async deliverable() {} },
+      async post(_url: string, headers: Record<string, string>, body: string) {
+        posts++;
+        expect(headers["webhook-id"]).toBe(event.eventId);
+        expect(headers["X-MCP-Subscription-Id"]).toBe(sub.id);
+        expect(JSON.parse(body)).toEqual(event);
+        return { status: 204 };
+      },
+    } as any;
+    const results = await observeExisting(bridge, {
+      epoch: 7,
+      async refreshLease() {},
+      ownerCall: call,
+      executorCall: (op, p) => call(op, p, "synthetic-agent"),
+      binding: () => ({
+        project: "project",
+        provider: "provider",
+        run: "run",
+        grant: "grant",
+        revision: 1,
+        expires: 4102444700000,
+      }),
+    });
+    expect(results).toHaveLength(1);
+    const result = await deliverClaimed(results[0].id, {
+      epoch: 7,
+      call: (op, p) => call(op, p, "synthetic-agent"),
+      postExisting: existingCallback(bridge),
+    });
+    expect(result).toMatchObject({ state: "acknowledged", agent_completed: false });
+    expect(posts).toBe(1);
+    expect(
+      (
+        await deliverClaimed(results[0].id, {
+          epoch: 7,
+          call: (op, p) => call(op, p, "synthetic-agent2"),
+          postExisting: existingCallback(bridge),
+        })
+      ).state,
+    ).toBe("blocked");
+    expect(posts).toBe(1);
+  });
+});
+
+import { centralCoordinator } from "../src/coordinator.ts";
+import { gateEdgeMutations } from "../src/mutation-gate.ts";
+describe("MCP/collaboration native mutation gate uses central protocol", () => {
+  it("central reservation and durable attempt precede exact existing service execution; replay returns original receipt", async () => {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      for (const table of ["auth_policy", "revoked", "commands", "budget_reservations"])
+        s.storage.sql.exec(`DELETE FROM ${table}`);
+    });
+    await call("status");
+    await active();
+    const e: Envelope = {
+      request_id: crypto.randomUUID(),
+      fleet: "test-fleet",
+      principal: "owner",
+      host: "local",
+      project: "project",
+      provider: "provider",
+      thread_id: "exact-thread",
+      run: "run",
+      grant: "grant",
+      revision: 1,
+      expires: 4102444700000,
+      kind: "continue",
+      payload: { text: "exact harmless input" },
+    };
+    const g: Grant = { ...e, expires: 4102444800000, revoked: false, kinds: ["continue"] };
+    let effects = 0;
+    const coordinate = centralCoordinator({
+      epoch: 7,
+      key: randomBytes(32),
+      journal: {
+        async reserve(id) {
+          return runInDurableObject(stub(), (_o, s) => {
+            s.storage.sql.exec(
+              "CREATE TABLE IF NOT EXISTS routed_attempts(id TEXT PRIMARY KEY,outcome TEXT)",
+            );
+            return (
+              s.storage.sql
+                .exec("INSERT OR IGNORE INTO routed_attempts VALUES(?,NULL) RETURNING id", id)
+                .toArray().length === 1
+            );
+          });
+        },
+        async finish(id, value) {
+          await runInDurableObject(stub(), (_o, s) => {
+            s.storage.sql.exec(
+              "UPDATE routed_attempts SET outcome=? WHERE id=?",
+              JSON.stringify(value),
+              id,
+            );
+          });
+        },
+      },
+      ownerCall: (_owner, op, p) => call(op, p),
+      executorCall: (op, p) => call(op, p, "synthetic-agent"),
+      async bind() {
+        return { envelope: e, grant: g };
+      },
+      async currentGrant() {
+        return g;
+      },
+      async observe() {
+        return { state: "unknown", evidence: "read-only" };
+      },
+    });
+    const fakeBridge = {
+      commands: {
+        async continue(_owner: string, p: unknown) {
+          effects++;
+          return { native_submitted: true, result: p };
+        },
+        creation: {},
+        settings: {},
+      },
+    } as any;
+    const gated = gateEdgeMutations(fakeBridge, coordinate),
+      p = {
+        host: e.host,
+        thread_id: e.thread_id,
+        request_id: e.request_id,
+        source_run_id: "run",
+        message: "exact harmless input",
+        execution: "allow_new_turn",
+      };
+    const first = await gated.commands!.continue("owner", p);
+    expect(first.native_submitted).toBe(true);
+    expect(await gated.commands!.continue("owner", p)).toEqual(first);
+    expect(effects).toBe(1);
+    await expect(gated.commands!.continue("owner", { ...p, message: "altered" })).rejects.toThrow(
+      "binding_mismatch",
+    );
+    expect(effects).toBe(1);
+    await expect(gated.followup("owner", {} as any)).rejects.toThrow("binding_mismatch");
+  });
+});
+
+describe("subscription lifetime CAS and identity preservation", () => {
+  it("renews within original temporary ceiling, refuses extension/revival, and ignores transport epoch in identity", async () => {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      for (const table of ["auth_policy", "revoked", "subscriptions"])
+        s.storage.sql.exec(`DELETE FROM ${table}`);
+    });
+    await call("status");
+    await active();
+    const now = Date.now(),
+      base = {
+        epoch: 7,
+        id: "temporary-lifetime",
+        host: "local",
+        thread_id: "thread",
+        binding: {
+          project: "project",
+          provider: "provider",
+          run: "run",
+          grant: "grant",
+          revision: 1,
+          expires: 4102444700000,
+        },
+        expires: now + 60000,
+        lease_expires: now + 90000,
+        name: "t3.thread.activity",
+        callback_reference: "existing",
+      };
+    expect(await call("subscribe_central", base)).toMatchObject({ stored: true });
+    expect(
+      await call("subscribe_central", {
+        ...base,
+        expected_expires: base.expires,
+        expires: now + 80000,
+      }),
+    ).toMatchObject({ stored: true });
+    expect(
+      await call("subscribe_central", {
+        ...base,
+        expected_expires: now + 80000,
+        expires: now + 120000,
+      }),
+    ).toEqual({ reason: "invalid_request" });
+    expect(
+      await call("subscription_snapshot", { epoch: 7, id: base.id }, "synthetic-owner2"),
+    ).toEqual({ reason: "forbidden" });
+    await call("unsubscribe_central", { epoch: 7, id: base.id });
+    expect(await call("subscribe_central", base)).toEqual({ reason: "forbidden" });
+    const { lease_expires: _lease, ...standing } = base;
+    standing.id = "standing-epoch";
+    const persistent = { ...standing, expires: null };
+    expect(await call("subscribe_central", persistent)).toMatchObject({ stored: true });
+    await runInDurableObject(stub(), (_o, s) =>
+      s.storage.sql.exec("UPDATE control SET epoch=8 WHERE id=1"),
+    );
+    expect(await call("subscribe_central", { ...persistent, epoch: 8 })).toMatchObject({
+      stored: true,
+      expires: null,
+    });
+  });
+});

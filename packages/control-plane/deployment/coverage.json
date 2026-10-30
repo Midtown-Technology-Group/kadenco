@@ -1,22 +1,22 @@
 {
   "surfaces": [
     {
-      "status": "deferred",
+      "status": "local-split-integrated",
       "name": "events/subscriptions/passive inbox",
-      "source": "src/bridge.mts, src/fleet-events.mts",
-      "reason": "Opaque state migration only. Distributed observation cursor/outbox claims, callback signing continuity and dedup not ported. Must not start a second monitor."
+      "source": "src/bridge.mts, src/fleet-events.mts, packages/control-plane/src/services.ts, packages/control-plane/src/edge-services.ts",
+      "reason": "Existing observers/filtering and native cursors stay on the single edge. Central cursor CAS, outbox claims/retries retain native event IDs. Expiry CAS preserves the original temporary ceiling; imported historical delivery adoption requires qualification; no second loop starts."
     },
     {
-      "status": "deferred",
+      "status": "edge-adapter",
       "name": "collaboration",
       "source": "src/collaboration.mts, src/collaboration-http.mts, src/sharing-requests.mts",
-      "reason": "Identity/grants/invitations/proposals retained in snapshot only. Access/Entra verification, review dispatch and SSE remain local."
+      "reason": "Reuses existing Access/Entra HTTP, capability/grant isolation, proposal/review/SSE services behind lease gate. Synchronous encrypted state remains single-edge; no claim that collaboration state became DO-authoritative."
     },
     {
-      "status": "deferred",
+      "status": "edge-adapter",
       "name": "owner/caller MCP routes",
       "source": "src/server.mts, src/host-callers.mts",
-      "reason": "Role-specific MCP registration, delivery/reply acknowledgements, waiting and request receipts not exposed centrally. Existing caller connection untouched."
+      "reason": "Original MCP auth/role registration and caller grants/pending routing remain unchanged behind request lease gate. No generic raw forwarding or new central MCP principal."
     },
     {
       "status": "local-integrated",
@@ -31,16 +31,16 @@
       "reason": "Retained encrypted rows migrate, but runtime metrics/stall profiling and central retention queries are not replaced."
     },
     {
-      "status": "deferred",
+      "status": "local-split-integrated",
       "name": "budgets",
       "source": "src/commands.mts, src/thread-settings.mts, src/bridge.mts",
-      "reason": "Existing sidecar budget enforcement reused by adapters; no distributed transactional budget authority. Multiple executors must remain disabled."
+      "reason": "Atomic central host/UTC-day and thread/provider caps across mutation kinds; original edge service enforces runtime/provider/approval limits. Legacy current-day usage conversion remains fail-closed before activation."
     },
     {
       "status": "local-integrated",
       "name": "creation/continuations/thread settings",
       "source": "packages/control-plane/src/native-adapter.ts",
-      "reason": "Exact schemas and existing enforcing services through mocked transport; production service composition and routes disabled."
+      "reason": "Exact existing service schemas including live answers and dedicated fixed follow-up; mandatory central coordinator used by MCP/collaboration mutation gate. Production grants/trust mapping not provisioned."
     },
     {
       "status": "fixture-only",
@@ -59,179 +59,179 @@
   "replacement_ready": false,
   "owner_tools": [
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "acknowledge_eddie_reply",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "acknowledge_thread_delivery",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "answer_thread_request",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific service behind mandatory central mutation gate, signed exact payload/current grant, SQL budget and durable attempt journal. Missing coordinator denies."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "ask_eddie",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "continue_thread",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific service behind mandatory central mutation gate, signed exact payload/current grant, SQL budget and durable attempt journal. Missing coordinator denies."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "create_thread",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific service behind mandatory central mutation gate, signed exact payload/current grant, SQL budget and durable attempt journal. Missing coordinator denies."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_delivery_receipt",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_eddie_capabilities",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_eddie_conversation",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_eddie_reply",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_fleet_communication_status",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_fleet_event_status",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_inbox_subscription_status",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_task_logs",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_task_result",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_thread_capabilities",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_thread_creation_options",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_thread_lane",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_thread_sharing_request",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_thread_speed_receipt",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "get_visibility_diagnostics",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "inventory_threads",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "list_eddie_requests",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "list_fleet_hosts",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "list_sessions",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "read_eddie_request",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "read_thread",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "read_thread_options",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "read_thread_requests",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "reply_to_request",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "request_followup",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific service behind mandatory central mutation gate, signed exact payload/current grant, SQL budget and durable attempt journal. Missing coordinator denies."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "request_thread_sharing",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "resolve_thread",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "search_threads",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },
     {
-      "central_route": "deferred",
+      "central_route": "edge-adapter",
       "name": "set_thread_speed_standard",
-      "boundary": "Existing sidecar remains authoritative; central candidate exposes no MCP route"
+      "boundary": "Existing role-specific service behind mandatory central mutation gate, signed exact payload/current grant, SQL budget and durable attempt journal. Missing coordinator denies."
     }
   ]
 }

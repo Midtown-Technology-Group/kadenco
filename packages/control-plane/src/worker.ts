@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { DurableObject } from "cloudflare:workers";
 import { operationBinding, authorizeBinding, type OperationBinding } from "./binding";
+import { serviceSchema, serviceOperation } from "./services";
 type Principal = {
   id: string;
   tokenSha256: string;
   role: "owner" | "executor";
   hosts: string[];
   scopes?: OperationBinding[];
+  maxPerDay?: number | null;
+  threadBudgets?: { thread: string; provider: string; maxPerDay: number; expiresAt: number }[];
   expiresAt: number;
 };
 type Policy = { revision: number; fleet: string; principals: Principal[] };
@@ -44,6 +47,21 @@ function policy(raw: string | undefined): Policy {
       fail("configuration_required");
     a.scopes?.forEach(operationBinding);
     number(a.expiresAt);
+    if (
+      a.maxPerDay !== undefined &&
+      a.maxPerDay !== null &&
+      (!Number.isSafeInteger(a.maxPerDay) || a.maxPerDay < 0 || a.maxPerDay > 100)
+    )
+      fail("configuration_required");
+    if (a.threadBudgets && (!Array.isArray(a.threadBudgets) || a.threadBudgets.length > 100))
+      fail("configuration_required");
+    for (const cap of a.threadBudgets ?? []) {
+      str(cap.thread);
+      str(cap.provider);
+      number(cap.expiresAt);
+      if (!Number.isSafeInteger(cap.maxPerDay) || cap.maxPerDay < 0 || cap.maxPerDay > 100)
+        fail("configuration_required");
+    }
   }
   return p;
 }
@@ -97,6 +115,9 @@ export class FleetState extends DurableObject<Env> {
     INSERT OR IGNORE INTO control VALUES(1,0,'staging',NULL);
     CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,host TEXT NOT NULL,thread TEXT NOT NULL,kind TEXT NOT NULL,digest TEXT NOT NULL,originator TEXT,state TEXT NOT NULL,executor TEXT,generation INTEGER NOT NULL DEFAULT 0,lease_until INTEGER,receipt TEXT);
     CREATE TABLE IF NOT EXISTS imported(kind TEXT NOT NULL,id TEXT NOT NULL,ciphertext TEXT NOT NULL,PRIMARY KEY(kind,id));
+    CREATE TABLE IF NOT EXISTS budget_reservations(id TEXT PRIMARY KEY,owner TEXT NOT NULL,host TEXT NOT NULL,thread TEXT NOT NULL,day TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS budget_host_day ON budget_reservations(owner,host,day);
+    CREATE INDEX IF NOT EXISTS budget_thread_day ON budget_reservations(owner,host,thread,day);
     CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT NOT NULL,action TEXT NOT NULL,subject TEXT NOT NULL,at INTEGER NOT NULL);
   `);
     if (
@@ -140,7 +161,7 @@ export class FleetState extends DurableObject<Env> {
       )
       .one();
   }
-  authorized(a: Principal, host?: string) {
+  authorized(a: Pick<Principal, "id" | "expiresAt" | "hosts">, host?: string) {
     if (
       a.expiresAt <= Date.now() ||
       this.sql().exec("SELECT id FROM revoked WHERE id=?", a.id).toArray().length
@@ -179,6 +200,7 @@ export class FleetState extends DurableObject<Env> {
   }
   apply(a: Principal, op: string, p: Record<string, unknown>) {
     this.authorized(a);
+    serviceSchema(this.sql());
     const state = this.state();
     if (op === "status") {
       keys(p, []);
@@ -200,6 +222,19 @@ export class FleetState extends DurableObject<Env> {
         if (
           !prior ||
           prior.role !== n.role ||
+          (prior.threadBudgets ?? []).some(
+            (oldCap) =>
+              !(n.threadBudgets ?? []).some(
+                (cap) =>
+                  cap.thread === oldCap.thread &&
+                  cap.provider === oldCap.provider &&
+                  cap.maxPerDay <= oldCap.maxPerDay &&
+                  cap.expiresAt <= oldCap.expiresAt,
+              ),
+          ) ||
+          (prior.maxPerDay !== undefined &&
+            prior.maxPerDay !== null &&
+            (n.maxPerDay === undefined || n.maxPerDay === null || n.maxPerDay > prior.maxPerDay)) ||
           prior.tokenSha256 !== n.tokenSha256 ||
           n.expiresAt > prior.expiresAt ||
           n.hosts.some((h) => !prior.hosts.includes(h)) ||
@@ -301,6 +336,22 @@ export class FleetState extends DurableObject<Env> {
     }
     if (state.mode !== "active") fail("not_active");
     if (number(p.epoch) !== state.epoch) fail("fenced");
+    const service = serviceOperation(
+      {
+        sql: this.sql(),
+        actor: a,
+        principal: (id) =>
+          this.currentPolicy().principals.find((p) => p.id === id) ?? fail("forbidden"),
+        authorize: (actor, host) => this.authorized(actor, host),
+        now: Date.now(),
+      },
+      op,
+      p,
+    );
+    if (service !== undefined) {
+      this.audit(a, op, String(p.id ?? p.subscription_id ?? "event"));
+      return service;
+    }
     if (op === "reserve") {
       keys(p, ["epoch", "request_id", "host", "thread_id", "kind", "payload_sha256", "binding"]);
       if (a.role !== "owner") fail("forbidden");
@@ -313,7 +364,9 @@ export class FleetState extends DurableObject<Env> {
       const binding = operationBinding(p.binding);
       authorizeBinding(binding, a.scopes, Date.now());
       if (
-        !["continue", "create", "settings_standard", "webhook"].includes(kind) ||
+        !["continue", "create", "settings_standard", "webhook", "answer", "verify_result"].includes(
+          kind,
+        ) ||
         !/^[a-f0-9]{64}$/.test(digest)
       )
         fail("invalid_request");
@@ -337,6 +390,42 @@ export class FleetState extends DurableObject<Env> {
           old.binding !== JSON.stringify(binding))
       )
         fail("idempotency_conflict");
+      if (!old && kind !== "webhook") {
+        if (a.maxPerDay === undefined) fail("forbidden");
+        const day = new Date().toISOString().slice(0, 10);
+        for (const cap of a.threadBudgets ?? []) {
+          if (cap.thread !== thread || cap.provider !== binding.provider) continue;
+          if (cap.expiresAt <= Date.now()) fail("forbidden");
+          const usedThread = this.sql()
+            .exec<{ n: number }>(
+              "SELECT COUNT(*) n FROM budget_reservations b JOIN commands c ON c.id=b.id WHERE b.owner=? AND b.host=? AND b.thread=? AND b.day=? AND json_extract(c.binding,'$.provider')=?",
+              a.id,
+              host,
+              thread,
+              day,
+              binding.provider,
+            )
+            .one().n;
+          if (usedThread >= cap.maxPerDay) fail("command_budget_exhausted");
+        }
+        const used = this.sql()
+          .exec<{ n: number }>(
+            "SELECT COUNT(*) n FROM budget_reservations WHERE owner=? AND host=? AND day=?",
+            a.id,
+            host,
+            day,
+          )
+          .one().n;
+        if (a.maxPerDay !== null && used >= a.maxPerDay!) fail("command_budget_exhausted");
+        this.sql().exec(
+          "INSERT INTO budget_reservations VALUES(?,?,?,?,?)",
+          id,
+          a.id,
+          host,
+          thread,
+          day,
+        );
+      }
       this.sql().exec(
         "INSERT OR IGNORE INTO commands(id,host,thread,kind,digest,originator,binding,state) VALUES(?,?,?,?,?,?,?,'pending')",
         id,
@@ -434,6 +523,7 @@ export class FleetState extends DurableObject<Env> {
         "idempotency_conflict",
         "cutover_not_implemented",
         "immutable_outcome",
+        "command_budget_exhausted",
       ];
       if (!allowed.includes(reason)) {
         console.error("control-plane unexpected error", typeof e);

@@ -15,6 +15,7 @@ export default defineConfig({
               {
                 id: "owner2",
                 role: "owner",
+                maxPerDay: null,
                 hosts: ["local"],
                 scopes: [
                   {
@@ -49,6 +50,7 @@ export default defineConfig({
               {
                 id: "owner",
                 role: "owner",
+                maxPerDay: null,
                 hosts: ["local"],
                 scopes: [
                   {

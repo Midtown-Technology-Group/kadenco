@@ -11,7 +11,7 @@ export type Envelope = {
   provider: string;
   thread_id: string;
   run: string | null;
-  kind: "continue" | "create" | "settings_standard" | "webhook";
+  kind: "continue" | "create" | "settings_standard" | "webhook" | "answer" | "verify_result";
   expires: number;
   payload: Record<string, unknown>;
 };
@@ -43,7 +43,9 @@ export function validateOperation(e: Envelope, g: Grant, now: number) {
     !Number.isSafeInteger(g.expires) ||
     !Number.isSafeInteger(g.revision) ||
     g.revision < 1 ||
-    !["continue", "create", "settings_standard", "webhook"].includes(e.kind)
+    !["continue", "create", "settings_standard", "webhook", "answer", "verify_result"].includes(
+      e.kind,
+    )
   )
     throw Error("invalid_authority");
   if (
@@ -74,13 +76,29 @@ export function validateOperation(e: Envelope, g: Grant, now: number) {
     throw Error("invalid_operation");
   const permitted = {
     continue: ["text"],
+    answer: ["native_request_id", "answers"],
+    verify_result: ["session_id", "run_id", "action"],
     create: ["text", "title", "model", "options", "runtime_mode"],
     settings_standard: ["speed", "expected_fingerprint"],
     webhook: ["event_id", "body_sha256"],
   }[e.kind];
   if (!e.payload || Object.keys(e.payload).some((k) => !permitted.includes(k)))
     throw Error("invalid_payload");
-  if (e.kind === "settings_standard") {
+  if (e.kind === "verify_result") {
+    if (
+      e.payload.action !== "verify_result" ||
+      typeof e.payload.session_id !== "string" ||
+      e.payload.run_id !== e.run
+    )
+      throw Error("invalid_payload");
+  } else if (e.kind === "answer") {
+    if (
+      typeof e.payload.native_request_id !== "string" ||
+      !e.payload.answers ||
+      typeof e.payload.answers !== "object"
+    )
+      throw Error("invalid_payload");
+  } else if (e.kind === "settings_standard") {
     if (e.payload.speed !== "standard") throw Error("invalid_payload");
   } else if (e.kind === "webhook") {
     if (
