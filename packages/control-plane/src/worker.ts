@@ -283,7 +283,13 @@ export class FleetState extends DurableObject<Env> {
       keys(p, ["expected_revision", "policy"]);
       if (a.role !== "owner") fail("forbidden");
       const old = this.currentPolicy(),
-        next = policy(JSON.stringify(p.policy));
+        next = (() => {
+          try {
+            return policy(JSON.stringify(p.policy));
+          } catch {
+            return fail("invalid_request");
+          }
+        })();
       if (number(p.expected_revision) !== old.revision || next.revision !== old.revision + 1)
         fail("fenced");
       if (next.fleet !== old.fleet) fail("forbidden");
