@@ -376,3 +376,38 @@ describe("non-Error unexpected rejection", () => {
     });
   });
 });
+
+describe("caller policy validation", () => {
+  it("rejects malformed policy shapes without changing persisted authority", async () => {
+    await call("status");
+    const before = await runInDurableObject(
+      stub(),
+      (_obj, state) =>
+        state.storage.sql.exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one()
+          .value,
+    );
+    for (const policy of [null, { revision: 2, fleet: "test-fleet", principals: [null] }, {}]) {
+      const response = await exports.default.fetch(
+        new Request("https://test.invalid/tighten_policy", {
+          method: "POST",
+          headers: { authorization: "Bearer synthetic-owner", "content-type": "application/json" },
+          body: JSON.stringify({ expected_revision: 1, policy }),
+        }),
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ reason: "invalid_request" });
+    }
+    expect(
+      await runInDurableObject(
+        stub(),
+        (_obj, state) =>
+          state.storage.sql
+            .exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1")
+            .one().value,
+      ),
+    ).toBe(before);
+    expect(
+      await call("tighten_policy", { expected_revision: 1, policy: null }, "synthetic-agent"),
+    ).toEqual({ reason: "forbidden" });
+  });
+});
