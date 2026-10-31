@@ -83,72 +83,97 @@ export async function observeExisting(
   bridge: Bridge,
   ports: {
     epoch: number;
-    refreshLease: () => Promise<void>;
+    refreshLease: () => Promise<void | Record<string, unknown>>;
     ownerCall: (op: string, p: object) => Promise<Record<string, unknown>>;
     executorCall: (op: string, p: object) => Promise<Record<string, unknown>>;
     binding: (subscription: Record<string, unknown>, event?: unknown) => OperationBinding;
   },
 ) {
-  await ports.refreshLease();
+  const refresh = async () => {
+    const result = await ports.refreshLease();
+    if (result && result.reason !== undefined) throw Error(String(result.reason));
+  };
+  await refresh();
   await bridge.observe();
   await bridge.fleetEvents.observe();
+  const passFailures = new Set(["fenced", "not_active"]);
+  const checked = (result: Record<string, unknown>) => {
+    if (passFailures.has(String(result.reason))) throw Error(String(result.reason));
+    return result;
+  };
+  const ownerCall = async (op: string, p: object) => checked(await ports.ownerCall(op, p));
+  const executorCall = async (op: string, p: object) => checked(await ports.executorCall(op, p));
   const results: { id: string; state: string }[] = [];
   for (const d of bridge.store.all("delivery")) {
     if (results.length >= 100) break;
     if (d.status !== "pending") continue;
     const s = bridge.store.get("subscription", d.subId);
     if (!subscriptionActive(s, bridge.now())) continue;
-    await ports.refreshLease();
-    // Existing filtering/pending-question/native authorization is rechecked again at
-    // callback time; observations are evidence, never permission to execute a task.
-    const binding = ports.binding(s, d.event);
-    const host = s.host ?? d.event.data?.host,
-      thread = s.threadId ?? d.event.data?.thread_id ?? "aggregate";
-    const centralSubscription = JSON.stringify([s.id, host, thread]);
-    const request = {
-      epoch: ports.epoch,
-      id: centralSubscription,
-      external_id: s.id,
-      host: s.host ?? d.event.data?.host,
-      thread_id: s.threadId ?? d.event.data?.thread_id ?? "aggregate",
-      binding,
-      expires: s.expires,
-      name: s.name,
-      callback_reference: s.id,
-      ...(s.leaseExpires !== undefined ? { lease_expires: s.leaseExpires } : {}),
-    };
-    let subscribed = await ports.ownerCall("subscribe_central", request);
-    if (subscribed.reason === "idempotency_conflict") {
-      const prior = await ports.ownerCall("subscription_snapshot", {
+    await refresh();
+    try {
+      // Existing filtering/pending-question/native authorization is rechecked again at
+      // callback time; observations are evidence, never permission to execute a task.
+      const binding = ports.binding(s, d.event);
+      const host = s.host ?? d.event.data?.host,
+        thread = s.threadId ?? d.event.data?.thread_id ?? "aggregate";
+      const centralSubscription = JSON.stringify([s.id, host, thread]);
+      const request = {
         epoch: ports.epoch,
         id: centralSubscription,
+        external_id: s.id,
+        host: s.host ?? d.event.data?.host,
+        thread_id: s.threadId ?? d.event.data?.thread_id ?? "aggregate",
+        binding,
+        expires: s.expires,
+        name: s.name,
+        callback_reference: s.id,
+        ...(s.leaseExpires !== undefined ? { lease_expires: s.leaseExpires } : {}),
+      };
+      let subscribed = await ownerCall("subscribe_central", request);
+      if (subscribed.reason === "idempotency_conflict") {
+        const prior = await ownerCall("subscription_snapshot", {
+          epoch: ports.epoch,
+          id: centralSubscription,
+        });
+        if (prior.active !== true) throw Error("subscription_sync_denied");
+        subscribed = await ownerCall("subscribe_central", {
+          ...request,
+          expected_expires: prior.expires,
+        });
+      }
+      if (subscribed.stored !== true) throw Error("subscription_sync_failed");
+      const cursor = await executorCall("observation_cursor", {
+        epoch: ports.epoch,
+        subscription_id: centralSubscription,
       });
-      if (prior.active !== true) throw Error("subscription_sync_denied");
-      subscribed = await ports.ownerCall("subscribe_central", {
-        ...request,
-        expected_expires: prior.expires,
+      if (!Number.isSafeInteger(cursor.cursor)) throw Error("cursor_unavailable");
+      const result = await executorCall("observe_central", {
+        epoch: ports.epoch,
+        subscription_id: centralSubscription,
+        expected_cursor: cursor.cursor,
+        cursor: Number(cursor.cursor) + 1,
+        run: d.event.data?.run_id ?? "coverage",
+        kind: d.event.data?.kind ?? s.name,
+        native_request_id:
+          d.event.data?.native_request_id ?? d.event.data?.request_id ?? d.event.eventId,
+        event: d.event,
       });
+      if (result.stored !== true) throw Error("observation_not_stored");
+      bridge.store.put("delivery", d.id, { ...d, status: "centralized", central_id: result.id });
+      results.push({ id: String(result.id), state: "stored" });
+    } catch (e) {
+      const failure =
+        e && typeof e === "object" ? (e as { reason?: string; message?: string }) : {};
+      if (passFailures.has(String(failure.reason)) || passFailures.has(String(failure.message)))
+        throw e;
+      bridge.store.put("delivery", d.id, {
+        ...d,
+        status: "centralization_quarantined",
+        centralization_failure: "centralization_failed",
+      });
+      bridge.store.audit?.("delivery.centralization", d.id, "quarantined");
+      results.push({ id: d.id, state: "quarantined" });
     }
-    if (subscribed.stored !== true) throw Error("subscription_sync_failed");
-    const cursor = await ports.executorCall("observation_cursor", {
-      epoch: ports.epoch,
-      subscription_id: centralSubscription,
-    });
-    if (!Number.isSafeInteger(cursor.cursor)) throw Error("cursor_unavailable");
-    const result = await ports.executorCall("observe_central", {
-      epoch: ports.epoch,
-      subscription_id: centralSubscription,
-      expected_cursor: cursor.cursor,
-      cursor: Number(cursor.cursor) + 1,
-      run: d.event.data?.run_id ?? "coverage",
-      kind: d.event.data?.kind ?? s.name,
-      native_request_id:
-        d.event.data?.native_request_id ?? d.event.data?.request_id ?? d.event.eventId,
-      event: d.event,
-    });
-    if (result.stored !== true) throw Error("observation_not_stored");
-    bridge.store.put("delivery", d.id, { ...d, status: "centralized", central_id: result.id });
-    results.push({ id: String(result.id), state: "stored" });
   }
   return results;
 }

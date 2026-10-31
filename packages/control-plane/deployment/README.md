@@ -40,7 +40,7 @@ or authorize production rollback. The automated harness adds a newer receipt
 after the snapshot and verifies its retention.
 
 `npm run deploy` always refuses. `deployment/wrangler.disabled.jsonc` points to
-an entry that returns503, has no bindings/routes and starts no DO migration.
+an entry that returns 503, has no bindings/routes and starts no DO migration.
 It is only a source/dry-run artifact, not permission to provision a script.
 The regular candidate config is used for local tests; it must not be deployed
 by substituting production secrets or changing its staging flag.

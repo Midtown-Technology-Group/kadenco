@@ -170,8 +170,8 @@ function adoptLegacyRows(
       subscriptions++;
     }
   }
-  for (const { value: v } of values) {
-    if (!v.subId) continue;
+  for (const { record, value: v } of values) {
+    if (record.kind !== "delivery") continue;
     const source = subscriptionById.get(text(v.subId));
     if (!source) throw Error("legacy_subscription_missing");
     const event = v.event as { eventId: string; name: string; data: Record<string, unknown> };

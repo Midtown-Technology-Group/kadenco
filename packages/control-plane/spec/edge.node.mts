@@ -838,6 +838,7 @@ test("authenticated legacy fixture adopts original encrypted state and unknown c
         kind: "continue",
         at: now,
         submission: "outcome_unknown",
+        subId: "unrelated-command-metadata",
       },
     },
     {
@@ -917,6 +918,25 @@ test("authenticated legacy fixture adopts original encrypted state and unknown c
       /legacy_owner_mismatch/,
     );
     assert.equal(db.prepare("SELECT COUNT(*) n FROM commands").get()?.n, 0);
+    const missingReference = {
+      ...verified.snapshot,
+      records: verified.snapshot.records.map((r) =>
+        r.kind === "delivery"
+          ? { ...r, ciphertext: codec.encode({ ...codec.decode(r.ciphertext), subId: undefined }) }
+          : r,
+      ),
+    };
+    assert.throws(
+      () =>
+        adoptLegacy(
+          storage,
+          missingReference,
+          (raw) => codec.decode(raw),
+          () => [target],
+        ),
+      /legacy_binding_required/,
+    );
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM commands").get()?.n, 0);
     const adopted = adoptLegacy(
       storage,
       verified.snapshot,
@@ -982,4 +1002,169 @@ test("recovery archive rejects tampered pages and stale epoch before any restore
       header,
     ),
   );
+});
+
+test("centralization quarantines one delivery but fences stop the entire pass", async () => {
+  const { observeExisting } = await import("../src/edge-services.ts");
+  const setup = () => {
+    const deliveries = ["first", "bad", "last"].map((id) => ({
+      id,
+      subId: id,
+      status: "pending",
+      event: {
+        eventId: id,
+        name: "t3.thread.activity",
+        data: { host: "local", thread_id: "thread", run_id: "run", kind: "completed" },
+      },
+    }));
+    const state = new Map(deliveries.map((d) => [d.id, d as Record<string, unknown>]));
+    const subscriptions = new Map(
+      deliveries.map((d) => [
+        d.id,
+        {
+          id: d.id,
+          owner: "owner",
+          host: "local",
+          threadId: "thread",
+          active: true,
+          expires: null,
+          nonExpiring: true,
+          name: "t3.thread.activity",
+        },
+      ]),
+    );
+    const bridge = {
+      now: Date.now,
+      async observe() {},
+      fleetEvents: { async observe() {} },
+      store: {
+        all: () => [...state.values()],
+        get: (_kind: string, id: string) => subscriptions.get(id),
+        put: (_kind: string, id: string, v: Record<string, unknown>) => state.set(id, v),
+      },
+    } as any;
+    return { bridge, state };
+  };
+  const ports = {
+    epoch: 7,
+    async refreshLease() {},
+    binding: () => ({
+      project: "project",
+      provider: "provider",
+      run: "run",
+      grant: "grant",
+      revision: 1,
+      expires: 4102444800000,
+    }),
+    async ownerCall(_op: string, p: object) {
+      return (p as { external_id?: string }).external_id === "bad"
+        ? { reason: "forbidden" }
+        : { stored: true };
+    },
+    async executorCall(op: string) {
+      return op === "observation_cursor" ? { cursor: 0 } : { stored: true, id: "central" };
+    },
+  };
+  const f = setup();
+  assert.deepEqual(
+    (await observeExisting(f.bridge, ports)).map((r) => r.state),
+    ["stored", "quarantined", "stored"],
+  );
+  assert.equal(f.state.get("bad")?.status, "centralization_quarantined");
+  const fenced = setup();
+  await assert.rejects(
+    observeExisting(fenced.bridge, {
+      ...ports,
+      async ownerCall() {
+        return { reason: "fenced" };
+      },
+    }),
+    /fenced/,
+  );
+  assert.equal(fenced.state.get("first")?.status, "pending");
+  const thrown = setup();
+  await assert.rejects(
+    observeExisting(thrown.bridge, {
+      ...ports,
+      async executorCall() {
+        throw { reason: "fenced" };
+      },
+    }),
+    (e) => (e as { reason: string }).reason === "fenced",
+  );
+  assert.equal(thrown.state.get("first")?.status, "pending");
+  const inactive = setup();
+  await assert.rejects(
+    observeExisting(inactive.bridge, {
+      ...ports,
+      async ownerCall() {
+        return { reason: "not_active" };
+      },
+    }),
+    /not_active/,
+  );
+  assert.equal(inactive.state.get("first")?.status, "pending");
+  const nonError = setup();
+  assert.deepEqual(
+    (
+      await observeExisting(nonError.bridge, {
+        ...ports,
+        async ownerCall(op, p) {
+          if ((p as { external_id?: string }).external_id === "bad") throw null;
+          return ports.ownerCall(op, p);
+        },
+      })
+    ).map((r) => r.state),
+    ["stored", "quarantined", "stored"],
+  );
+  const lostLease = setup();
+  await assert.rejects(
+    observeExisting(lostLease.bridge, {
+      ...ports,
+      async refreshLease() {
+        return { reason: "fenced" };
+      },
+    }),
+    /fenced/,
+  );
+  assert.equal(lostLease.state.get("first")?.status, "pending");
+});
+
+test("parity runner builds a clean fixture checkout and stops on build failure", async () => {
+  const { mkdirSync, writeFileSync, readFileSync, existsSync } = await import("node:fs");
+  const { spawnSync } = await import("node:child_process");
+  const root = mkdtempSync(join(tmpdir(), "kadenco-parity-fresh-"));
+  try {
+    const operator = join(root, "packages", "control-plane", "operator");
+    mkdirSync(operator, { recursive: true });
+    mkdirSync(join(root, "scripts"));
+    mkdirSync(join(root, "test"));
+    writeFileSync(
+      join(operator, "parity.mjs"),
+      readFileSync(new URL("../operator/parity.mjs", import.meta.url)),
+    );
+    writeFileSync(join(root, "scripts", "build.mjs"), "process.exit(23);");
+    for (const name of ["host-callers", "collaboration", "relay-correctness", "thread-settings"])
+      writeFileSync(
+        join(root, "test", name + ".test.mjs"),
+        "import{existsSync,writeFileSync}from'node:fs';if(!existsSync('dist/sentinel'))throw Error('not built');writeFileSync('tests-started','yes');",
+      );
+    const run = () =>
+      spawnSync(process.execPath, [join(operator, "parity.mjs")], {
+        cwd: tmpdir(),
+        encoding: "utf8",
+        env: { ...process.env, NODE_TEST_CONTEXT: undefined },
+      });
+    assert.equal(run().status, 23);
+    assert.equal(existsSync(join(root, "tests-started")), false);
+    writeFileSync(
+      join(root, "scripts", "build.mjs"),
+      "import{mkdirSync,writeFileSync}from'node:fs';mkdirSync('dist');writeFileSync('dist/sentinel','built');",
+    );
+    const success = run();
+    assert.equal(success.status, 0, success.stderr);
+    assert.equal(existsSync(join(root, "tests-started")), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

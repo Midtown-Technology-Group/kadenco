@@ -1504,3 +1504,67 @@ describe("executor and receipt scope tightening", () => {
     ).toBe(true);
   });
 });
+
+describe("budget tightening tri-state semantics", () => {
+  it("cannot turn absent/deny into finite/unlimited, but numeric can tighten to absent", async () => {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      s.storage.sql.exec("DELETE FROM auth_policy");
+      s.storage.sql.exec("DELETE FROM revoked");
+      s.storage.sql.exec("DELETE FROM commands");
+      s.storage.sql.exec("DELETE FROM budget_reservations");
+      s.storage.sql.exec("UPDATE control SET mode='active',epoch=7 WHERE id=1");
+    });
+    await call("status");
+    const original = await runInDurableObject(stub(), (_o, s) =>
+      JSON.parse(
+        s.storage.sql.exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one()
+          .value,
+      ),
+    );
+    const change = (value: number | null | undefined) => {
+      const p = structuredClone(original);
+      p.revision = 2;
+      const a = p.principals.find((a: { id: string }) => a.id === "owner");
+      if (value === undefined) delete a.maxPerDay;
+      else a.maxPerDay = value;
+      return p;
+    };
+    await runInDurableObject(stub(), (_o, s) => {
+      const p = structuredClone(original);
+      delete p.principals.find((a: { id: string }) => a.id === "owner").maxPerDay;
+      s.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(p));
+    });
+    expect(await call("tighten_policy", { expected_revision: 1, policy: change(null) })).toEqual({
+      reason: "forbidden",
+    });
+    expect(await call("tighten_policy", { expected_revision: 1, policy: change(1) })).toEqual({
+      reason: "forbidden",
+    });
+    expect(
+      await call("tighten_policy", { expected_revision: 1, policy: change(undefined) }),
+    ).toEqual({ revision: 2 });
+    await runInDurableObject(stub(), (_o, s) => {
+      const p = structuredClone(original);
+      p.principals.find((a: { id: string }) => a.id === "owner").maxPerDay = 1;
+      s.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(p));
+    });
+    expect((await reserve("before-policy-denial")).state).toBe("pending");
+    expect(await call("tighten_policy", { expected_revision: 1, policy: change(null) })).toEqual({
+      reason: "forbidden",
+    });
+    expect(await call("tighten_policy", { expected_revision: 1, policy: change(2) })).toEqual({
+      reason: "forbidden",
+    });
+    expect(
+      await call("tighten_policy", { expected_revision: 1, policy: change(undefined) }),
+    ).toEqual({ revision: 2 });
+    expect(await claim("before-policy-denial")).toEqual({ reason: "forbidden" });
+    await runInDurableObject(stub(), (_o, s) =>
+      s.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(original)),
+    );
+    expect(await call("tighten_policy", { expected_revision: 1, policy: change(1) })).toEqual({
+      revision: 2,
+    });
+  });
+});

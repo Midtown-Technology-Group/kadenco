@@ -142,6 +142,7 @@ export class FleetState extends DurableObject<Env> {
       origin.scopes,
       Date.now(),
     );
+    return origin;
   }
   sql() {
     return this.ctx.storage.sql;
@@ -302,9 +303,12 @@ export class FleetState extends DurableObject<Env> {
                   cap.expiresAt <= oldCap.expiresAt,
               ),
           ) ||
-          (prior.maxPerDay !== undefined &&
-            prior.maxPerDay !== null &&
-            (n.maxPerDay === undefined || n.maxPerDay === null || n.maxPerDay > prior.maxPerDay)) ||
+          (prior.maxPerDay === undefined
+            ? n.maxPerDay !== undefined
+            : prior.maxPerDay === null
+              ? false
+              : n.maxPerDay !== undefined &&
+                (n.maxPerDay === null || n.maxPerDay > prior.maxPerDay)) ||
           prior.tokenSha256 !== n.tokenSha256 ||
           n.expiresAt > prior.expiresAt ||
           n.hosts.some((h) => !prior.hosts.includes(h)) ||
@@ -626,7 +630,9 @@ export class FleetState extends DurableObject<Env> {
       a.scopes,
       Date.now(),
     );
-    if (op === "claim" || op === "begin") this.originAuthorized(r);
+    if (op === "claim" || op === "begin") {
+      if (this.originAuthorized(r).maxPerDay === undefined) fail("forbidden");
+    }
     if (op === "claim") {
       keys(p, ["epoch", "request_id", "lease_ms"]);
       const ttl = number(p.lease_ms);
