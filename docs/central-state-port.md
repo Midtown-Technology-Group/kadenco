@@ -162,3 +162,172 @@ workerd tests are clean, but the exact new-head Linux CI log must also be checke
 before calling the CI warning resolved. Real recorded-receipt reconstruction,
 identical/changed receipt replay, different-executor competition and second-begin
 refusal now have explicit tests; reservation reconstruction is labeled as such.
+
+## Local edge preparation (stacked on PR20)
+
+`src/edge.ts` is an inert operation adapter, not an installed executor. It uses
+existing claim/begin/receipt operations, exact returned host/thread binding and a
+required durable atomic attempt journal. Each invocation is bounded; it installs
+no polling or retry loop. Lost begin replies and lost execution/receipt replies
+lead to read-only reconciliation. Reconstructing a consumer must reuse the same
+journal; replacing it is unsafe. The fixture journal is synthetic in-memory only.
+A process crash after begin but before execute sacrifices availability: it does
+not justify repeating an uncertain effect.
+
+`src/migration.ts` compares exact kind/id/hash inventories, snapshot and encryption
+provenance, unresolved effects and a retirement prerequisite. Its inputs are
+untrusted evidence until independently authenticated. `externally_enforced` is a
+reported prerequisite, not proof the module can establish. Every report returns
+`activation_permitted: false`; Worker activation remains unconditionally refused.
+The old alpha6 executable does not consult DO epochs. Its native and signing
+access must be enforceably retired, including restart/revival, before cutover.
+
+Coverage: synthetic partition/duplicate/concurrent-consumer/final-revocation
+cases and one real local SQLite DO reservation -> claim -> begin -> synthetic
+effect -> immutable receipt -> reconnect readback. No production task was sent.
+Remaining: concrete operation payload/schema adapters, project/provider/run and
+grant revision binding in central reservations, persistent edge journal backend,
+authenticated manifest generation over a quiesced source snapshot, bounded import
+verification against the actual DO records, independently verified retirement,
+current-state rollback/export, and installed edge/MCP/portal integration. No
+complete migration or HA claim is made by this slice.
+
+GitHub pause: authenticated API returned HTTP403 `API rate limit exceeded` at
+2026-10-30 22:39:32 UTC (request D7E8:DFC83:9E2468:20924CC:6AE51CA4).
+The captured response supplied no reset time or Retry-After header. No reset time
+is inferred, no alternate credential is used, and this local slice makes no
+additional API attempts. PR20 stays at e81eed15fc2aa7e463e105d9b444142051dad394.
+
+## Persistent edge and authenticated evidence implementation
+
+The local-only Node modules now provide:
+
+- `journal.ts`: SQLite WAL / synchronous FULL insert-if-absent attempts and
+  immutable outcomes, shared across handles and retained across abrupt process
+  exit. No expiry, automatic clearing or recovery replay is provided. The file
+  must stay on the executor's durable disk; loss of that disk requires manual
+  reconciliation, never an empty replacement treated as safe.
+- `authorization.ts`: exact signed-byte envelopes, live grant/policy revision,
+  expiry/revocation checks and host/project/provider/thread/run bindings. Only
+  continue, create, Standard speed and webhook payloads are accepted; unrelated
+  settings are refused. `consumeAuthorized` compares the reserved central digest
+  and kind and revalidates immediately before the mocked effect. A revocation
+  after this final check remains a native-provider race; no atomic cross-system
+  revocation guarantee is claimed.
+- `snapshot.ts`: bounded signed snapshot packets, opaque ciphertext hashes,
+  complete expected inventory comparison and encryption lineage binding. The
+  expected manifest must come from an independently retained quiesced snapshot;
+  accepting a newly supplied expected manifest from the same packet defeats
+  completeness verification. Signing does not itself prove quiescence.
+
+All cryptographic fixtures generate ephemeral test-only keys. No production key,
+credential, configuration or process was created or changed. These modules are
+not imported by Worker startup or the installed sidecar. The existing Worker
+still refuses activation unconditionally.
+
+Enforceable retirement design: a separately trusted control boundary must deny
+all inventoried old native caller routes and callback-signing routes, disable
+restart/supervisor routes, and negatively test revival of the exact old executable
+and its retained identity. An authenticated report binds the migration ID,
+source snapshot, issuer, issue/expiry times and complete required route inventory;
+`verifyRetirement` rejects missing denials, stale reports and absent revival
+proof. Caller must verify its signed packet using the pinned independent issuer
+key before invoking the structural verifier. The old process cannot self-attest
+retirement. A DO epoch cannot stop alpha6. Actual route enumeration, denial and
+negative probes require a separately reviewed live security transition; none
+are performed by this source work.
+
+Local coverage includes durable reopen and abrupt child exit, partition before
+permit/after effect/before receipt, failed journal reserve/finish, duplicates,
+concurrent handles, immutable outcome, grant revocation/expiry/revision drift,
+wrong exact bindings, central digest mismatch, signed payload tampering, wrong
+keys, incomplete snapshots and retirement negative cases. Journal write failures
+throw and preserve fail-closed dispatch; a failure after an effect retains the
+original attempt marker, so reconnect cannot repeat it.
+
+Unfinished integration ledger: production native operation adapters; central
+persisted project/provider/run/grant bindings (edge validation exists, central
+SQL currently stores digest plus host/thread/originator); authenticated live
+policy source; quiesced source extraction and imported DO inventory readback;
+production key custody and edge journal deployment; current-state rollback
+export; actual externally enforced retirement and end-to-end acceptance. These
+are not represented as completed by local fixtures. No deployment approval is
+being requested before the concrete migration implementation is ready.
+
+## Integrated local acceptance (supersedes prior source-gap ledger)
+
+The isolated branch now stores explicit operation bindings in central SQL.
+Reserve checks the current origin scope; claim/begin revalidate current persisted
+principal, grant, revision, project/provider/run and expiry. Legacy rows without
+bindings cannot dispatch. Policy tightening cannot add scopes; stale bootstrap
+cannot resurrect removed scopes. Old epoch and revoked origin tests remain in
+place. This is separate from the sidecar's native budget/runtime enforcement.
+
+`native-adapter.ts` consumes the existing sidecar schemas and calls the existing
+Commands/Creation/ThreadSettings services, preserving stable request IDs and
+explicit execution semantics. It invents no models/options, bypasses no budgets,
+and never treats unknown results as safe to resend. Webhooks remain on the
+existing outbox/signing delivery boundary; this native adapter explicitly refuses
+to turn a webhook envelope into a T3 command. The injected services must be the
+existing policy-enforcing services, never a raw native transport substitute.
+
+`migration-service.ts` extracts a transactionally consistent synthetic Store
+inventory under BEGIN IMMEDIATE with an externally enforced quiescence lease
+checked on both sides. It preserves original encrypted record bytes and retained
+audit/diagnostic rows and derives the snapshot identity from exact bytes.
+`import-service.ts` authenticates the snapshot, imports bounded batches and
+exhausts staged DO inventory pagination before exact hash comparison. Missing,
+changed or partial readback fails. Nothing activates on a partial import or even
+on a successful comparison. Snapshot packets are bounded to 1MiB and 100000
+records; larger real estates require segmented authenticated manifests before
+transfer. No production snapshot was read to exercise this path.
+
+Acceptance exercises a signed central reservation -> SQLite durable attempt ->
+exact mock sidecar continue arguments -> immutable receipt -> DO reconstruction
+-> receipt reconciliation, with one observed mock dispatch. Another case imports
+105 encrypted fixture records over multiple inventory pages. Node fixtures test
+transaction rollback on quiescence lease loss and exact create/Standard schema
+mapping; unspecified create options/runtime are rejected, never guessed.
+
+Deployment prerequisites (none executed):
+
+1. Review/merge the isolated source with exact-head CI and security review after
+   GitHub access recovers; PR20 remains unchanged. Qualify the pinned supported
+   Node22 runtime and install the policy-enforcing sidecar service dependency.
+2. Inventory the real state volume and implement/qualify segmented manifests if
+   it exceeds the explicit snapshot limit; map the existing principals and exact
+   operation grants without expansion. Provision independently controlled trust
+   keys through the approved secret path, not chat or source.
+3. Establish and verify externally enforced retirement across every old native,
+   signing and restart route, including retained-identity revival probes. A
+   signed report is evidence only; it cannot itself deny those routes.
+4. Review an explicit activation implementation and live migration/rollback
+   procedure retaining current receipts/dedup state. The present Worker always
+   rejects activation; no test certificate can change that. Then obtain the
+   applicable security/provisioning/cutover approval and run real acceptance.
+
+Local integrated source paths now exist; deployment wiring, segmented large-state
+transfer, the deliberately absent activation implementation and real acceptance
+remain unfinished. No claim is made that the entire central-state port is done.
+
+Large-state source gap resolved locally: `segmentSnapshot` and `importSegments`
+now authenticate each bounded packet with index/total, migration/snapshot/lineage
+and the independently retained full-manifest digest. All segments are verified
+before the first import; missing, reordered or mixed segments fail closed. A
+1.8MiB synthetic encrypted inventory succeeds without raising the per-packet
+limit. The 100000-record total and bounded page/import limits remain explicit.
+Actual production volume compatibility still needs a read-only approved preflight.
+
+Final local acceptance for this revision: 21 workerd/SQLite DO tests and 10 Node
+integration/crash tests, strict package typechecking, root format/lint and both
+root compilers, Worker dry-run build. CI now builds the existing root sidecar
+schemas before control-plane tests on a clean checkout. No GitHub API attempt,
+push or live deployment is part of this local revision. PR20 stays at e81eed1.
+
+The requested central bindings, snapshot extraction/readback and existing-native
+service adapter source paths are implemented and connected in local acceptance.
+Still intentionally absent: production wiring/keys, a production activation
+endpoint, enforceable real old-writer retirement, and live acceptance. Central
+MCP/portal/event-loop service migration beyond these operation/import interfaces
+is not implied by these tests. Provisioning/cutover must not proceed by merely
+changing the staging flag or cloning a local database.

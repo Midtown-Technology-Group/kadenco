@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { coreSchema } from "./core-schema";
 import { DurableObject } from "cloudflare:workers";
+import { operationBinding, authorizeBinding, type OperationBinding } from "./binding";
+import { recoveryPage, recoveryTables, assertRecoverySchema } from "./recovery";
+import { serviceSchema, serviceOperation } from "./services";
 type Principal = {
   id: string;
   tokenSha256: string;
   role: "owner" | "executor";
   hosts: string[];
+  scopes?: OperationBinding[];
+  migrationAuthority?: boolean;
+  maxPerDay?: number | null;
+  threadBudgets?: { thread: string; provider: string; maxPerDay: number; expiresAt: number }[];
   expiresAt: number;
 };
 type Policy = { revision: number; fleet: string; principals: Principal[] };
@@ -38,7 +46,25 @@ function policy(raw: string | undefined): Policy {
     ids.add(a.id);
     tokens.add(a.tokenSha256);
     a.hosts.forEach((h) => str(h));
+    if (a.scopes && (!Array.isArray(a.scopes) || a.scopes.length > 100))
+      fail("configuration_required");
+    a.scopes?.forEach(operationBinding);
     number(a.expiresAt);
+    if (
+      a.maxPerDay !== undefined &&
+      a.maxPerDay !== null &&
+      (!Number.isSafeInteger(a.maxPerDay) || a.maxPerDay < 0 || a.maxPerDay > 100)
+    )
+      fail("configuration_required");
+    if (a.threadBudgets && (!Array.isArray(a.threadBudgets) || a.threadBudgets.length > 100))
+      fail("configuration_required");
+    for (const cap of a.threadBudgets ?? []) {
+      str(cap.thread);
+      str(cap.provider);
+      number(cap.expiresAt);
+      if (!Number.isSafeInteger(cap.maxPerDay) || cap.maxPerDay < 0 || cap.maxPerDay > 100)
+        fail("configuration_required");
+    }
   }
   return p;
 }
@@ -85,15 +111,7 @@ const json = (value: unknown, status = 200) =>
 export class FleetState extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ctx.storage.sql.exec(`
-    CREATE TABLE IF NOT EXISTS auth_policy(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS revoked(id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS control(id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL,mode TEXT NOT NULL,migration TEXT);
-    INSERT OR IGNORE INTO control VALUES(1,0,'staging',NULL);
-    CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,host TEXT NOT NULL,thread TEXT NOT NULL,kind TEXT NOT NULL,digest TEXT NOT NULL,originator TEXT,state TEXT NOT NULL,executor TEXT,generation INTEGER NOT NULL DEFAULT 0,lease_until INTEGER,receipt TEXT);
-    CREATE TABLE IF NOT EXISTS imported(kind TEXT NOT NULL,id TEXT NOT NULL,ciphertext TEXT NOT NULL,PRIMARY KEY(kind,id));
-    CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT NOT NULL,action TEXT NOT NULL,subject TEXT NOT NULL,at INTEGER NOT NULL);
-  `);
+    ctx.storage.sql.exec(coreSchema);
     if (
       !ctx.storage.sql
         .exec<{ name: string }>("PRAGMA table_info(commands)")
@@ -101,17 +119,30 @@ export class FleetState extends DurableObject<Env> {
         .some((c) => c.name === "originator")
     )
       ctx.storage.sql.exec("ALTER TABLE commands ADD COLUMN originator TEXT");
+    if (
+      !ctx.storage.sql
+        .exec<{ name: string }>("PRAGMA table_info(commands)")
+        .toArray()
+        .some((c) => c.name === "binding")
+    )
+      ctx.storage.sql.exec("ALTER TABLE commands ADD COLUMN binding TEXT");
   }
   currentPolicy() {
     return policy(
       this.sql().exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one().value,
     );
   }
-  originAuthorized(r: { originator: string | null; host: string }) {
+  originAuthorized(r: { originator: string | null; host: string; binding: string | null }) {
     const origin =
       this.currentPolicy().principals.find((p) => p.id === r.originator && p.role === "owner") ??
       fail("forbidden");
     this.authorized(origin, r.host);
+    authorizeBinding(
+      operationBinding(r.binding ? JSON.parse(r.binding) : null),
+      origin.scopes,
+      Date.now(),
+    );
+    return origin;
   }
   sql() {
     return this.ctx.storage.sql;
@@ -123,7 +154,7 @@ export class FleetState extends DurableObject<Env> {
       )
       .one();
   }
-  authorized(a: Principal, host?: string) {
+  authorized(a: Pick<Principal, "id" | "expiresAt" | "hosts">, host?: string) {
     if (
       a.expiresAt <= Date.now() ||
       this.sql().exec("SELECT id FROM revoked WHERE id=?", a.id).toArray().length
@@ -141,6 +172,7 @@ export class FleetState extends DurableObject<Env> {
           kind: string;
           digest: string;
           originator: string | null;
+          binding: string | null;
           state: string;
           executor: string | null;
           generation: number;
@@ -161,12 +193,90 @@ export class FleetState extends DurableObject<Env> {
   }
   apply(a: Principal, op: string, p: Record<string, unknown>) {
     this.authorized(a);
+    serviceSchema(this.sql());
     const state = this.state();
     if (op === "status") {
       keys(p, []);
       return {
         ...state,
         commands: this.sql().exec<{ n: number }>("SELECT COUNT(*) n FROM commands").one().n,
+      };
+    }
+    if (op === "freeze_recovery") {
+      assertRecoverySchema(this.sql());
+      keys(p, ["expected_epoch"]);
+      const freezeId = JSON.stringify([a.id, number(p.expected_epoch)]),
+        prior = this.sql()
+          .exec<{ epoch: number; watermark: number; counts: string }>(
+            "SELECT epoch,watermark,counts FROM recovery_freezes WHERE id=?",
+            freezeId,
+          )
+          .toArray()[0];
+      if (a.role !== "owner" || a.migrationAuthority !== true) fail("forbidden");
+      if (prior) {
+        if (
+          state.epoch !== prior.epoch ||
+          this.sql().exec<{ n: number }>("SELECT COALESCE(MAX(seq),0) n FROM audit").one().n !==
+            prior.watermark
+        )
+          fail("fenced");
+        return {
+          epoch: prior.epoch,
+          watermark: prior.watermark,
+          counts: JSON.parse(prior.counts),
+          activation_permitted: false,
+        };
+      }
+      if (
+        a.role !== "owner" ||
+        a.migrationAuthority !== true ||
+        state.epoch !== number(p.expected_epoch)
+      )
+        fail("forbidden");
+      this.sql().exec("UPDATE control SET mode='quiesced',epoch=epoch+1 WHERE id=1");
+      this.audit(a, op, String(state.epoch + 1));
+      const watermark = this.sql()
+        .exec<{ n: number }>("SELECT COALESCE(MAX(seq),0) n FROM audit")
+        .one().n;
+      this.sql().exec(
+        "INSERT INTO recovery_freezes VALUES(?,?,?,?,?)",
+        freezeId,
+        a.id,
+        state.epoch + 1,
+        watermark,
+        "{}",
+      );
+      const counts: Record<string, number> = {};
+      for (const table of recoveryTables)
+        counts[table] = this.sql().exec<{ n: number }>(`SELECT COUNT(*) n FROM ${table}`).one().n;
+      this.sql().exec(
+        "UPDATE recovery_freezes SET counts=? WHERE id=?",
+        JSON.stringify(counts),
+        freezeId,
+      );
+      return {
+        epoch: state.epoch + 1,
+        watermark: this.sql().exec<{ n: number }>("SELECT COALESCE(MAX(seq),0) n FROM audit").one()
+          .n,
+        counts,
+        activation_permitted: false,
+      };
+    }
+    if (op === "export_recovery") {
+      keys(p, ["epoch", "watermark", "table", "after"]);
+      if (
+        a.role !== "owner" ||
+        a.migrationAuthority !== true ||
+        state.mode !== "quiesced" ||
+        state.epoch !== number(p.epoch) ||
+        this.sql().exec<{ n: number }>("SELECT COALESCE(MAX(seq),0) n FROM audit").one().n !==
+          number(p.watermark)
+      )
+        fail("fenced");
+      return {
+        ...recoveryPage(this.sql(), number(p.table), number(p.after)),
+        epoch: state.epoch,
+        watermark: p.watermark,
       };
     }
     if (op === "tighten_policy") {
@@ -188,9 +298,32 @@ export class FleetState extends DurableObject<Env> {
         if (
           !prior ||
           prior.role !== n.role ||
+          (n.migrationAuthority === true && prior.migrationAuthority !== true) ||
+          (prior.threadBudgets ?? []).some(
+            (oldCap) =>
+              !(n.threadBudgets ?? []).some(
+                (cap) =>
+                  cap.thread === oldCap.thread &&
+                  cap.provider === oldCap.provider &&
+                  cap.maxPerDay <= oldCap.maxPerDay &&
+                  cap.expiresAt <= oldCap.expiresAt,
+              ),
+          ) ||
+          (prior.maxPerDay === undefined
+            ? n.maxPerDay !== undefined
+            : prior.maxPerDay === null
+              ? false
+              : n.maxPerDay !== undefined &&
+                (n.maxPerDay === null || n.maxPerDay > prior.maxPerDay)) ||
           prior.tokenSha256 !== n.tokenSha256 ||
           n.expiresAt > prior.expiresAt ||
-          n.hosts.some((h) => !prior.hosts.includes(h))
+          n.hosts.some((h) => !prior.hosts.includes(h)) ||
+          (n.scopes ?? []).some(
+            (scope) =>
+              !(prior.scopes ?? []).some(
+                (oldScope) => JSON.stringify(oldScope) === JSON.stringify(scope),
+              ),
+          )
         )
           fail("forbidden");
       }
@@ -207,6 +340,35 @@ export class FleetState extends DurableObject<Env> {
       return { revoked: true };
     }
     // Imported values remain opaque original AES-GCM envelopes; no decryption key in this slice.
+    if (op === "inventory") {
+      keys(p, ["after_kind", "after_id"]);
+      if (a.role !== "owner" || state.mode !== "staging") fail("forbidden");
+      const kind = p.after_kind === undefined ? "" : str(p.after_kind),
+        id = p.after_id === undefined ? "" : str(p.after_id, 2048);
+      const rows = this.sql()
+        .exec<{ kind: string; id: string; ciphertext: string }>(
+          "SELECT kind,id,ciphertext FROM imported WHERE kind>? OR (kind=? AND id>?) ORDER BY kind,id LIMIT 101",
+          kind,
+          kind,
+          id,
+        )
+        .toArray();
+      const records: typeof rows = [];
+      let bytes = 128;
+      for (const row of rows.slice(0, 100)) {
+        const size = new TextEncoder().encode(JSON.stringify(row)).byteLength + 1;
+        if (bytes + size > 60000) break;
+        records.push(row);
+        bytes += size;
+      }
+      const last = records.at(-1);
+      if (rows.length && !last) fail("body_too_large");
+      return {
+        records,
+        next: rows.length > records.length ? { after_kind: last!.kind, after_id: last!.id } : null,
+        active: false,
+      };
+    }
     if (op === "import") {
       keys(p, ["migration_id", "records"]);
       if (a.role !== "owner" || state.mode !== "staging") fail("forbidden");
@@ -250,12 +412,44 @@ export class FleetState extends DurableObject<Env> {
       const r = this.row(str(p.request_id));
       this.authorized(a, r.host);
       if (a.role === "owner" ? r.originator !== a.id : r.executor !== a.id) fail("forbidden");
+      if (a.migrationAuthority !== true)
+        authorizeBinding(
+          operationBinding(r.binding ? JSON.parse(r.binding) : null),
+          a.scopes,
+          Date.now(),
+        );
       return { ...r, receipt: r.receipt ? JSON.parse(r.receipt) : null, safe_to_resend: false };
     }
-    if (state.mode !== "active") fail("not_active");
+    if (state.mode !== "active" && !(state.mode === "quiesced" && op === "record_receipt"))
+      fail("not_active");
     if (number(p.epoch) !== state.epoch) fail("fenced");
-    if (op === "reserve") {
-      keys(p, ["epoch", "request_id", "host", "thread_id", "kind", "payload_sha256"]);
+    const service = serviceOperation(
+      {
+        sql: this.sql(),
+        actor: a,
+        principal: (id) =>
+          this.currentPolicy().principals.find((p) => p.id === id) ?? fail("forbidden"),
+        authorize: (actor, host) => this.authorized(actor, host),
+        now: Date.now(),
+      },
+      op,
+      p,
+    );
+    if (service !== undefined) {
+      this.audit(a, op, String(p.id ?? p.subscription_id ?? "event"));
+      return service;
+    }
+    if (op === "reserve" || op === "record_preflight") {
+      keys(p, [
+        "epoch",
+        "request_id",
+        "host",
+        "thread_id",
+        "kind",
+        "payload_sha256",
+        "binding",
+        ...(op === "record_preflight" ? ["reason", "receipt"] : []),
+      ]);
       if (a.role !== "owner") fail("forbidden");
       const id = str(p.request_id),
         host = str(p.host),
@@ -263,8 +457,12 @@ export class FleetState extends DurableObject<Env> {
         kind = str(p.kind),
         digest = str(p.payload_sha256);
       this.authorized(a, host);
+      const binding = operationBinding(p.binding);
+      authorizeBinding(binding, a.scopes, Date.now());
       if (
-        !["continue", "create", "settings_standard", "webhook"].includes(kind) ||
+        !["continue", "create", "settings_standard", "webhook", "answer", "verify_result"].includes(
+          kind,
+        ) ||
         !/^[a-f0-9]{64}$/.test(digest)
       )
         fail("invalid_request");
@@ -275,7 +473,8 @@ export class FleetState extends DurableObject<Env> {
           kind: string;
           digest: string;
           originator: string | null;
-        }>("SELECT host,thread,kind,digest,originator FROM commands WHERE id=?", id)
+          binding: string | null;
+        }>("SELECT host,thread,kind,digest,originator,binding FROM commands WHERE id=?", id)
         .toArray()[0];
       if (
         old &&
@@ -283,26 +482,163 @@ export class FleetState extends DurableObject<Env> {
           old.host !== host ||
           old.thread !== thread ||
           old.kind !== kind ||
-          old.digest !== digest)
+          old.digest !== digest ||
+          old.binding !== JSON.stringify(binding))
       )
         fail("idempotency_conflict");
+      if (op === "record_preflight") {
+        if (kind !== "settings_standard") fail("invalid_request");
+        const receipt = JSON.stringify(p.receipt);
+        if (
+          !receipt ||
+          receipt.length > 16384 ||
+          !["already_standard", "preflight_denied"].includes(String(p.reason))
+        )
+          fail("invalid_request");
+        if (old) {
+          const current = this.row(id);
+          if (current.state === "receipted") return { existing: current };
+          if (!["pending", "claimed", "cancelled"].includes(current.state)) fail("fenced");
+          if (current.state === "cancelled")
+            return {
+              preflight_recorded: true,
+              id,
+              receipt: JSON.parse(current.receipt!),
+              native_attempted: false,
+              safe_to_resend: false,
+            };
+        }
+        const preflight = p.receipt as Record<string, unknown>;
+        keys(preflight, [
+          "request_id",
+          "state",
+          "reason",
+          "before",
+          "after",
+          "native_submitted",
+          "preflight_only",
+        ]);
+        if (
+          preflight.native_submitted !== false ||
+          (p.reason === "already_standard"
+            ? preflight.state !== "noop" || preflight.reason !== "already_standard"
+            : preflight.state !== "rejected")
+        )
+          fail("invalid_request");
+        this.sql().exec(
+          "INSERT OR IGNORE INTO commands(id,host,thread,kind,digest,originator,binding,state,generation,receipt) VALUES(?,?,?,?,?,?,?,'cancelled',0,?)",
+          id,
+          host,
+          thread,
+          kind,
+          digest,
+          a.id,
+          JSON.stringify(binding),
+          receipt,
+        );
+        this.sql().exec(
+          "UPDATE commands SET state='cancelled',generation=generation+1,lease_until=NULL,receipt=? WHERE id=?",
+          receipt,
+          id,
+        );
+        this.sql().exec("DELETE FROM budget_reservations WHERE id=?", id);
+        this.audit(a, op, id);
+        return {
+          preflight_recorded: true,
+          id,
+          receipt: JSON.parse(receipt),
+          native_attempted: false,
+          safe_to_resend: false,
+        };
+      }
+      if (!old && kind !== "webhook") {
+        if (a.maxPerDay === undefined) fail("forbidden");
+        const day = new Date().toISOString().slice(0, 10);
+        for (const cap of a.threadBudgets ?? []) {
+          if (cap.thread !== thread || cap.provider !== binding.provider) continue;
+          if (cap.expiresAt <= Date.now()) fail("forbidden");
+          const usedThread = this.sql()
+            .exec<{ n: number }>(
+              "SELECT COUNT(*) n FROM budget_reservations b JOIN commands c ON c.id=b.id WHERE b.owner=? AND b.host=? AND b.thread=? AND b.day=? AND json_extract(c.binding,'$.provider')=?",
+              a.id,
+              host,
+              thread,
+              day,
+              binding.provider,
+            )
+            .one().n;
+          if (usedThread >= cap.maxPerDay) fail("command_budget_exhausted");
+        }
+        const used = this.sql()
+          .exec<{ n: number }>(
+            "SELECT COUNT(*) n FROM budget_reservations WHERE owner=? AND host=? AND day=?",
+            a.id,
+            host,
+            day,
+          )
+          .one().n;
+        if (a.maxPerDay !== null && used >= a.maxPerDay!) fail("command_budget_exhausted");
+        this.sql().exec(
+          "INSERT INTO budget_reservations VALUES(?,?,?,?,?)",
+          id,
+          a.id,
+          host,
+          thread,
+          day,
+        );
+      }
       this.sql().exec(
-        "INSERT OR IGNORE INTO commands(id,host,thread,kind,digest,originator,state) VALUES(?,?,?,?,?,?,'pending')",
+        "INSERT OR IGNORE INTO commands(id,host,thread,kind,digest,originator,binding,state) VALUES(?,?,?,?,?,?,?,'pending')",
         id,
         host,
         thread,
         kind,
         digest,
         a.id,
+        JSON.stringify(binding),
       );
       this.audit(a, op, id);
       return this.row(id);
+    }
+    if (op === "cancel_reserved") {
+      keys(p, ["epoch", "request_id", "reason", "receipt"]);
+      const id = str(p.request_id),
+        r = this.row(id);
+      if (a.role !== "owner" || r.originator !== a.id) fail("forbidden");
+      this.originAuthorized(r);
+      const receipt = JSON.stringify(p.receipt);
+      if (
+        !receipt ||
+        receipt.length > 16384 ||
+        !["already_standard", "preflight_denied"].includes(String(p.reason))
+      )
+        fail("invalid_request");
+      if (r.state === "cancelled") {
+        if (r.receipt !== receipt) fail("immutable_outcome");
+        return { cancelled: true, receipt: JSON.parse(receipt), safe_to_resend: false };
+      }
+      if (!["pending", "claimed"].includes(r.state)) fail("fenced");
+      this.sql().exec(
+        "UPDATE commands SET state='cancelled',generation=generation+1,lease_until=NULL,receipt=? WHERE id=?",
+        receipt,
+        id,
+      );
+      this.sql().exec("DELETE FROM budget_reservations WHERE id=?", id);
+      this.audit(a, op, id);
+      return { cancelled: true, receipt: JSON.parse(receipt), safe_to_resend: false };
     }
     const id = str(p.request_id),
       r = this.row(id);
     this.authorized(a, r.host);
     if (a.role !== "executor") fail("forbidden");
-    if (op === "claim" || op === "begin") this.originAuthorized(r);
+    authorizeBinding(
+      operationBinding(r.binding ? JSON.parse(r.binding) : null),
+      a.scopes,
+      Date.now(),
+    );
+    if (op === "claim" || op === "begin") {
+      if (this.originAuthorized(r).maxPerDay === undefined) fail("forbidden");
+    }
     if (op === "claim") {
       keys(p, ["epoch", "request_id", "lease_ms"]);
       const ttl = number(p.lease_ms);
@@ -382,6 +718,8 @@ export class FleetState extends DurableObject<Env> {
         "idempotency_conflict",
         "cutover_not_implemented",
         "immutable_outcome",
+        "command_budget_exhausted",
+        "schema_mismatch",
       ];
       if (!allowed.includes(reason)) {
         console.error("control-plane unexpected error", typeof e);

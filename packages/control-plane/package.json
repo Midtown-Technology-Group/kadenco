@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run",
+    "deploy": "node operator/deny-deploy.mjs",
+    "test": "npm run build && vitest run && node --experimental-strip-types --test spec/edge.node.mts",
+    "test:parity": "node operator/parity.mjs",
+    "operator:fixture": "node --experimental-strip-types operator/local.mts --fixture",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types",
     "build": "wrangler deploy --dry-run --outdir dist"
@@ -12,6 +15,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.11",
     "@types/node": "22.20.5",
+    "miniflare": "5.20261023.3-beta",
     "typescript": "7.0.2",
     "vitest": "5.0.5",
     "wrangler": "4.156.0"
