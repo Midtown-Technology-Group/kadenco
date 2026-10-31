@@ -53,9 +53,25 @@ jobs:
         env:
           T3_TEST_BROWSER_PATH: /usr/bin/google-chrome
         run: npm exec -- vp run test:browser
+  control-plane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/control-plane/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: packages/control-plane
+      - run: npm run types && npm run typecheck && npm test && npm run build && npm audit
+        working-directory: packages/control-plane
   gate:
     if: always()
-    needs: [quality, test]
+    needs: [quality, test, control-plane]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -63,4 +79,5 @@ jobs:
         env:
           QUALITY: ${{ needs.quality.result }}
           TEST: ${{ needs.test.result }}
-        run: test "$QUALITY" = success && test "$TEST" = success
+          CONTROL: ${{ needs.control-plane.result }}
+        run: test "$QUALITY" = success && test "$TEST" = success && test "$CONTROL" = success

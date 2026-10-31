@@ -381,11 +381,16 @@ try {
     namedGrant = store.get("collaboration.grant", grantKey);
   store.put("collaboration.grant", grantKey, { ...namedGrant, expires_at: Date.now() + 300000 });
   await invited.locator("#guest-expiry").getByText("5m left", { exact: true }).waitFor();
+  await invited.waitForFunction(() => {
+    const code = document.querySelector("#timeline pre");
+    return code && getComputedStyle(code).fontFamily.includes("monospace");
+  });
   assert.equal(
     await invited
       .locator("#timeline pre")
       .evaluate((el) => getComputedStyle(el).fontFamily.includes("monospace")),
     true,
+    "Guest code blocks must retain a monospace computed font",
   );
   await invited.getByLabel("Message", { exact: true }).focus();
   assert.notEqual(
