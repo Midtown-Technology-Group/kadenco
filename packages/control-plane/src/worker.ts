@@ -363,7 +363,7 @@ export class FleetState extends DurableObject<Env> {
       );
     } catch (e) {
       if (request.body && !request.bodyUsed) await request.body.cancel();
-      const reason = e instanceof Error ? e.message : "invalid_request";
+      const reason = e instanceof Error ? e.message : "internal_error";
       const allowed = [
         "configuration_required",
         "forbidden",

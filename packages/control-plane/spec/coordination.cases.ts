@@ -346,3 +346,33 @@ describe("real SQLite DO coordination", () => {
     expect(await response.json()).toEqual({ reason: "forwarding_failed", safe_to_resend: false });
   });
 });
+
+describe("non-Error unexpected rejection", () => {
+  it("returns sanitized 500 rather than a client conflict", async () => {
+    const result = await runInDurableObject(stub(), async (obj) => {
+      const original = obj.apply;
+      obj.apply = () => {
+        throw "synthetic-non-error";
+      };
+      try {
+        const response = await obj.fetch(
+          new Request("https://fixture.invalid/status", {
+            method: "POST",
+            headers: {
+              authorization: "Bearer synthetic-owner",
+              "content-type": "application/json",
+            },
+            body: "{}",
+          }),
+        );
+        return { status: response.status, body: await response.json() };
+      } finally {
+        obj.apply = original;
+      }
+    });
+    expect(result).toEqual({
+      status: 500,
+      body: { reason: "internal_error", safe_to_resend: false },
+    });
+  });
+});
