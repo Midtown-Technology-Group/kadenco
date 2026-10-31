@@ -1162,3 +1162,345 @@ describe("subscription lifetime CAS and identity preservation", () => {
     });
   });
 });
+
+import { recoveryTables, restoreInert, type RecoveryRow } from "../src/recovery.ts";
+import { serviceSchema } from "../src/services.ts";
+describe("current-state recovery and safe quota release", () => {
+  async function clean() {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      s.storage.sql.exec("DROP TABLE IF EXISTS edge_attempts");
+      s.storage.sql.exec("DROP TABLE IF EXISTS routed_attempts");
+      for (const t of ["commands", "budget_reservations", "revoked", "auth_policy"])
+        s.storage.sql.exec(`DELETE FROM ${t}`);
+      s.storage.sql.exec("UPDATE control SET mode='active',epoch=7 WHERE id=1");
+    });
+    await call("status");
+  }
+  it("releases only reservations with no begin permit; uncertain effects cannot refund quota", async () => {
+    await clean();
+    await reserve("cancel-before-permit");
+    const claimed = await claim("cancel-before-permit");
+    expect(
+      await call("cancel_reserved", {
+        epoch: 7,
+        request_id: "cancel-before-permit",
+        reason: "already_standard",
+        receipt: { state: "noop", reason: "already_standard" },
+      }),
+    ).toMatchObject({ cancelled: true });
+    expect(
+      await call(
+        "begin",
+        { epoch: 7, request_id: "cancel-before-permit", generation: claimed.generation },
+        "synthetic-agent",
+      ),
+    ).toEqual({ reason: "fenced" });
+    await reserve("unknown-after-permit");
+    const c = await claim("unknown-after-permit");
+    await call(
+      "begin",
+      { epoch: 7, request_id: "unknown-after-permit", generation: c.generation },
+      "synthetic-agent",
+    );
+    expect(
+      await call("cancel_reserved", {
+        epoch: 7,
+        request_id: "unknown-after-permit",
+        reason: "preflight_denied",
+        receipt: { state: "rejected" },
+      }),
+    ).toEqual({ reason: "fenced" });
+    await runInDurableObject(stub(), (_o, s) => {
+      expect(
+        s.storage.sql.exec<{ n: number }>("SELECT COUNT(*) n FROM budget_reservations").one().n,
+      ).toBe(1);
+    });
+  });
+  it("exports CURRENT receipts/counters and restores inertly; incomplete archive and stale export fail closed", async () => {
+    await clean();
+    await reserve("receipt-after-original-snapshot");
+    const c = await claim("receipt-after-original-snapshot");
+    const p = { epoch: 7, request_id: "receipt-after-original-snapshot", generation: c.generation };
+    await call("begin", p, "synthetic-agent");
+    await call(
+      "record_receipt",
+      { ...p, receipt: { native_request_id: "new-current-receipt", safe_to_resend: false } },
+      "synthetic-agent",
+    );
+    await reserve("unresolved-current");
+    const u = await claim("unresolved-current");
+    await call(
+      "begin",
+      { epoch: 7, request_id: "unresolved-current", generation: u.generation },
+      "synthetic-agent",
+    );
+    expect(await call("freeze_recovery", { expected_epoch: 7 }, "synthetic-owner2")).toEqual({
+      reason: "forbidden",
+    });
+    const header = await call("freeze_recovery", { expected_epoch: 7 });
+    expect(await call("freeze_recovery", { expected_epoch: 7 })).toEqual(header);
+    const rows: RecoveryRow[] = [];
+    let cursor: { table: number; after: number } | null = { table: 0, after: 0 };
+    while (cursor) {
+      const page = await call("export_recovery", {
+        epoch: header.epoch,
+        watermark: header.watermark,
+        ...cursor,
+      });
+      rows.push(...page.rows);
+      cursor = page.next;
+    }
+    expect(
+      rows.some(
+        (r) => r.table === "commands" && String(r.values.receipt).includes("new-current-receipt"),
+      ),
+    ).toBe(true);
+    const destination = () => env.FLEETS.getByName("recovery-destination");
+    await runInDurableObject(destination(), (_o, s) => {
+      serviceSchema(s.storage.sql);
+      expect(() => restoreInert(s.storage, rows.slice(1), header)).toThrow("incomplete_recovery");
+      expect(s.storage.sql.exec<{ n: number }>("SELECT COUNT(*) n FROM commands").one().n).toBe(0);
+      const duplicate = rows.find((r) => r.table === "commands")!;
+      expect(() =>
+        restoreInert(s.storage, [...rows, { ...duplicate, key: duplicate.key + 100000 }], {
+          ...header,
+          counts: { ...header.counts, commands: header.counts.commands + 1 },
+        }),
+      ).toThrow();
+      expect(s.storage.sql.exec<{ n: number }>("SELECT COUNT(*) n FROM commands").one().n).toBe(0);
+      restoreInert(s.storage, rows, header);
+    });
+    await abortAllDurableObjects();
+    await runInDurableObject(destination(), (_o, s) => {
+      expect(s.storage.sql.exec<{ mode: string }>("SELECT mode FROM control").one().mode).toBe(
+        "quiesced",
+      );
+      expect(
+        s.storage.sql
+          .exec<{ state: string }>("SELECT state FROM commands WHERE id='unresolved-current'")
+          .one().state,
+      ).toBe("uncertain");
+      expect(
+        s.storage.sql.exec<{ n: number }>("SELECT COUNT(*) n FROM budget_reservations").one().n,
+      ).toBe(2);
+    });
+    await call("revoke", { principal_id: "agent" });
+    expect(
+      await call("export_recovery", {
+        epoch: header.epoch,
+        watermark: header.watermark,
+        table: 0,
+        after: 0,
+      }),
+    ).toEqual({ reason: "fenced" });
+    expect(recoveryTables).toContain("outbox");
+    expect(recoveryTables).toContain("subscriptions");
+  });
+});
+
+describe("non-Error unexpected rejection", () => {
+  it("returns sanitized 500 rather than a client conflict", async () => {
+    const result = await runInDurableObject(stub(), async (obj) => {
+      const original = obj.apply;
+      obj.apply = () => {
+        throw "synthetic-non-error";
+      };
+      try {
+        const response = await obj.fetch(
+          new Request("https://fixture.invalid/status", {
+            method: "POST",
+            headers: {
+              authorization: "Bearer synthetic-owner",
+              "content-type": "application/json",
+            },
+            body: "{}",
+          }),
+        );
+        return { status: response.status, body: await response.json() };
+      } finally {
+        obj.apply = original;
+      }
+    });
+    expect(result).toEqual({
+      status: 500,
+      body: { reason: "internal_error", safe_to_resend: false },
+    });
+  });
+});
+
+describe("settings no-op quota parity", () => {
+  it("records no-effect preflight even with zero quota and retains original receipt", async () => {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      for (const t of ["commands", "budget_reservations", "revoked", "auth_policy"])
+        s.storage.sql.exec(`DELETE FROM ${t}`);
+      s.storage.sql.exec("UPDATE control SET mode='active',epoch=7 WHERE id=1");
+    });
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      const p = JSON.parse(
+        s.storage.sql.exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one()
+          .value,
+      );
+      p.principals.find((v: { id: string }) => v.id === "owner").maxPerDay = 0;
+      s.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(p));
+    });
+    const input = {
+      epoch: 7,
+      request_id: "zero-quota-noop",
+      host: "local",
+      thread_id: "exact-thread",
+      kind: "settings_standard",
+      payload_sha256: "a".repeat(64),
+      binding: {
+        project: "project",
+        provider: "provider",
+        run: "run",
+        grant: "grant",
+        revision: 1,
+        expires: 4102444700000,
+      },
+      reason: "already_standard",
+      receipt: { state: "noop", reason: "already_standard", native_submitted: false },
+    };
+    expect(await call("record_preflight", input)).toMatchObject({
+      preflight_recorded: true,
+      native_attempted: false,
+    });
+    expect(
+      await call("record_preflight", {
+        ...input,
+        receipt: { ...input.receipt, extra: "changed readback" },
+      }),
+    ).toMatchObject({ receipt: input.receipt });
+    await runInDurableObject(stub(), (_o, s) =>
+      expect(
+        s.storage.sql.exec<{ n: number }>("SELECT COUNT(*) n FROM budget_reservations").one().n,
+      ).toBe(0),
+    );
+    expect(await claim("zero-quota-noop")).toMatchObject({ claimed: false, state: "cancelled" });
+  });
+});
+
+import { coordinatorForBridge } from "../src/coordinator.ts";
+describe("existing settings service preflight", () => {
+  it("zero quota still permits a proven no-op without a journal attempt or native dispatch", async () => {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      for (const t of ["commands", "budget_reservations", "revoked", "auth_policy"])
+        s.storage.sql.exec(`DELETE FROM ${t}`);
+      s.storage.sql.exec("UPDATE control SET mode='active',epoch=7 WHERE id=1");
+    });
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      const p = JSON.parse(
+        s.storage.sql.exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one()
+          .value,
+      );
+      p.principals.find((v: { id: string }) => v.id === "owner").maxPerDay = 0;
+      s.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(p));
+    });
+    const e: Envelope = {
+      request_id: crypto.randomUUID(),
+      fleet: "test-fleet",
+      principal: "owner",
+      host: "local",
+      project: "project",
+      provider: "provider",
+      thread_id: "exact-thread",
+      run: "run",
+      grant: "grant",
+      revision: 1,
+      expires: 4102444700000,
+      kind: "settings_standard",
+      payload: { speed: "standard", expected_fingerprint: "a".repeat(64) },
+    };
+    const g: Grant = { ...e, expires: 4102444800000, revoked: false, kinds: ["settings_standard"] };
+    let effects = 0;
+    const coordinate = coordinatorForBridge(
+      {
+        commands: {
+          settings: {
+            async read() {
+              return { classification: "standard", fingerprint: "a".repeat(64) };
+            },
+          },
+        },
+      } as any,
+      {
+        epoch: 7,
+        key: randomBytes(32),
+        journal: {
+          async reserve() {
+            throw Error("must_not_begin");
+          },
+          async finish() {
+            throw Error("must_not_begin");
+          },
+        },
+        ownerCall: (_owner, op, p) => call(op, p),
+        async executorCall() {
+          throw Error("must_not_dispatch");
+        },
+        async bind() {
+          return { envelope: e, grant: g };
+        },
+        async currentGrant() {
+          return g;
+        },
+        async observe() {
+          return { state: "unknown", evidence: "read-only" };
+        },
+      },
+    );
+    const result = await coordinate(
+      "settings_standard",
+      "owner",
+      {
+        host: e.host,
+        thread_id: e.thread_id,
+        request_id: e.request_id,
+        speed: "standard",
+        expected_fingerprint: "a".repeat(64),
+      },
+      async () => {
+        effects++;
+        return {};
+      },
+    );
+    expect(result).toMatchObject({ state: "noop", native_submitted: false, preflight_only: true });
+    expect(effects).toBe(0);
+  });
+});
+
+describe("executor and receipt scope tightening", () => {
+  it("does not let host access substitute for the executor's project/provider/run grant", async () => {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      for (const t of ["commands", "budget_reservations", "revoked", "auth_policy"])
+        s.storage.sql.exec(`DELETE FROM ${t}`);
+      s.storage.sql.exec("UPDATE control SET mode='active',epoch=7 WHERE id=1");
+    });
+    await call("status");
+    await reserve("executor-scope-bound");
+    await runInDurableObject(stub(), (_o, s) => {
+      const p = JSON.parse(
+        s.storage.sql.exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one()
+          .value,
+      );
+      p.principals.find((v: { id: string }) => v.id === "agent").scopes = [];
+      s.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(p));
+    });
+    expect(await claim("executor-scope-bound")).toEqual({ reason: "forbidden" });
+    expect(
+      (
+        await call(
+          "claim",
+          { epoch: 7, request_id: "executor-scope-bound", lease_ms: 1000 },
+          "synthetic-agent2",
+        )
+      ).claimed,
+    ).toBe(true);
+  });
+});

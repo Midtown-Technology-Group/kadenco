@@ -1,5 +1,7 @@
 # Local central/edge service coverage
 
+Historical boundary notes at bc87324 follow below. The current nightshift implementations of adoption, recovery, stream fencing and preflight quota accounting supersede the corresponding gap descriptions; see [nightshift-recovery.md](nightshift-recovery.md) and coverage.json. Production remains disabled.
+
 This branch composes a central coordinator with one policy-enforcing edge. It
 is not a production replacement or an active-active edge implementation.
 `deployment/coverage.json` is the machine-readable ledger; `replacement_ready`

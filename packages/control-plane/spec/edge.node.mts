@@ -752,3 +752,234 @@ test("mutation gate retains collaboration's final authorization callback and sel
   );
   assert.equal(native, 1);
 });
+
+test("active HTTP stream closes on lease loss instead of surviving admission forever", async () => {
+  const { leaseGatedHttp } = await import("../src/edge-routes.ts");
+  const { createServer } = await import("node:http");
+  let checks = 0,
+    closed!: () => void;
+  const closing = new Promise<void>((resolve) => (closed = resolve));
+  const inner = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("data: fixture\n\n");
+    res.once("close", closed);
+  });
+  const server = leaseGatedHttp(
+    inner,
+    async () => {
+      if (++checks > 1) throw Error("revoked");
+    },
+    10,
+  );
+  try {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const response = await fetch("http://127.0.0.1:" + (server.address() as { port: number }).port);
+    const reader = response.body!.getReader();
+    await reader.read();
+    await closing;
+    assert.ok(checks >= 2);
+    await reader.cancel().catch(() => {});
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("authenticated legacy fixture adopts original encrypted state and unknown commands without replay", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { Store } = await import("../../../dist/store.mjs");
+  const { coreSchema } = await import("../src/core-schema.ts");
+  const { adoptLegacy } = await import("../src/legacy-adoption.ts");
+  const codec = new Store(":memory:", randomBytes(32)),
+    db = new DatabaseSync(":memory:");
+  db.exec(coreSchema);
+  const sql = {
+    exec(statement: string, ...args: unknown[]) {
+      if (!args.length && statement.includes(";")) {
+        db.exec(statement);
+        return { toArray: () => [] };
+      }
+      const prepared = db.prepare(statement);
+      if (prepared.columns().length) {
+        const rows = prepared.all(...(args as any[]));
+        return {
+          toArray: () => rows,
+          one: () => {
+            assert.equal(rows.length, 1);
+            return rows[0];
+          },
+        };
+      }
+      prepared.run(...(args as any[]));
+      return { toArray: () => [] };
+    },
+  } as unknown as SqlStorage;
+  const now = Date.now(),
+    subscription = {
+      id: "original-standing",
+      owner: "owner",
+      host: "local",
+      threadId: "thread",
+      expires: null,
+      active: true,
+      nonExpiring: true,
+      name: "t3.thread.activity",
+      secret: "test-only-not-transferred",
+    };
+  const entries = [
+    {
+      kind: "command",
+      id: "old-native",
+      value: {
+        owner: "owner",
+        request_id: "old-native",
+        host: "local",
+        thread_id: "thread",
+        kind: "continue",
+        at: now,
+        submission: "outcome_unknown",
+      },
+    },
+    {
+      kind: "settings_mutation",
+      id: "unsubmitted",
+      value: {
+        owner: "owner",
+        request_id: "unsubmitted",
+        host: "local",
+        thread_id: "thread",
+        at: now,
+        state: "noop",
+      },
+    },
+    { kind: "subscription", id: subscription.id, value: subscription },
+    {
+      kind: "delivery",
+      id: "original-delivery",
+      value: {
+        subId: subscription.id,
+        status: "pending",
+        attempts: 2,
+        nextAt: now,
+        event: {
+          eventId: "preserved-original-event",
+          name: subscription.name,
+          data: { host: "local", thread_id: "thread", run_id: "run", kind: "completed" },
+        },
+      },
+    },
+  ];
+  const snapshot = {
+    migration_id: "legacy-fixture",
+    source_snapshot: "quiesced",
+    encryption_provenance: "fixture-codec",
+    records: entries.map((r) => ({ kind: r.kind, id: r.id, ciphertext: codec.encode(r.value) })),
+  };
+  const key = randomBytes(32),
+    packet = signedSnapshot(snapshot, key),
+    verified = verifySnapshot(packet, key, manifestOf(snapshot));
+  const target = {
+    owner: "owner",
+    host: "local",
+    thread: "thread",
+    binding: {
+      project: "project",
+      provider: "provider",
+      run: "run",
+      grant: "original-grant",
+      revision: 1,
+      expires: 4102444800000,
+    },
+  };
+  try {
+    const storage = {
+      sql,
+      transactionSync<T>(fn: () => T): T {
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          const result = fn();
+          db.exec("COMMIT");
+          return result;
+        } catch (e) {
+          db.exec("ROLLBACK");
+          throw e;
+        }
+      },
+    };
+    assert.throws(
+      () =>
+        adoptLegacy(
+          storage,
+          verified.snapshot,
+          (raw) => codec.decode(raw),
+          (kind) => [{ ...target, owner: kind === "delivery" ? "wrong-owner" : target.owner }],
+        ),
+      /legacy_owner_mismatch/,
+    );
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM commands").get()?.n, 0);
+    const adopted = adoptLegacy(
+      storage,
+      verified.snapshot,
+      (raw) => codec.decode(raw),
+      () => [target],
+    );
+    assert.deepEqual(adopted, {
+      commands: 2,
+      budgets: 1,
+      subscriptions: 1,
+      deliveries: 1,
+      activation_permitted: false,
+    });
+    assert.equal(
+      db.prepare("SELECT state FROM commands WHERE id='old-native'").get()?.state,
+      "uncertain",
+    );
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM budget_reservations").get()?.n, 1);
+    const sub = db.prepare("SELECT value FROM subscriptions").get()!;
+    assert.equal(String(sub.value).includes("test-only-not-transferred"), false);
+    assert.ok(
+      String(db.prepare("SELECT event FROM outbox").get()?.event).includes(
+        "preserved-original-event",
+      ),
+    );
+    assert.throws(
+      () =>
+        adoptLegacy(
+          storage,
+          verified.snapshot,
+          (raw) => codec.decode(raw),
+          () => [target],
+        ),
+      /adoption_destination_not_empty/,
+    );
+  } finally {
+    db.close();
+    codec.close();
+  }
+});
+
+test("recovery archive rejects tampered pages and stale epoch before any restore", async () => {
+  const { packRecovery, verifyRecovery } = await import("../src/recovery-archive.ts");
+  const { recoveryTables } = await import("../src/recovery.ts");
+  const counts = Object.fromEntries(recoveryTables.map((t) => [t, t === "control" ? 1 : 0])),
+    header = { epoch: 11, watermark: 9, counts },
+    rows = [
+      {
+        table: "control" as const,
+        key: 1,
+        values: { id: 1, epoch: 11, mode: "quiesced", migration: null },
+      },
+    ];
+  const key = randomBytes(32),
+    archive = packRecovery(header, rows, key);
+  assert.equal(verifyRecovery(archive, key, header).rows.length, 1);
+  assert.throws(() => verifyRecovery({ ...archive, pages: [] }, key, header));
+  assert.throws(() => verifyRecovery(archive, key, { ...header, epoch: 10 }));
+  assert.throws(() =>
+    verifyRecovery(
+      { ...archive, pages: [{ ...archive.pages[0], body: archive.pages[0].body + " " }] },
+      key,
+      header,
+    ),
+  );
+});

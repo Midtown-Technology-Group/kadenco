@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { authorizeBinding, operationBinding, type OperationBinding } from "./binding";
+import { authorizeBinding, operationBinding, type OperationBinding } from "./binding.ts";
 export type ServicePrincipal = {
   id: string;
   role: "owner" | "executor";

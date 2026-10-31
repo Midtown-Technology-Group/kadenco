@@ -34,7 +34,7 @@
       "status": "local-split-integrated",
       "name": "budgets",
       "source": "src/commands.mts, src/thread-settings.mts, src/bridge.mts",
-      "reason": "Atomic central host/UTC-day and thread/provider caps across mutation kinds; original edge service enforces runtime/provider/approval limits. Legacy current-day usage conversion remains fail-closed before activation."
+      "reason": "Atomic central host/thread reservations, safe pre-begin cancellation and zero-quota settings no-op preflight. Unknown native outcomes remain spent; legacy fixture usage is adopted transactionally."
     },
     {
       "status": "local-integrated",
@@ -43,10 +43,10 @@
       "reason": "Exact existing service schemas including live answers and dedicated fixed follow-up; mandatory central coordinator used by MCP/collaboration mutation gate. Production grants/trust mapping not provisioned."
     },
     {
-      "status": "fixture-only",
+      "status": "local-inert-recovery",
       "name": "state migration/rollback",
-      "source": "packages/control-plane/operator/local.mts",
-      "reason": "Quiescence/segmented import/readback/current-state export tested. Not a production restore tool or live rollback promise."
+      "source": "packages/control-plane/src/legacy-adoption.ts, packages/control-plane/src/recovery.ts, packages/control-plane/src/recovery-archive.ts",
+      "reason": "Authenticated legacy fixture adoption and current-state recovery preserve newer receipts/counters. Complete counts/schema enforced; inert restore only; production authority, custody and version/volume qualification remain blocked."
     },
     {
       "status": "deferred",

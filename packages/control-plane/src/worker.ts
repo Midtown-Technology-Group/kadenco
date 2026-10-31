@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { coreSchema } from "./core-schema";
 import { DurableObject } from "cloudflare:workers";
 import { operationBinding, authorizeBinding, type OperationBinding } from "./binding";
+import { recoveryPage, recoveryTables, assertRecoverySchema } from "./recovery";
 import { serviceSchema, serviceOperation } from "./services";
 type Principal = {
   id: string;
@@ -8,6 +10,7 @@ type Principal = {
   role: "owner" | "executor";
   hosts: string[];
   scopes?: OperationBinding[];
+  migrationAuthority?: boolean;
   maxPerDay?: number | null;
   threadBudgets?: { thread: string; provider: string; maxPerDay: number; expiresAt: number }[];
   expiresAt: number;
@@ -108,18 +111,7 @@ const json = (value: unknown, status = 200) =>
 export class FleetState extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ctx.storage.sql.exec(`
-    CREATE TABLE IF NOT EXISTS auth_policy(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS revoked(id TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS control(id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL,mode TEXT NOT NULL,migration TEXT);
-    INSERT OR IGNORE INTO control VALUES(1,0,'staging',NULL);
-    CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,host TEXT NOT NULL,thread TEXT NOT NULL,kind TEXT NOT NULL,digest TEXT NOT NULL,originator TEXT,state TEXT NOT NULL,executor TEXT,generation INTEGER NOT NULL DEFAULT 0,lease_until INTEGER,receipt TEXT);
-    CREATE TABLE IF NOT EXISTS imported(kind TEXT NOT NULL,id TEXT NOT NULL,ciphertext TEXT NOT NULL,PRIMARY KEY(kind,id));
-    CREATE TABLE IF NOT EXISTS budget_reservations(id TEXT PRIMARY KEY,owner TEXT NOT NULL,host TEXT NOT NULL,thread TEXT NOT NULL,day TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS budget_host_day ON budget_reservations(owner,host,day);
-    CREATE INDEX IF NOT EXISTS budget_thread_day ON budget_reservations(owner,host,thread,day);
-    CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT NOT NULL,action TEXT NOT NULL,subject TEXT NOT NULL,at INTEGER NOT NULL);
-  `);
+    ctx.storage.sql.exec(coreSchema);
     if (
       !ctx.storage.sql
         .exec<{ name: string }>("PRAGMA table_info(commands)")
@@ -209,6 +201,83 @@ export class FleetState extends DurableObject<Env> {
         commands: this.sql().exec<{ n: number }>("SELECT COUNT(*) n FROM commands").one().n,
       };
     }
+    if (op === "freeze_recovery") {
+      assertRecoverySchema(this.sql());
+      keys(p, ["expected_epoch"]);
+      const freezeId = JSON.stringify([a.id, number(p.expected_epoch)]),
+        prior = this.sql()
+          .exec<{ epoch: number; watermark: number; counts: string }>(
+            "SELECT epoch,watermark,counts FROM recovery_freezes WHERE id=?",
+            freezeId,
+          )
+          .toArray()[0];
+      if (a.role !== "owner" || a.migrationAuthority !== true) fail("forbidden");
+      if (prior) {
+        if (
+          state.epoch !== prior.epoch ||
+          this.sql().exec<{ n: number }>("SELECT COALESCE(MAX(seq),0) n FROM audit").one().n !==
+            prior.watermark
+        )
+          fail("fenced");
+        return {
+          epoch: prior.epoch,
+          watermark: prior.watermark,
+          counts: JSON.parse(prior.counts),
+          activation_permitted: false,
+        };
+      }
+      if (
+        a.role !== "owner" ||
+        a.migrationAuthority !== true ||
+        state.epoch !== number(p.expected_epoch)
+      )
+        fail("forbidden");
+      this.sql().exec("UPDATE control SET mode='quiesced',epoch=epoch+1 WHERE id=1");
+      this.audit(a, op, String(state.epoch + 1));
+      const watermark = this.sql()
+        .exec<{ n: number }>("SELECT COALESCE(MAX(seq),0) n FROM audit")
+        .one().n;
+      this.sql().exec(
+        "INSERT INTO recovery_freezes VALUES(?,?,?,?,?)",
+        freezeId,
+        a.id,
+        state.epoch + 1,
+        watermark,
+        "{}",
+      );
+      const counts: Record<string, number> = {};
+      for (const table of recoveryTables)
+        counts[table] = this.sql().exec<{ n: number }>(`SELECT COUNT(*) n FROM ${table}`).one().n;
+      this.sql().exec(
+        "UPDATE recovery_freezes SET counts=? WHERE id=?",
+        JSON.stringify(counts),
+        freezeId,
+      );
+      return {
+        epoch: state.epoch + 1,
+        watermark: this.sql().exec<{ n: number }>("SELECT COALESCE(MAX(seq),0) n FROM audit").one()
+          .n,
+        counts,
+        activation_permitted: false,
+      };
+    }
+    if (op === "export_recovery") {
+      keys(p, ["epoch", "watermark", "table", "after"]);
+      if (
+        a.role !== "owner" ||
+        a.migrationAuthority !== true ||
+        state.mode !== "quiesced" ||
+        state.epoch !== number(p.epoch) ||
+        this.sql().exec<{ n: number }>("SELECT COALESCE(MAX(seq),0) n FROM audit").one().n !==
+          number(p.watermark)
+      )
+        fail("fenced");
+      return {
+        ...recoveryPage(this.sql(), number(p.table), number(p.after)),
+        epoch: state.epoch,
+        watermark: p.watermark,
+      };
+    }
     if (op === "tighten_policy") {
       keys(p, ["expected_revision", "policy"]);
       if (a.role !== "owner") fail("forbidden");
@@ -222,6 +291,7 @@ export class FleetState extends DurableObject<Env> {
         if (
           !prior ||
           prior.role !== n.role ||
+          (n.migrationAuthority === true && prior.migrationAuthority !== true) ||
           (prior.threadBudgets ?? []).some(
             (oldCap) =>
               !(n.threadBudgets ?? []).some(
@@ -332,9 +402,16 @@ export class FleetState extends DurableObject<Env> {
       const r = this.row(str(p.request_id));
       this.authorized(a, r.host);
       if (a.role === "owner" ? r.originator !== a.id : r.executor !== a.id) fail("forbidden");
+      if (a.migrationAuthority !== true)
+        authorizeBinding(
+          operationBinding(r.binding ? JSON.parse(r.binding) : null),
+          a.scopes,
+          Date.now(),
+        );
       return { ...r, receipt: r.receipt ? JSON.parse(r.receipt) : null, safe_to_resend: false };
     }
-    if (state.mode !== "active") fail("not_active");
+    if (state.mode !== "active" && !(state.mode === "quiesced" && op === "record_receipt"))
+      fail("not_active");
     if (number(p.epoch) !== state.epoch) fail("fenced");
     const service = serviceOperation(
       {
@@ -352,8 +429,17 @@ export class FleetState extends DurableObject<Env> {
       this.audit(a, op, String(p.id ?? p.subscription_id ?? "event"));
       return service;
     }
-    if (op === "reserve") {
-      keys(p, ["epoch", "request_id", "host", "thread_id", "kind", "payload_sha256", "binding"]);
+    if (op === "reserve" || op === "record_preflight") {
+      keys(p, [
+        "epoch",
+        "request_id",
+        "host",
+        "thread_id",
+        "kind",
+        "payload_sha256",
+        "binding",
+        ...(op === "record_preflight" ? ["reason", "receipt"] : []),
+      ]);
       if (a.role !== "owner") fail("forbidden");
       const id = str(p.request_id),
         host = str(p.host),
@@ -390,6 +476,71 @@ export class FleetState extends DurableObject<Env> {
           old.binding !== JSON.stringify(binding))
       )
         fail("idempotency_conflict");
+      if (op === "record_preflight") {
+        if (kind !== "settings_standard") fail("invalid_request");
+        const receipt = JSON.stringify(p.receipt);
+        if (
+          !receipt ||
+          receipt.length > 16384 ||
+          !["already_standard", "preflight_denied"].includes(String(p.reason))
+        )
+          fail("invalid_request");
+        if (old) {
+          const current = this.row(id);
+          if (current.state === "receipted") return { existing: current };
+          if (!["pending", "claimed", "cancelled"].includes(current.state)) fail("fenced");
+          if (current.state === "cancelled")
+            return {
+              preflight_recorded: true,
+              id,
+              receipt: JSON.parse(current.receipt!),
+              native_attempted: false,
+              safe_to_resend: false,
+            };
+        }
+        const preflight = p.receipt as Record<string, unknown>;
+        keys(preflight, [
+          "request_id",
+          "state",
+          "reason",
+          "before",
+          "after",
+          "native_submitted",
+          "preflight_only",
+        ]);
+        if (
+          preflight.native_submitted !== false ||
+          (p.reason === "already_standard"
+            ? preflight.state !== "noop" || preflight.reason !== "already_standard"
+            : preflight.state !== "rejected")
+        )
+          fail("invalid_request");
+        this.sql().exec(
+          "INSERT OR IGNORE INTO commands(id,host,thread,kind,digest,originator,binding,state,generation,receipt) VALUES(?,?,?,?,?,?,?,'cancelled',0,?)",
+          id,
+          host,
+          thread,
+          kind,
+          digest,
+          a.id,
+          JSON.stringify(binding),
+          receipt,
+        );
+        this.sql().exec(
+          "UPDATE commands SET state='cancelled',generation=generation+1,lease_until=NULL,receipt=? WHERE id=?",
+          receipt,
+          id,
+        );
+        this.sql().exec("DELETE FROM budget_reservations WHERE id=?", id);
+        this.audit(a, op, id);
+        return {
+          preflight_recorded: true,
+          id,
+          receipt: JSON.parse(receipt),
+          native_attempted: false,
+          safe_to_resend: false,
+        };
+      }
       if (!old && kind !== "webhook") {
         if (a.maxPerDay === undefined) fail("forbidden");
         const day = new Date().toISOString().slice(0, 10);
@@ -439,10 +590,42 @@ export class FleetState extends DurableObject<Env> {
       this.audit(a, op, id);
       return this.row(id);
     }
+    if (op === "cancel_reserved") {
+      keys(p, ["epoch", "request_id", "reason", "receipt"]);
+      const id = str(p.request_id),
+        r = this.row(id);
+      if (a.role !== "owner" || r.originator !== a.id) fail("forbidden");
+      this.originAuthorized(r);
+      const receipt = JSON.stringify(p.receipt);
+      if (
+        !receipt ||
+        receipt.length > 16384 ||
+        !["already_standard", "preflight_denied"].includes(String(p.reason))
+      )
+        fail("invalid_request");
+      if (r.state === "cancelled") {
+        if (r.receipt !== receipt) fail("immutable_outcome");
+        return { cancelled: true, receipt: JSON.parse(receipt), safe_to_resend: false };
+      }
+      if (!["pending", "claimed"].includes(r.state)) fail("fenced");
+      this.sql().exec(
+        "UPDATE commands SET state='cancelled',generation=generation+1,lease_until=NULL,receipt=? WHERE id=?",
+        receipt,
+        id,
+      );
+      this.sql().exec("DELETE FROM budget_reservations WHERE id=?", id);
+      this.audit(a, op, id);
+      return { cancelled: true, receipt: JSON.parse(receipt), safe_to_resend: false };
+    }
     const id = str(p.request_id),
       r = this.row(id);
     this.authorized(a, r.host);
     if (a.role !== "executor") fail("forbidden");
+    authorizeBinding(
+      operationBinding(r.binding ? JSON.parse(r.binding) : null),
+      a.scopes,
+      Date.now(),
+    );
     if (op === "claim" || op === "begin") this.originAuthorized(r);
     if (op === "claim") {
       keys(p, ["epoch", "request_id", "lease_ms"]);
@@ -510,7 +693,7 @@ export class FleetState extends DurableObject<Env> {
       );
     } catch (e) {
       if (request.body && !request.bodyUsed) await request.body.cancel();
-      const reason = e instanceof Error ? e.message : "invalid_request";
+      const reason = e instanceof Error ? e.message : "internal_error";
       const allowed = [
         "configuration_required",
         "forbidden",
@@ -524,6 +707,7 @@ export class FleetState extends DurableObject<Env> {
         "cutover_not_implemented",
         "immutable_outcome",
         "command_budget_exhausted",
+        "schema_mismatch",
       ];
       if (!allowed.includes(reason)) {
         console.error("control-plane unexpected error", typeof e);

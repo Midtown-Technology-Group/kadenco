@@ -49,6 +49,7 @@ export default defineConfig({
               },
               {
                 id: "owner",
+                migrationAuthority: true,
                 role: "owner",
                 maxPerDay: null,
                 hosts: ["local"],

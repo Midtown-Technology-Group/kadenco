@@ -27,6 +27,11 @@ export function centralCoordinator(ports: {
   ) => Promise<{ envelope: Envelope; grant: Grant }>;
   currentGrant: (e: Envelope) => Promise<Grant>;
   observe: (e: Envelope) => Promise<Outcome>;
+  preflight?: (
+    kind: MutationKind,
+    owner: string,
+    input: unknown,
+  ) => Promise<{ reason: "already_standard" | "preflight_denied"; receipt: unknown } | undefined>;
   now?: () => number;
 }) {
   return async (
@@ -86,13 +91,15 @@ export function centralCoordinator(ports: {
     }
     if (!isDeepStrictEqual(expected, e.payload)) throw Error("binding_mismatch");
     const digest = validateOperation(e, grant, now());
-    const reserved = await ports.ownerCall(owner, "reserve", {
+    const checked = await ports.preflight?.(kind, owner, input);
+    const reserved = await ports.ownerCall(owner, checked ? "record_preflight" : "reserve", {
       epoch: ports.epoch,
       request_id: e.request_id,
       host: e.host,
       thread_id: e.thread_id,
       kind: e.kind,
       payload_sha256: digest,
+      ...checked,
       binding: {
         project: e.project,
         provider: e.provider,
@@ -102,7 +109,18 @@ export function centralCoordinator(ports: {
         expires: e.expires,
       },
     });
+    if (checked) {
+      if (reserved.preflight_recorded === true) return reserved.receipt;
+      const prior = reserved.existing as { receipt?: string } | undefined;
+      if (prior?.receipt) {
+        const saved = JSON.parse(prior.receipt) as Outcome;
+        if (saved.state === "observed") return JSON.parse(saved.evidence);
+      }
+      return { request_id: e.request_id, submission: "outcome_unknown", safe_to_resend: false };
+    }
     if (reserved.id !== e.request_id) throw Error("central_reservation_denied");
+    if (reserved.state === "cancelled")
+      return typeof reserved.receipt === "string" ? JSON.parse(reserved.receipt) : reserved.receipt;
     const result = await consumeAuthorized(
       seal(e, ports.key),
       ports.key,
@@ -147,4 +165,63 @@ export function centralCoordinator(ports: {
       central_state: result.state,
     };
   };
+}
+
+import type { Bridge } from "../../../dist/bridge.mjs";
+/** Read-only existing settings preflight preserves submitted-only quota semantics.
+ * Cancellation is atomic only while no begin permit has been issued. */
+export function coordinatorForBridge(
+  bridge: Bridge,
+  ports: Omit<Parameters<typeof centralCoordinator>[0], "preflight">,
+) {
+  return centralCoordinator({
+    ...ports,
+    preflight: async (kind, owner, input) => {
+      if (kind !== "settings_standard") return undefined;
+      if (!bridge.commands) throw Error("commands_required");
+      const p = standardSpeedArgs.parse(input),
+        snapshot = await bridge.commands.settings.read(owner, {
+          host: p.host,
+          thread_id: p.thread_id,
+        });
+      if (snapshot.fingerprint !== p.expected_fingerprint)
+        return {
+          reason: "preflight_denied",
+          receipt: {
+            request_id: p.request_id,
+            state: "rejected",
+            reason: "settings_changed",
+            before: snapshot,
+            native_submitted: false,
+            preflight_only: true,
+          },
+        };
+      if (snapshot.classification === "standard")
+        return {
+          reason: "already_standard",
+          receipt: {
+            request_id: p.request_id,
+            state: "noop",
+            reason: "already_standard",
+            before: snapshot,
+            after: snapshot,
+            native_submitted: false,
+            preflight_only: true,
+          },
+        };
+      if (snapshot.classification !== "fast")
+        return {
+          reason: "preflight_denied",
+          receipt: {
+            request_id: p.request_id,
+            state: "rejected",
+            reason: snapshot.classification,
+            before: snapshot,
+            native_submitted: false,
+            preflight_only: true,
+          },
+        };
+      return undefined;
+    },
+  });
 }
