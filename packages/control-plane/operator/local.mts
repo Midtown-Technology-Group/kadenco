@@ -4,7 +4,6 @@ import {
   realpathSync,
   readFileSync,
   writeFileSync,
-  existsSync,
   openSync,
   closeSync,
   readdirSync,
@@ -152,8 +151,13 @@ export async function migrate(path: string) {
 export function rollback(path: string) {
   const root = fixtureRoot(path),
     output = join(root, "rollback-current.db");
-  if (existsSync(output)) throw Error("rollback_candidate_exists");
-  closeSync(openSync(output, "wx", 0o600));
+  try {
+    closeSync(openSync(output, "wx", 0o600));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST")
+      throw Error("rollback_candidate_exists");
+    throw error;
+  }
   const source = new DatabaseSync(join(root, "fixture.db"), { readOnly: true }),
     target = new DatabaseSync(output);
   try {
