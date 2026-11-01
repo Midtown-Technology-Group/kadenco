@@ -21,7 +21,7 @@ node scripts/cloudflare-route.mjs deploy --dry-run --outdir LOCAL_OUTPUT
 | `dev --local` with supported flags                          | Preserve Wrangler argv; review bindings before local dev |
 | Other operation/flag, implicit dev, login or cloud mutation | Exit2 with actionable refusal                            |
 
-Output is JSON containing an executable and **argument array**, never a shell command.
+Check `allowed` first. When true, the JSON result contains `executable` and an **argument array** (`argv`), never a shell command. When false, it contains only `allowed`, `reason` and `next`; do not read or execute plan fields.
 Do not concatenate or evaluate its values as shell text. No command executes automatically,
 no PATH/shim/hook is installed, and no credential is read by the router. Do not pass secrets
 to the planner; its output is intended for review. Duplicate/unknown flags and unsupported
