@@ -5,6 +5,7 @@ executable credential-free build/dry-run path. It does not enable production.
 
 ```sh
 cd packages/control-plane
+# Requires Node ^22.23.0, ^24.22.0, or ^26.12.0 for the pinned cf CLI.
 npm ci --ignore-scripts
 npm run staging:qualify
 ```
@@ -13,6 +14,7 @@ This builds with mode `staging`, then validates the exact prebuilt output with
 `cf deploy --prebuilt --dry-run --mode staging`. No upload/API request occurs.
 The normal control-plane CI job runs this qualification. Modes other than exactly
 `staging`, including an omitted mode, throw before deployment configuration exists.
+Worker Preview evaluations (`isPreview: true`) also refuse, even with staging mode.
 Do not remove this guard to enable production or use the candidate's Wrangler
 configuration to evade it. `npm run deploy` still refuses.
 

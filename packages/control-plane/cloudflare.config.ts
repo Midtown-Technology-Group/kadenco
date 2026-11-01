@@ -2,7 +2,8 @@
 import { bindings, defineConfig, exports as lifecycle } from "cf/config";
 
 /** A new isolated staging namespace, never a production namespace migration. */
-export function selectStagingConfig(mode: string | undefined) {
+export function selectStagingConfig(mode: string | undefined, isPreview = false) {
+  if (isPreview) throw Error("preview_deployment_disabled");
   if (mode !== "staging")
     throw Error("explicit_staging_mode_required: production deployment is disabled");
   const name = "kadenco-control-plane-staging";
@@ -19,4 +20,4 @@ export function selectStagingConfig(mode: string | undefined) {
     },
   };
 }
-export default defineConfig(({ mode }) => selectStagingConfig(mode));
+export default defineConfig(({ mode, isPreview }) => selectStagingConfig(mode, isPreview));

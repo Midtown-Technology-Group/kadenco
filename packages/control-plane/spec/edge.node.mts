@@ -1185,3 +1185,7 @@ test("cf default, production and unknown modes refuse before resource provisioni
   for (const mode of [undefined, "production", "preview", "staging "])
     assert.throws(() => selectStagingConfig(mode), /explicit_staging_mode_required/);
 });
+
+test("cf Worker Preview evaluations refuse even when staging mode is selected", () => {
+  assert.throws(() => selectStagingConfig("staging", true), /preview_deployment_disabled/);
+});
