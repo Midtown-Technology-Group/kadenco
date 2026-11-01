@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "staging:qualify": "node node_modules/cf/bin/cf build --mode staging && node node_modules/cf/bin/cf deploy --prebuilt --dry-run --mode staging",
     "deploy": "node operator/deny-deploy.mjs",
     "test": "npm run build && vitest run && node --experimental-strip-types --test spec/edge.node.mts",
     "test:parity": "node operator/parity.mjs",
@@ -15,6 +16,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.11",
     "@types/node": "22.20.5",
+    "cf": "1.0.0-beta.26",
     "miniflare": "5.20261023.3-beta",
     "typescript": "7.0.2",
     "vitest": "5.0.5",

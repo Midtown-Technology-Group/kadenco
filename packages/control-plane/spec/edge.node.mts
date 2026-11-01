@@ -1168,3 +1168,20 @@ test("parity runner builds a clean fixture checkout and stops on build failure",
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+import { selectStagingConfig } from "../cloudflare.config.ts";
+test("cf staging conversion has isolated SQLite lifecycle and no production credentials or ingress", () => {
+  const { worker } = selectStagingConfig("staging");
+  assert.equal(worker.name, "kadenco-control-plane-staging");
+  assert.equal(worker.workersDev, false);
+  assert.equal(worker.previewUrls, false);
+  assert.deepEqual(Object.keys(worker.env), ["FLEETS"]);
+  assert.deepEqual(worker.exports.FleetState, { type: "durable-object", storage: "sqlite" });
+  assert.equal(worker.env.FLEETS.worker, worker.name);
+  assert.equal("triggers" in worker, false);
+  assert.equal("domains" in worker, false);
+});
+test("cf default, production and unknown modes refuse before resource provisioning", () => {
+  for (const mode of [undefined, "production", "preview", "staging "])
+    assert.throws(() => selectStagingConfig(mode), /explicit_staging_mode_required/);
+});

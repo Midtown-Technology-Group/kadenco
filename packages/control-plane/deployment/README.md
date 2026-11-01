@@ -1,5 +1,10 @@
 # Local staging and deployment boundary
 
+Native cf build/prebuilt dry-run qualification is now available in
+[cf-staging.md](cf-staging.md). Production activation and the default deploy refusal
+remain unchanged. That document supersedes the old assumption that only Wrangler
+configuration exists; it does not claim a deployed service or complete relay replacement.
+
 The control-plane candidate is not a replacement for the existing sidecar.
 Read `deployment/coverage.json`: it enumerates every currently registered MCP
 tool and the unported event, collaboration, caller, diagnostics and budget

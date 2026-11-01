@@ -70,6 +70,8 @@ jobs:
         working-directory: packages/control-plane
       - run: npm run types && npm run typecheck && npm test && npm run build && npm audit
         working-directory: packages/control-plane
+      - run: npm run staging:qualify
+        working-directory: packages/control-plane
   gate:
     if: always()
     needs: [quality, test, control-plane]

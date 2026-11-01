@@ -15,4 +15,5 @@ dist-disabled/
 release-output/
 
 .wrangler/
+.cloudflare/
 packages/control-plane/worker-configuration.d.ts
