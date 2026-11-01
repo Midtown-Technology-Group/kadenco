@@ -12,6 +12,38 @@ node scripts/cloudflare-route.mjs deployments list --name WORKER
 node scripts/cloudflare-route.mjs deploy --dry-run --outdir LOCAL_OUTPUT
 ```
 
+## Executable agent entrypoint
+
+Agents following this repository's AGENTS.md use the package entrypoint:
+
+```sh
+npm run agent:wrangler -- whoami
+npm run agent:wrangler -- deployments list --name WORKER
+```
+
+It resolves an already-installed npm `cf` CLI and runs its Node entrypoint with a
+literal argument array and `shell:false`. Local approved builds/types resolve an
+existing npm Wrangler installation instead. Resolution searches the working directory
+and its ancestors, then conventional npm global layouts on PATH. It does not download
+packages, read auth files, install hooks or retry with a different tool on failure.
+Missing/unsupported installations fail with a clear error; do not install/login as
+an automatic recovery. Existing account/environment selection and child exit status
+are preserved. A denial executes once and is returned unchanged.
+
+For a reviewed local build directory, invoke the absolute `scripts/agent-wrangler.mjs`
+path with Node from that directory so configuration resolution is unchanged. Do not
+run the root npm script to build a different working directory. `dev --local` remains
+plan-only: the executor refuses it until bindings are manually reviewed, after which
+direct local Wrangler dev remains available. Cloud writes, login and unsupported
+flags always refuse before tool resolution or execution.
+
+This is an actual opt-in command path, not interception of bare `wrangler`/`npm exec`.
+The Windows global npm Wrangler shim was identified but is not owned by this repository
+and was not replaced. Hooking all shell commands or changing an approval hook is a
+separate control change: it would affect other repositories and owners, introduce
+argument/target ambiguity, and requires explicit target-owner/security approval.
+No such hook is installed or necessary for this checkout-scoped entrypoint.
+
 | Attempted Wrangler operation                                | Explicit plan                                            |
 | ----------------------------------------------------------- | -------------------------------------------------------- |
 | `whoami` without flags                                      | `cf auth whoami`                                         |
