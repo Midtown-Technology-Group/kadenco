@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, delimiter, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { routeWrangler } from "./cloudflare-route.mjs";
 
@@ -67,6 +67,6 @@ export function runAgentWrangler(argv, ports = {}) {
 
 if (
   process.argv[1] &&
-  fileURLToPath(import.meta.url) === fileURLToPath(pathToFileURL(process.argv[1]))
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
 )
   process.exitCode = runAgentWrangler(process.argv.slice(2));

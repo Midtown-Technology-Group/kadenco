@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,3 +109,45 @@ test("real executable entrypoint uses existing npm CLI layout, including paths w
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const kind of ["workspace", "script"]) {
+  test(`direct invocation through symlinked ${kind} executes exactly once`, (t) => {
+    const root = mkdtempSync(join(tmpdir(), "kadenco linked CLI "));
+    try {
+      const pkg = join(root, "node_modules", "cf");
+      mkdirSync(join(pkg, "bin"), { recursive: true });
+      writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "cf", bin: "bin/mock.cjs" }));
+      writeFileSync(
+        join(pkg, "bin", "mock.cjs"),
+        "console.log(JSON.stringify(process.argv.slice(2)));process.exitCode=23;",
+      );
+      const target = fileURLToPath(
+        new URL(kind === "workspace" ? "../" : "../scripts/agent-wrangler.mjs", import.meta.url),
+      );
+      const link = join(root, kind === "workspace" ? "linked-workspace" : "linked-script.mjs");
+      try {
+        symlinkSync(
+          target,
+          link,
+          kind === "workspace" ? (process.platform === "win32" ? "junction" : "dir") : "file",
+        );
+      } catch (error) {
+        if (process.platform === "win32" && error.code === "EPERM") {
+          t.skip("Windows file symlink privilege unavailable; Linux CI exercises this path");
+          return;
+        }
+        throw error;
+      }
+      const script = kind === "workspace" ? join(link, "scripts", "agent-wrangler.mjs") : link;
+      const child = spawnSync(process.execPath, [script, "whoami"], {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, PATH: "" },
+      });
+      assert.equal(child.status, 23, child.stderr);
+      assert.deepEqual(JSON.parse(child.stdout), ["auth", "whoami"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
