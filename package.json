@@ -30,6 +30,7 @@
     }
   },
   "scripts": {
+    "agent:wrangler": "node scripts/agent-wrangler.mjs",
     "test": "npm run build && node --test",
     "start": "node dist/main.mjs",
     "check": "vp check --deny-warnings && npm run typecheck",
