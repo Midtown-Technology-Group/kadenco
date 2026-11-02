@@ -381,17 +381,20 @@ try {
     namedGrant = store.get("collaboration.grant", grantKey);
   store.put("collaboration.grant", grantKey, { ...namedGrant, expires_at: Date.now() + 300000 });
   await invited.locator("#guest-expiry").getByText("5m left", { exact: true }).waitFor();
-  await invited.waitForFunction(() => {
+  // Snapshot the live element's style atomically. SSE replaces timeline nodes;
+  // a second locator/evaluate can inspect an already detached former node.
+  const codeStyle = await invited.waitForFunction(() => {
     const code = document.querySelector("#timeline pre");
-    return code && getComputedStyle(code).fontFamily.includes("monospace");
+    if (!code?.isConnected) return false;
+    const fontFamily = getComputedStyle(code).fontFamily;
+    return fontFamily.includes("monospace") ? { fontFamily } : false;
   });
   assert.equal(
-    await invited
-      .locator("#timeline pre")
-      .evaluate((el) => getComputedStyle(el).fontFamily.includes("monospace")),
+    (await codeStyle.jsonValue()).fontFamily.includes("monospace"),
     true,
     "Guest code blocks must retain a monospace computed font",
   );
+  await codeStyle.dispose();
   await invited.getByLabel("Message", { exact: true }).focus();
   assert.notEqual(
     await invited
