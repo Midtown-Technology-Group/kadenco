@@ -11,6 +11,8 @@ Run from the control-plane package. The CLI opens SQLite read-only and uses one
 read transaction. It returns aggregate counts/envelope size only, never ciphertext,
 record IDs, audit text, credentials or state exports. A missing database cannot be
 created. Exit2 means the current materialized migration path cannot fit the source;
+Retained history is inspected one row at a time using the extractor's exact JSON
+serialization, including escaping and UTF-16 length; only the maximum length is emitted.
 exit0 only means these volume checks passed, never production readiness. Unknown
 record columns refuse instead of silently dropping data. Identity, grants, encryption
 provenance, payload decoding and retirement are not inferred from this report.

@@ -1233,3 +1233,31 @@ test("source preflight refuses unknown record columns instead of claiming compat
     db.close();
   }
 });
+
+test("source preflight includes exact serialized retained-history envelopes", () => {
+  for (const table of ["audit", "diagnostics"]) {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(
+        `CREATE TABLE records(kind TEXT,id TEXT,value TEXT);CREATE TABLE ${table}(seq INTEGER,value TEXT)`,
+      );
+      const put = db.prepare(`INSERT INTO ${table} VALUES(1,?)`);
+      for (const value of ["x".repeat(32768), "\u0000".repeat(6000), "😀".repeat(16384)]) {
+        db.exec(`DELETE FROM ${table}`);
+        put.run(value);
+        const before = JSON.stringify(db.prepare(`SELECT * FROM ${table}`).get());
+        assert.ok(before.length > 32768);
+        const result = sourcePreflight(db);
+        assert.equal(result.fits_current_materialized_path, false);
+        assert.ok(result.blockers.includes("record_envelope_limit_exceeded"));
+        assert.throws(
+          () => extractSnapshot(db, "fixture", "fixture", () => {}),
+          /source_volume_requires_streaming_migration/,
+        );
+        assert.equal(JSON.stringify(db.prepare(`SELECT * FROM ${table}`).get()), before);
+      }
+    } finally {
+      db.close();
+    }
+  }
+});
