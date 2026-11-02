@@ -16,6 +16,16 @@ import { Commands } from "./commands.mjs";
 import { withFleetSessions } from "./fleet-source.mjs";
 import { collaborationServer } from "./collaboration-http.mjs";
 import { diagnosticContext, diagnoseWorkerCycle } from "./diagnostics.mjs";
+import type { Server } from "node:http";
+
+/** Trusted embedding boundary. A runtime owns both HTTP admission and the only
+ * observation/delivery loop; it cannot accidentally run alongside local delivery. */
+export interface SidecarRuntime {
+  mcp: Server;
+  collaboration?: Server & { stopStreams?: () => void };
+  cycle(): Promise<void>;
+  close(): Promise<void>;
+}
 
 export interface SidecarOptions {
   configPath?: string;
@@ -23,6 +33,7 @@ export interface SidecarOptions {
   // Operator-owned startup composition only. Never a remote tool argument,
   // selectable module, credential provider or authorization bypass.
   backendFactory?: (policy: Policy) => Backend | Promise<Backend>;
+  runtimeFactory?: (bridge: Bridge) => SidecarRuntime | Promise<SidecarRuntime>;
 }
 export interface Sidecar {
   address(): AddressInfo | null;
@@ -58,8 +69,9 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
   if (process.platform !== "win32" && statSync(config.stateDirectory).mode & 0o077)
     throw Error("state_directory_must_be_private");
   let store: Store | undefined, backend: Backend | undefined, reader: FleetReader | undefined;
-  let server: ReturnType<typeof httpServer> | undefined;
-  let collaboration: ReturnType<typeof collaborationServer> | undefined;
+  let server: Server | undefined;
+  let collaboration: SidecarRuntime["collaboration"];
+  let runtime: SidecarRuntime | undefined;
   let stopped = false,
     inFlight = Promise.resolve(),
     stopping: Promise<void> | undefined;
@@ -70,8 +82,12 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
       stopped = true;
       clearTimeout(timer);
       eventLoop.disable();
-      collaboration?.stopStreams();
       const errors: unknown[] = [];
+      try {
+        collaboration?.stopStreams?.();
+      } catch (error) {
+        errors.push(error);
+      }
       const listeners = await Promise.allSettled(
         [server, collaboration].filter(Boolean).map(
           (s) =>
@@ -87,7 +103,12 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
       } catch (error) {
         errors.push(error);
       }
-      for (const close of [() => reader?.close(), () => backend?.close(), () => store?.close()])
+      for (const close of [
+        () => runtime?.close(),
+        () => reader?.close(),
+        () => backend?.close(),
+        () => store?.close(),
+      ])
         try {
           await close();
         } catch (error) {
@@ -118,12 +139,20 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
     });
     if (reader) bridge.fleetReads = reader;
     if (config.nativeDelivery) bridge.commands = new Commands({ policy, store, reader });
-    server = httpServer(bridge);
+    runtime = await options.runtimeFactory?.(bridge);
+    if (options.runtimeFactory && !runtime) throw Error("runtime_required");
+    if (runtime && config.collaboration?.enabled && !runtime.collaboration)
+      throw Error("runtime_collaboration_required");
+    server = runtime ? runtime.mcp : httpServer(bridge);
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(config.port ?? 41880, "127.0.0.1", resolve);
     });
-    collaboration = config.collaboration?.enabled ? collaborationServer(bridge) : undefined;
+    collaboration = config.collaboration?.enabled
+      ? runtime
+        ? runtime.collaboration
+        : collaborationServer(bridge)
+      : undefined;
     if (collaboration)
       await new Promise<void>((resolve, reject) => {
         collaboration.once("error", reject);
@@ -138,6 +167,7 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
             (e) => store.diagnostic(e),
             eventLoop,
             async () => {
+              if (runtime) return runtime.cycle();
               await bridge.observe();
               await bridge.deliver();
               await bridge.fleetEvents.observe();

@@ -12,6 +12,9 @@ export const recoveryTables = [
   "observations",
   "outbox",
   "edge_lease",
+  "replica_head",
+  "replica_records",
+  "replica_receipts",
 ] as const;
 export type RecoveryRow = {
   table: (typeof recoveryTables)[number];
@@ -82,6 +85,7 @@ function restoreRows(
   if (
     expected.counts.control !== 1 ||
     expected.counts.auth_policy !== 1 ||
+    expected.counts.replica_head !== 1 ||
     Object.keys(expected.counts).some(
       (n) => !recoveryTables.includes(n as (typeof recoveryTables)[number]),
     )
@@ -90,7 +94,7 @@ function restoreRows(
   if (rows.length > 100000) throw Error("recovery_too_large");
   for (const table of recoveryTables) {
     if (
-      !["auth_policy", "control", "audit"].includes(table) &&
+      !["auth_policy", "control", "audit", "replica_head"].includes(table) &&
       sql.exec<{ n: number }>(`SELECT COUNT(*) n FROM ${table}`).one().n
     )
       throw Error("destination_not_empty");

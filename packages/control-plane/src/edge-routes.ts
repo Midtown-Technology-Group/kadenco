@@ -4,7 +4,13 @@ import { httpServer } from "../../../dist/server.mjs";
 import { collaborationServer } from "../../../dist/collaboration-http.mjs";
 import { gateEdgeMutations } from "./mutation-gate.ts";
 import type { Bridge } from "../../../dist/bridge.mjs";
-export function leaseGatedHttp(inner: Server, refreshLease: () => Promise<void>, checkMs = 1000) {
+import { durableResponse } from "./durable-response.ts";
+export function leaseGatedHttp(
+  inner: Server,
+  refreshLease: () => Promise<void>,
+  checkMs = 1000,
+  checkpoint?: () => Promise<void>,
+) {
   if (!Number.isSafeInteger(checkMs) || checkMs < 10 || checkMs > 10000)
     throw Error("invalid_lease_check_interval");
   return createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -24,6 +30,7 @@ export function leaseGatedHttp(inner: Server, refreshLease: () => Promise<void>,
     void refreshLease()
       .then(() => {
         if (req.destroyed || res.destroyed) return;
+        if (checkpoint) durableResponse(res, checkpoint);
         inner.emit("request", req, res);
         if (!res.destroyed && !res.writableEnded) timer = setTimeout(() => void check(), checkMs);
       })
@@ -43,6 +50,7 @@ export function composeEdgeRoutes(
   refreshLease: () => Promise<void>,
   authenticate?: Parameters<typeof collaborationServer>[1],
   coordinate?: Parameters<typeof gateEdgeMutations>[1],
+  checkpoint?: () => Promise<void>,
 ) {
   bridge = gateEdgeMutations(
     bridge,
@@ -51,8 +59,8 @@ export function composeEdgeRoutes(
         throw Error("central_coordinator_required");
       }),
   );
-  const guarded = (inner: Server) => {
-    const outer = leaseGatedHttp(inner, refreshLease);
+  const guarded = <T extends Server>(inner: T) => {
+    const outer = leaseGatedHttp(inner, refreshLease, 1000, checkpoint);
     return { server: outer, inner };
   };
   return {

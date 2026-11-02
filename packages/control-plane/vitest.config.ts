@@ -69,6 +69,7 @@ export default defineConfig({
               {
                 id: "agent",
                 role: "executor",
+                stateCustodian: true,
                 hosts: ["local"],
                 scopes: [
                   {

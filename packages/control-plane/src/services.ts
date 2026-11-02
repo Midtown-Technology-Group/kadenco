@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { authorizeBinding, operationBinding, type OperationBinding } from "./binding.ts";
+import { replicaSchema, replicaOperation } from "./replica-state.ts";
 export type ServicePrincipal = {
   id: string;
   role: "owner" | "executor";
   hosts: string[];
   expiresAt: number;
   scopes?: OperationBinding[];
+  stateCustodian?: boolean;
 };
 type Context = {
   sql: SqlStorage;
@@ -20,6 +22,7 @@ const bad = (reason: string): never => {
 const text = (v: unknown) =>
   typeof v === "string" && v.length > 0 && v.length <= 2048 ? v : bad("invalid_request");
 export function serviceSchema(sql: SqlStorage) {
+  replicaSchema(sql);
   sql.exec(`
 CREATE TABLE IF NOT EXISTS edge_lease(id INTEGER PRIMARY KEY CHECK(id=1),holder TEXT,generation INTEGER,expires INTEGER);
 CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,owner TEXT NOT NULL,host TEXT NOT NULL,thread TEXT NOT NULL,binding TEXT NOT NULL,expires INTEGER,active INTEGER NOT NULL,value TEXT NOT NULL);
@@ -35,6 +38,8 @@ export function serviceOperation(
   p: Record<string, unknown>,
 ): unknown | undefined {
   const { sql, actor: a, now } = c;
+  const replica = replicaOperation(sql, a, op, p, now);
+  if (replica !== undefined) return replica;
   const sub = (id: string) =>
     sql
       .exec<{

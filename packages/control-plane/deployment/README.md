@@ -1,5 +1,15 @@
 # Local staging and deployment boundary
 
+The central edge composition now runs through the real sidecar lifecycle in local
+fixtures. Its encrypted record change journal, revision-checked DO commits,
+receipt reconciliation, durable HTTP/SSE responses and native/callback checkpoints
+are exercised with workerd and the official MCP client. The build emits a Node
+ESM edge bundle and a source/checksum manifest; CI retains the matching public
+runtime and Worker. No production compiler or TypeScript loader is required.
+Existing grant/identity mapping, secret custody, old-writer retirement, activation
+and live acceptance remain separate unfinished deployment requirements. This
+does not promote the staging Worker or claim a production replacement.
+
 Native cf build/prebuilt dry-run qualification is now available in
 [cf-staging.md](cf-staging.md). Production activation and the default deploy refusal
 remain unchanged. That document supersedes the old assumption that only Wrangler
