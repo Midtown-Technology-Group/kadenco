@@ -1189,3 +1189,47 @@ test("cf default, production and unknown modes refuse before resource provisioni
 test("cf Worker Preview evaluations refuse even when staging mode is selected", () => {
   assert.throws(() => selectStagingConfig("staging", true), /preview_deployment_disabled/);
 });
+
+import { sourcePreflight } from "../src/source-preflight.ts";
+import { DatabaseSync } from "node:sqlite";
+import { extractSnapshot } from "../src/migration-service.ts";
+test("source preflight reports only aggregates and blocks oversized materialization before copying", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(
+      "CREATE TABLE records(kind TEXT,id TEXT,value TEXT);CREATE TABLE audit(seq INTEGER PRIMARY KEY,at TEXT,action TEXT);CREATE TABLE diagnostics(seq INTEGER PRIMARY KEY,at TEXT,value TEXT)",
+    );
+    db.prepare("INSERT INTO records VALUES(?,?,?)").run(
+      "command",
+      "private-request",
+      "PRIVATE_CIPHERTEXT",
+    );
+    assert.equal(sourcePreflight(db).fits_current_materialized_path, true);
+    assert.equal(JSON.stringify(sourcePreflight(db)).includes("PRIVATE"), false);
+    db.exec(
+      "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO audit(seq,at,action) SELECT x,'fixture','private-audit-text' FROM n",
+    );
+    const result = sourcePreflight(db);
+    assert.equal(result.total_rows, 10001);
+    assert.deepEqual(result.blockers, ["legacy_adoption_row_limit_exceeded"]);
+    assert.throws(
+      () => extractSnapshot(db, "fixture", "fixture-lineage", () => {}),
+      /source_volume_requires_streaming_migration/,
+    );
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM audit").get()!.n, 10000);
+    assert.doesNotThrow(() => db.exec("BEGIN;ROLLBACK"));
+    db.exec("UPDATE records SET value=replace(hex(zeroblob(17000)),'0','x')");
+    assert.ok(sourcePreflight(db).blockers.includes("record_envelope_limit_exceeded"));
+  } finally {
+    db.close();
+  }
+});
+test("source preflight refuses unknown record columns instead of claiming compatibility", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("CREATE TABLE records(kind TEXT,id TEXT,value TEXT,unmapped TEXT)");
+    assert.throws(() => sourcePreflight(db), /unsupported_source_schema/);
+  } finally {
+    db.close();
+  }
+});
