@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { Bridge } from "../../../dist/bridge.mjs";
+import { eventTarget } from "./event-target.ts";
 export async function deliverClaimed(
   id: string,
   ports: {
@@ -42,20 +43,31 @@ import { signedPost } from "../../../dist/webhook.mjs";
 import { subscriptionActive } from "../../../dist/subscription-state.mjs";
 /** Callback secrets/allowlist, pending-question/native checks remain on the one
  * edge that already owns the encrypted subscription and signer. */
-export function existingCallback(bridge: Bridge, beforePost: () => Promise<void> = async () => {}) {
+export function existingCallback(
+  bridge: Bridge,
+  beforePost: () => Promise<void> = async () => {},
+  authorizeScope?: (
+    subscription: Record<string, unknown>,
+    event: unknown,
+    binding: unknown,
+  ) => void,
+) {
   return async (reference: string, envelope: unknown) => {
     const event = (envelope as { data: unknown }).data;
     const subscription = bridge.store.get("subscription", reference);
+    if (!subscription) throw Error("forbidden");
     const scope = (
-      envelope as { scope?: { owner: string; host: string; thread: string; name: string } }
+      envelope as {
+        scope?: { owner: string; host: string; thread: string; name: string; binding?: unknown };
+      }
     ).scope;
-    const data = (event as { data?: { host?: string; thread_id?: string } })?.data;
+    const target = eventTarget(bridge, subscription, event);
     if (
       !scope ||
       scope.owner !== subscription?.owner ||
       scope.name !== subscription?.name ||
-      scope.host !== (subscription?.host ?? data?.host) ||
-      scope.thread !== (subscription?.threadId ?? data?.thread_id ?? "aggregate")
+      scope.host !== target.host ||
+      scope.thread !== target.thread
     )
       throw Error("forbidden");
     if (!subscriptionActive(subscription, bridge.now())) throw Error("forbidden");
@@ -75,6 +87,13 @@ export function existingCallback(bridge: Bridge, beforePost: () => Promise<void>
     // Native pending-question/read checks can outlast the edge lease. Recheck at
     // the actual HTTP effect boundary rather than only when the pass started.
     await beforePost();
+    const final = bridge.store.get("subscription", reference);
+    if (
+      !subscriptionActive(final, bridge.now()) ||
+      JSON.stringify(final) !== JSON.stringify(subscription)
+    )
+      throw Error("forbidden");
+    authorizeScope?.(subscription, event, scope.binding);
     return (await signedPost(subscription, event, bridge.post, bridge.now())).status;
   };
 }
@@ -126,15 +145,14 @@ export async function observeExisting(
       // Existing filtering/pending-question/native authorization is rechecked again at
       // callback time; observations are evidence, never permission to execute a task.
       const binding = ports.binding(s, d.event);
-      const host = s.host ?? d.event.data?.host,
-        thread = s.threadId ?? d.event.data?.thread_id ?? "aggregate";
+      const { host, thread } = eventTarget(bridge, s, d.event);
       const centralSubscription = JSON.stringify([s.id, host, thread]);
       const request = {
         epoch: ports.epoch,
         id: centralSubscription,
         external_id: s.id,
-        host: s.host ?? d.event.data?.host,
-        thread_id: s.threadId ?? d.event.data?.thread_id ?? "aggregate",
+        host,
+        thread_id: thread,
         binding,
         expires: s.expires,
         name: s.name,

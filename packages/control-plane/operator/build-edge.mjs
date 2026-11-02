@@ -21,7 +21,7 @@ for (const path of files) {
 if (!Object.keys(hashes).includes("sidecar.mjs")) throw Error("build_sidecar_first");
 const result = await build({
   absWorkingDir: directory,
-  entryPoints: ["src/edge-runtime.ts"],
+  entryPoints: ["src/edge-entry.ts"],
   outfile: "dist/edge-runtime.mjs",
   bundle: true,
   platform: "node",
