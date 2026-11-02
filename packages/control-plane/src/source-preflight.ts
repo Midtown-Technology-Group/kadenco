@@ -2,7 +2,11 @@
 import type { DatabaseSync } from "node:sqlite";
 
 /** Emit aggregate metadata only; inspect retained rows one at a time, never export their contents. */
-export function sourcePreflight(db: DatabaseSync) {
+export function sourcePreflight(
+  db: DatabaseSync,
+  historyMode: "include" | "local_archive" = "include",
+) {
+  if (!["include", "local_archive"].includes(historyMode)) throw Error("unsupported_history_mode");
   const tables = new Set(
     db
       .prepare("SELECT name FROM sqlite_master WHERE type='table'")
@@ -25,17 +29,21 @@ export function sourcePreflight(db: DatabaseSync) {
   for (const table of ["audit", "diagnostics"]) {
     let count = 0;
     if (tables.has(table)) {
-      // Use the identical serialization to extractSnapshot, including escaping and
-      // UTF-16 length. SQL length(raw) would undercount both controls and astral text.
-      for (const row of db.prepare(`SELECT * FROM ${table}`).iterate()) {
-        count++;
-        largestEnvelope = Math.max(largestEnvelope, JSON.stringify(row).length);
+      if (historyMode === "local_archive") {
+        count = Number(db.prepare(`SELECT COUNT(*) n FROM ${table}`).get()!.n);
+      } else {
+        // Use the identical serialization to extractSnapshot, including escaping and
+        // UTF-16 length. SQL length(raw) would undercount both controls and astral text.
+        for (const row of db.prepare(`SELECT * FROM ${table}`).iterate()) {
+          count++;
+          largestEnvelope = Math.max(largestEnvelope, JSON.stringify(row).length);
+        }
       }
     }
     history[table] = count;
     retained += count;
   }
-  const total = Number(records.n) + retained;
+  const total = Number(records.n) + (historyMode === "include" ? retained : 1);
   const blockers = [];
   if (total > 100000) blockers.push("snapshot_row_limit_exceeded");
   if (total > 10000) blockers.push("legacy_adoption_row_limit_exceeded");
@@ -44,6 +52,7 @@ export function sourcePreflight(db: DatabaseSync) {
     records: Number(records.n),
     retained_history: history,
     total_rows: total,
+    history_mode: historyMode,
     largest_record_chars: Number(records.largest),
     largest_envelope_chars: largestEnvelope,
     blockers,

@@ -39,6 +39,7 @@ function adoptLegacyRows(
     "collaboration.message",
     "$audit",
     "$diagnostics",
+    "$history_archive",
   ]);
   for (const r of snapshot.records) {
     if (!known.has(r.kind)) throw Error("unsupported_legacy_kind");

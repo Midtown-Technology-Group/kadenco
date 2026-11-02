@@ -1261,3 +1261,62 @@ test("source preflight includes exact serialized retained-history envelopes", ()
     }
   }
 });
+
+import { localArchiveReference } from "../src/local-archive.ts";
+test("operational cutover retains local history reference while preserving every encrypted record", () => {
+  const root = mkdtempSync(join(tmpdir(), "kadenco history archive "));
+  const path = join(root, "archive.db"),
+    db = new DatabaseSync(path);
+  try {
+    db.exec(
+      "CREATE TABLE records(kind TEXT,id TEXT,value TEXT);CREATE TABLE audit(seq INTEGER PRIMARY KEY,action TEXT)",
+    );
+    db.prepare("INSERT INTO records VALUES(?,?,?)").run(
+      "command",
+      "uncertain-fixture",
+      "opaque-envelope",
+    );
+    db.exec(
+      "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10001) INSERT INTO audit SELECT x,'retained-history' FROM n",
+    );
+    assert.equal(sourcePreflight(db).fits_current_materialized_path, false);
+    assert.equal(sourcePreflight(db, "local_archive").fits_current_materialized_path, true);
+    assert.throws(
+      () => extractSnapshot(db, "fixture", "lineage", () => {}),
+      /source_volume_requires_streaming_migration/,
+    );
+    const packet = extractSnapshot(db, "fixture", "lineage", () => {}, {
+      verify: () => localArchiveReference(path),
+    });
+    assert.equal(packet.records.length, 2);
+    assert.deepEqual(packet.records[0], {
+      kind: "command",
+      id: "uncertain-fixture",
+      ciphertext: "opaque-envelope",
+    });
+    assert.equal(packet.records[1].kind, "$history_archive");
+    assert.equal(JSON.parse(packet.records[1].ciphertext).audit_rows, 10001);
+    assert.equal(JSON.stringify(packet).includes("retained-history"), false);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM audit").get()!.n, 10001);
+    const ref = localArchiveReference(path);
+    assert.throws(
+      () =>
+        extractSnapshot(db, "fixture", "lineage", () => {}, {
+          verify: () => ({ ...ref, audit_rows: 0 }),
+        }),
+      /local_archive_not_verified/,
+    );
+    let calls = 0;
+    assert.throws(
+      () =>
+        extractSnapshot(db, "fixture", "lineage", () => {}, {
+          verify: () => (calls++ ? { ...ref, archive_sha256: "b".repeat(64) } : ref),
+        }),
+      /local_archive_changed/,
+    );
+    assert.doesNotThrow(() => db.exec("BEGIN;ROLLBACK"));
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
