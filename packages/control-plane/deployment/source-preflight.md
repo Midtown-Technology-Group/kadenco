@@ -1,5 +1,10 @@
 # Production source volume preflight
 
+For the owner's operational-only cutover decision, see
+[operational-cutover.md](operational-cutover.md). Streaming old audit/diagnostic
+history is no longer a cutover prerequisite when a verified local archive is retained.
+The default full-history path and its refusal behavior remain available below.
+
 Before snapshot extraction, inspect aggregate source metadata using an existing
 authorized local read path:
 
