@@ -13,6 +13,7 @@ import { checkpointNativeEffects } from "../src/effect-checkpoint.ts";
 import { centralTransport } from "../src/transport.ts";
 import { projectNativeGrant } from "../src/grant-projection.ts";
 import { authorizeBinding, tightensNativeGrant } from "../src/binding.ts";
+import { reconcileExisting } from "../src/native-adapter.ts";
 
 function centralFixture() {
   let revision = 0,
@@ -163,6 +164,42 @@ test("native grant projection preserves original scope intersection and changes 
   );
   assert.equal(tightensNativeGrant({ ...scope, projects: null }, scope), false);
   assert.equal(tightensNativeGrant({ ...scope, expires: 9000 }, scope), true);
+});
+
+test("existing accepted follow-up and Standard no-op reconcile without another submission", async () => {
+  const services = {
+    async followupReceipt() {
+      return { status: "accepted", messageId: "existing-native-message" };
+    },
+    settings: {
+      receipt() {
+        return { state: "noop", reason: "already_standard", native_submitted: false };
+      },
+    },
+    async receipt() {
+      throw Error("wrong_receipt_namespace");
+    },
+  };
+  const base = { principal: "owner", request_id: "original", host: "host", thread_id: "thread" };
+  assert.equal(
+    (await reconcileExisting({ ...base, kind: "verify_result" } as never, services as never)).state,
+    "observed",
+  );
+  assert.equal(
+    (await reconcileExisting({ ...base, kind: "settings_standard" } as never, services as never))
+      .state,
+    "observed",
+  );
+  const missing = {
+    ...services,
+    async followupReceipt() {
+      return { status: "accepted", messageId: "" };
+    },
+  };
+  assert.equal(
+    (await reconcileExisting({ ...base, kind: "verify_result" } as never, missing as never)).state,
+    "unknown",
+  );
 });
 
 test("encrypted cache recovers an uncertain commit by receipt after restart and hydrates only current central state", async () => {
