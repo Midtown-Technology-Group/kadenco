@@ -2,6 +2,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { type Snapshot } from "./snapshot.ts";
+import { sourcePreflight } from "./source-preflight.ts";
 /** Caller supplies an enforceable quiescence lease, not a boolean assertion. */
 export function extractSnapshot(
   db: DatabaseSync,
@@ -12,6 +13,8 @@ export function extractSnapshot(
   assertQuiesced();
   db.exec("BEGIN IMMEDIATE");
   try {
+    if (!sourcePreflight(db).fits_current_materialized_path)
+      throw Error("source_volume_requires_streaming_migration");
     const records = db
       .prepare("SELECT kind,id,value FROM records ORDER BY kind,id")
       .all()

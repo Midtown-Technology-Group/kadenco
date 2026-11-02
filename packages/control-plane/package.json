@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "migration:preflight": "node --experimental-strip-types operator/preflight.mts",
     "staging:qualify": "node node_modules/cf/bin/cf build --mode staging && node node_modules/cf/bin/cf deploy --prebuilt --dry-run --mode staging",
     "deploy": "node operator/deny-deploy.mjs",
     "test": "npm run build && vitest run && node --experimental-strip-types --test spec/edge.node.mts",
