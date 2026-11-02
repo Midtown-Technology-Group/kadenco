@@ -1242,7 +1242,7 @@ test("source preflight includes exact serialized retained-history envelopes", ()
         `CREATE TABLE records(kind TEXT,id TEXT,value TEXT);CREATE TABLE ${table}(seq INTEGER,value TEXT)`,
       );
       const put = db.prepare(`INSERT INTO ${table} VALUES(1,?)`);
-      for (const value of ["x".repeat(32768), "\u0000".repeat(6000), "😀".repeat(16384)]) {
+      for (const value of ["x".repeat(32768), "\u0001".repeat(6000), "\u{1f600}".repeat(16384)]) {
         db.exec(`DELETE FROM ${table}`);
         put.run(value);
         const before = JSON.stringify(db.prepare(`SELECT * FROM ${table}`).get());
