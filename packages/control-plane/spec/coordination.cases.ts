@@ -1762,3 +1762,106 @@ describe("central encrypted operational replica", () => {
     expect(await replica("replica_head")).toEqual({ revision: 1 });
   });
 });
+
+describe("native grant scope projection", () => {
+  const fingerprint = "c".repeat(64);
+  const binding = {
+    project: "authorized-project",
+    provider: "provider",
+    run: "new-exact-run",
+    grant: fingerprint,
+    revision: 1,
+    expires: 4102444700000,
+  };
+  async function setup() {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      s.storage.sql.exec(
+        "DELETE FROM auth_policy; DELETE FROM revoked; DELETE FROM commands; DELETE FROM budget_reservations; UPDATE control SET mode='active',epoch=7 WHERE id=1",
+      );
+    });
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      const policy = JSON.parse(
+        s.storage.sql.exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one()
+          .value,
+      );
+      for (const p of policy.principals.filter((p: { id: string }) =>
+        ["owner", "agent"].includes(p.id),
+      )) {
+        p.scopes = [];
+        p.nativeGrants = [
+          {
+            host: "local",
+            purpose: "command",
+            grant: "c".repeat(64),
+            revision: 1,
+            expires: 4102444800000,
+            projects: ["authorized-project"],
+            providers: ["provider"],
+          },
+        ];
+      }
+      s.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(policy));
+    });
+  }
+  it("records exact new run context under the existing grant without manufacturing per-run authority", async () => {
+    await setup();
+    const request = {
+      epoch: 7,
+      request_id: "native-grant-request",
+      host: "local",
+      thread_id: "exact-thread",
+      kind: "continue",
+      payload_sha256: "a".repeat(64),
+      binding,
+    };
+    expect(await call("reserve", request)).toMatchObject({
+      id: "native-grant-request",
+      state: "pending",
+    });
+    const c = await claim("native-grant-request");
+    expect(c.claimed).toBe(true);
+    await call("revoke", { principal_id: "owner" });
+    expect(
+      await call(
+        "begin",
+        { epoch: 7, request_id: request.request_id, generation: c.generation },
+        "synthetic-agent",
+      ),
+    ).toEqual({ reason: "forbidden" });
+  });
+  it("denies project/provider/grant drift and cannot use a command grant for events or dedicated follow-up", async () => {
+    await setup();
+    for (const [kind, b] of [
+      ["continue", { ...binding, project: "other" }],
+      ["continue", { ...binding, provider: "other" }],
+      ["continue", { ...binding, grant: "d".repeat(64) }],
+      ["webhook", binding],
+      ["verify_result", binding],
+    ] as const) {
+      expect(
+        await call("reserve", {
+          epoch: 7,
+          request_id: "denied-native-grant",
+          host: "local",
+          thread_id: "exact-thread",
+          kind,
+          payload_sha256: "a".repeat(64),
+          binding: b,
+        }),
+      ).toEqual({ reason: "forbidden" });
+    }
+    const policy = await runInDurableObject(stub(), (_o, s) =>
+      JSON.parse(
+        s.storage.sql.exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one()
+          .value,
+      ),
+    );
+    policy.revision = 2;
+    policy.principals.find((p: { id: string }) => p.id === "owner").nativeGrants[0].projects = null;
+    expect(await call("tighten_policy", { expected_revision: 1, policy })).toEqual({
+      reason: "forbidden",
+    });
+  });
+});

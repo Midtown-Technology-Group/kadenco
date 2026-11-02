@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { coreSchema } from "./core-schema";
 import { DurableObject } from "cloudflare:workers";
-import { operationBinding, authorizeBinding, type OperationBinding } from "./binding";
+import {
+  operationBinding,
+  authorizeBinding,
+  nativeGrantScope,
+  tightensNativeGrant,
+  type NativeGrantScope,
+  type OperationBinding,
+} from "./binding";
 import { recoveryPage, recoveryTables, assertRecoverySchema } from "./recovery";
 import { serviceSchema, serviceOperation } from "./services";
 type Principal = {
@@ -10,6 +17,7 @@ type Principal = {
   role: "owner" | "executor";
   hosts: string[];
   scopes?: OperationBinding[];
+  nativeGrants?: NativeGrantScope[];
   migrationAuthority?: boolean;
   stateCustodian?: boolean;
   maxPerDay?: number | null;
@@ -50,6 +58,14 @@ function policy(raw: string | undefined): Policy {
     if (a.scopes && (!Array.isArray(a.scopes) || a.scopes.length > 100))
       fail("configuration_required");
     a.scopes?.forEach(operationBinding);
+    if (a.nativeGrants && (!Array.isArray(a.nativeGrants) || a.nativeGrants.length > 40))
+      fail("configuration_required");
+    a.nativeGrants?.forEach(nativeGrantScope);
+    if (
+      new Set((a.nativeGrants ?? []).map((s) => JSON.stringify([s.host, s.purpose, s.grant])))
+        .size !== (a.nativeGrants ?? []).length
+    )
+      fail("configuration_required");
     if (a.stateCustodian !== undefined && typeof a.stateCustodian !== "boolean")
       fail("configuration_required");
     number(a.expiresAt);
@@ -135,7 +151,12 @@ export class FleetState extends DurableObject<Env> {
       this.sql().exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one().value,
     );
   }
-  originAuthorized(r: { originator: string | null; host: string; binding: string | null }) {
+  originAuthorized(r: {
+    originator: string | null;
+    host: string;
+    binding: string | null;
+    kind: string;
+  }) {
     const origin =
       this.currentPolicy().principals.find((p) => p.id === r.originator && p.role === "owner") ??
       fail("forbidden");
@@ -144,8 +165,14 @@ export class FleetState extends DurableObject<Env> {
       operationBinding(r.binding ? JSON.parse(r.binding) : null),
       origin.scopes,
       Date.now(),
+      this.nativeScope(origin, r.host, r.kind),
     );
     return origin;
+  }
+  nativeScope(a: Principal, host: string, kind: string) {
+    return ["continue", "create", "answer", "settings_standard"].includes(kind)
+      ? { host, purpose: "command" as const, grants: a.nativeGrants }
+      : undefined;
   }
   sql() {
     return this.ctx.storage.sql;
@@ -303,6 +330,10 @@ export class FleetState extends DurableObject<Env> {
           prior.role !== n.role ||
           (n.migrationAuthority === true && prior.migrationAuthority !== true) ||
           (n.stateCustodian === true && prior.stateCustodian !== true) ||
+          (n.nativeGrants ?? []).some(
+            (scope) =>
+              !(prior.nativeGrants ?? []).some((oldScope) => tightensNativeGrant(scope, oldScope)),
+          ) ||
           (prior.threadBudgets ?? []).some(
             (oldCap) =>
               !(n.threadBudgets ?? []).some(
@@ -421,6 +452,7 @@ export class FleetState extends DurableObject<Env> {
           operationBinding(r.binding ? JSON.parse(r.binding) : null),
           a.scopes,
           Date.now(),
+          this.nativeScope(a, r.host, r.kind),
         );
       return { ...r, receipt: r.receipt ? JSON.parse(r.receipt) : null, safe_to_resend: false };
     }
@@ -462,7 +494,7 @@ export class FleetState extends DurableObject<Env> {
         digest = str(p.payload_sha256);
       this.authorized(a, host);
       const binding = operationBinding(p.binding);
-      authorizeBinding(binding, a.scopes, Date.now());
+      authorizeBinding(binding, a.scopes, Date.now(), this.nativeScope(a, host, kind));
       if (
         !["continue", "create", "settings_standard", "webhook", "answer", "verify_result"].includes(
           kind,
@@ -639,6 +671,7 @@ export class FleetState extends DurableObject<Env> {
       operationBinding(r.binding ? JSON.parse(r.binding) : null),
       a.scopes,
       Date.now(),
+      this.nativeScope(a, r.host, r.kind),
     );
     if (op === "claim" || op === "begin") {
       if (this.originAuthorized(r).maxPerDay === undefined) fail("forbidden");
