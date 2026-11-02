@@ -6,3 +6,4 @@ export {
   projectVerificationPolicy,
 } from "./production-bootstrap.ts";
 export { existingBindings } from "./existing-bindings.ts";
+export { startProductionSidecar, cachePolicyGuard } from "./production-startup.ts";
