@@ -823,10 +823,38 @@ describe("central observation, outbox and shared budgets", () => {
         "synthetic-agent2",
       ),
     ).toMatchObject({ delivery_acknowledged: true, agent_completed: false });
+    const receipt = await call("outbox_receipt", { epoch: 7, id: event.id });
+    expect(receipt).toMatchObject({
+      state: "acknowledged",
+      http_status: 204,
+      delivery_acknowledged: true,
+      agent_completed: false,
+    });
+    expect(Object.keys(receipt).sort()).toEqual([
+      "agent_completed",
+      "attempts",
+      "delivery_acknowledged",
+      "http_status",
+      "id",
+      "state",
+    ]);
+    expect(await call("outbox_receipt", { epoch: 7, id: event.id }, "synthetic-agent")).toEqual(
+      receipt,
+    );
+    expect(await call("outbox_receipt", { epoch: 7, id: event.id, claim: true })).toEqual({
+      reason: "invalid_request",
+    });
+    expect(await call("outbox_receipt", { epoch: 7, id: event.id })).toEqual(receipt);
+    expect(await call("outbox_receipt", { epoch: 7, id: event.id }, "synthetic-owner2")).toEqual({
+      reason: "forbidden",
+    });
     expect(await call("outbox_claim", { epoch: 7, id: event.id }, "synthetic-agent")).toMatchObject(
       { claimed: false, state: "acknowledged" },
     );
     await call("revoke", { principal_id: "owner" });
+    expect(await call("outbox_receipt", { epoch: 7, id: event.id }, "synthetic-agent")).toEqual({
+      reason: "forbidden",
+    });
     expect(await observe()).toEqual({ reason: "forbidden" });
   });
   it("expired subscription and another owner's scope cannot deliver", async () => {
@@ -836,6 +864,9 @@ describe("central observation, outbox and shared budgets", () => {
     await runInDurableObject(stub(), (_o, s) =>
       s.storage.sql.exec("UPDATE subscriptions SET expires=1 WHERE id='standing'"),
     );
+    expect(await call("outbox_receipt", { epoch: 7, id: event.id })).toEqual({
+      reason: "forbidden",
+    });
     expect(await call("outbox_claim", { epoch: 7, id: event.id }, "synthetic-agent")).toEqual({
       reason: "forbidden",
     });

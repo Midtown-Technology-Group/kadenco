@@ -86,3 +86,10 @@ deployment, quiesced import, physical retirement, activation receipt, original
 MCP/portal/tunnel paths, each fleet route, callback receipt and actual agent result.
 An always-on executor and laptop-loss recovery remain independent runtime tests.
 Neither green CI nor this activation API establishes those outcomes.
+
+For callback acceptance evidence, `outbox_receipt` reads an exact central outbox ID
+and epoch using the existing owner or executor identity. It returns only state,
+attempt count and HTTP status; it rechecks current subscription ownership,
+authorization and expiry. `delivery_acknowledged` never proves agent completion.
+This read does not claim, send, retry or revive a delivery. Migration credentials
+cannot use it. A missing receipt is not permission to replay an uncertain event.

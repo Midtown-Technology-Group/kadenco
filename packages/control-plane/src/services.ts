@@ -251,6 +251,34 @@ export function serviceOperation(
     );
     return { stored: true, duplicate: false, id };
   }
+  if (op === "outbox_receipt") {
+    if (Object.keys(p).some((k) => !["id", "epoch"].includes(k))) bad("invalid_request");
+    const id = text(p.id);
+    const r = sql
+      .exec<{ subscription: string; state: string; attempts: number; http_status: number | null }>(
+        "SELECT subscription,state,attempts,http_status FROM outbox WHERE id=?",
+        id,
+      )
+      .toArray()[0];
+    if (!r) bad("not_found");
+    const s = sub(r.subscription);
+    authorized(s);
+    if (a.role === "executor")
+      authorizeBinding(operationBinding(JSON.parse(s.binding)), a.scopes, now, {
+        host: s.host,
+        purpose: "observation",
+        grants: a.nativeGrants,
+      });
+    else if (a.role !== "owner") bad("forbidden");
+    return {
+      id,
+      state: r.state,
+      attempts: r.attempts,
+      http_status: r.http_status,
+      delivery_acknowledged: r.state === "acknowledged",
+      agent_completed: false,
+    };
+  }
   if (op === "outbox_pending") {
     if (a.role !== "executor") bad("forbidden");
     const after = p.after === undefined ? "" : text(p.after);
