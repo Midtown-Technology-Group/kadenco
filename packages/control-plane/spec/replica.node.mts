@@ -56,6 +56,38 @@ function centralFixture() {
   };
 }
 
+test("record bounds reject before cache mutation or pending persistence and do not poison later flushes", async () => {
+  const store = new Store(":memory:", randomBytes(32)),
+    central = centralFixture();
+  try {
+    const replica = await openStoreReplica(store, 7, central.call);
+    assert.throws(
+      () => store.put("command", "oversized", { value: "x".repeat(40000) }),
+      /replica_record_exceeds_central_limit/,
+    );
+    assert.throws(
+      () => store.put("command", "😀".repeat(1025), { value: "valid" }),
+      /replica_record_exceeds_central_limit/,
+    );
+    assert.throws(
+      () =>
+        store.db
+          .prepare("INSERT INTO records VALUES(?,?,?)")
+          .run("command", '"'.repeat(2048), "a".repeat(32000)),
+      /replica_record_exceeds_central_limit/,
+    );
+    assert.equal(store.db.prepare("SELECT COUNT(*) n FROM records").get()!.n, 0);
+    assert.equal(store.db.prepare("SELECT COUNT(*) n FROM edge_replica_pending").get()!.n, 0);
+    assert.equal(store.db.prepare("SELECT COUNT(*) n FROM edge_replica_changes").get()!.n, 0);
+    store.put("command", "valid", { value: "normal record" });
+    await replica.flush();
+    assert.equal(central.writes(), 1);
+    assert.deepEqual(store.get("command", "valid"), { value: "normal record" });
+  } finally {
+    store.close();
+  }
+});
+
 test("encrypted cache recovers an uncertain commit by receipt after restart and hydrates only current central state", async () => {
   const dir = mkdtempSync(join(tmpdir(), "kadenco-replica-")),
     key = randomBytes(32),

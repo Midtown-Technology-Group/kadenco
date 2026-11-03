@@ -72,7 +72,12 @@ const manifest = {
   sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
   sidecar_modules: hashes,
   dependency_locks: Object.fromEntries(
-    ["package.json", "package-lock.json"].map((name) => [
+    [
+      "package.json",
+      "package-lock.json",
+      "packages/control-plane/package.json",
+      "packages/control-plane/package-lock.json",
+    ].map((name) => [
       name,
       createHash("sha256")
         .update(readFileSync(join(root, name)))

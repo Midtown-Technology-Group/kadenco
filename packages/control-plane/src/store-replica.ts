@@ -4,6 +4,21 @@ import type { Store } from "../../../dist/store.mjs";
 type Row = { kind: string; id: string; ciphertext: string };
 type Pending = { request_id: string; expected_revision: number; through: number; records: Row[] };
 type Call = (operation: string, body: object) => Promise<Record<string, unknown>>;
+function validRow(row: Row) {
+  return (
+    typeof row.kind === "string" &&
+    row.kind.length > 0 &&
+    row.kind.length <= 200 &&
+    !row.kind.startsWith("$") &&
+    typeof row.id === "string" &&
+    row.id.length > 0 &&
+    row.id.length <= 2048 &&
+    typeof row.ciphertext === "string" &&
+    row.ciphertext.length > 0 &&
+    row.ciphertext.length <= 32768 &&
+    Buffer.byteLength(JSON.stringify([row])) <= 35000
+  );
+}
 
 /** Single-edge encrypted cache with a durable change log. HTTP acknowledgement
  * must await flush(); native dispatch still requires the separate command gate.
@@ -55,16 +70,7 @@ CREATE TABLE IF NOT EXISTS edge_replica_pending(id INTEGER PRIMARY KEY CHECK(id=
         throw Error("replica_inventory_changed");
       for (const raw of page.records) {
         const row = raw as Row;
-        if (
-          !row ||
-          typeof row.kind !== "string" ||
-          !row.kind ||
-          row.kind.startsWith("$") ||
-          typeof row.id !== "string" ||
-          !row.id ||
-          typeof row.ciphertext !== "string"
-        )
-          throw Error("replica_invalid_record");
+        if (!row || !validRow(row)) throw Error("replica_invalid_record");
         const key = JSON.stringify([row.kind, row.id]);
         if (seen.has(key)) throw Error("replica_duplicate_record");
         seen.add(key);
@@ -110,7 +116,24 @@ CREATE TABLE IF NOT EXISTS edge_replica_pending(id INTEGER PRIMARY KEY CHECK(id=
   const keyCheck = store.decode(meta()!.key_check);
   if (keyCheck?.purpose !== "kadenco-replica-key-v1" || keyCheck.epoch !== epoch)
     throw Error("replica_encryption_provenance_changed");
+  db.function("kadenco_replica_row_valid", { deterministic: true }, (kind, id, value) =>
+    typeof kind === "string" &&
+    typeof id === "string" &&
+    typeof value === "string" &&
+    validRow({ kind, id, ciphertext: value })
+      ? 1
+      : 0,
+  );
   db.exec(`
+CREATE TRIGGER IF NOT EXISTS edge_replica_insert_bound BEFORE INSERT ON records
+WHEN kadenco_replica_row_valid(new.kind,new.id,new.value)<>1 BEGIN
+ SELECT RAISE(ABORT,'replica_record_exceeds_central_limit'); END;
+CREATE TRIGGER IF NOT EXISTS edge_replica_update_bound BEFORE UPDATE ON records
+WHEN kadenco_replica_row_valid(new.kind,new.id,new.value)<>1 BEGIN
+ SELECT RAISE(ABORT,'replica_record_exceeds_central_limit'); END;
+CREATE TRIGGER IF NOT EXISTS edge_replica_no_identity_update BEFORE UPDATE ON records
+WHEN new.kind<>old.kind OR new.id<>old.id BEGIN
+ SELECT RAISE(ABORT,'replica_identity_mutation_not_supported'); END;
 CREATE TRIGGER IF NOT EXISTS edge_replica_insert AFTER INSERT ON records BEGIN
  INSERT INTO edge_replica_changes(kind,id,ciphertext) VALUES(new.kind,new.id,new.value); END;
 CREATE TRIGGER IF NOT EXISTS edge_replica_update AFTER UPDATE OF value ON records WHEN old.value<>new.value BEGIN
@@ -139,6 +162,12 @@ CREATE TRIGGER IF NOT EXISTS edge_replica_no_delete BEFORE DELETE ON records BEG
       return;
     }
     if (receipt.committed !== false) throw Error("replica_receipt_unknown");
+    if (
+      !Array.isArray(p.records) ||
+      p.records.some((row) => !validRow(row)) ||
+      Buffer.byteLength(JSON.stringify(p.records)) > 35000
+    )
+      throw Error("replica_record_exceeds_central_limit");
     const result = await checked("replica_apply", {
       request_id: p.request_id,
       expected_revision: p.expected_revision,
@@ -166,6 +195,7 @@ ORDER BY seq LIMIT 100`)
         const records: Row[] = [];
         let through = 0;
         for (const { seq, ...row } of changes) {
+          if (!validRow(row)) throw Error("replica_record_exceeds_central_limit");
           if (Buffer.byteLength(JSON.stringify([...records, row])) > 35000) break;
           records.push(row);
           through = seq;

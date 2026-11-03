@@ -1688,6 +1688,39 @@ describe("central encrypted operational replica", () => {
       await call("replica_head", { ...base, generation: next.generation }, "synthetic-agent"),
     ).toEqual({ reason: "forbidden" });
   });
+  it("keeps one compact commit receipt per executor and fences old-cache replays", async () => {
+    const { replica } = await setup();
+    const first = {
+      request_id: "00000000-0000-4000-8000-000000000021",
+      expected_revision: 0,
+      records: [{ kind: "command", id: "receipt-test", ciphertext: "a".repeat(16000) }],
+    };
+    expect(await replica("replica_apply", first)).toEqual({ committed: true, revision: 1 });
+    const second = {
+      ...first,
+      request_id: "00000000-0000-4000-8000-000000000022",
+      expected_revision: 1,
+    };
+    expect(await replica("replica_apply", second)).toEqual({ committed: true, revision: 2 });
+    expect(await replica("replica_apply", second)).toEqual({ committed: true, revision: 2 });
+    expect(await replica("replica_receipt", { request_id: first.request_id })).toEqual({
+      committed: false,
+      revision: null,
+    });
+    expect(await replica("replica_apply", first)).toEqual({ reason: "fenced" });
+    expect(
+      await replica("replica_apply", {
+        ...second,
+        records: [{ ...second.records[0], ciphertext: "changed" }],
+      }),
+    ).toEqual({ reason: "idempotency_conflict" });
+    const saved = await runInDurableObject(stub(), (_o, s) =>
+      s.storage.sql.exec<{ value: string }>("SELECT value FROM replica_receipts").toArray(),
+    );
+    expect(saved).toHaveLength(1);
+    expect(saved[0].value).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(await replica("replica_head")).toEqual({ revision: 2 });
+  });
   it("tightening revokes state custody immediately and cannot regrant it", async () => {
     const { replica } = await setup();
     const next = await runInDurableObject(stub(), (_o, s) =>

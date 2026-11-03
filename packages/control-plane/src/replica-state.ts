@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { createHash } from "node:crypto";
 import type { ServicePrincipal } from "./services.ts";
 /** Opaque operational envelopes only. Historical audit/diagnostics stay archived.
  * Every operation executes inside FleetState's current-policy SQL transaction. */
@@ -113,6 +114,7 @@ SELECT kind,id,ciphertext FROM (
     return { kind, id: key, ciphertext };
   });
   const value = JSON.stringify({ expected_revision: expected, records });
+  const digest = "sha256:" + createHash("sha256").update(value).digest("hex");
   // A receipt is itself exported in bounded recovery pages. Reserve wrapper room.
   if (
     new TextEncoder().encode(value).byteLength > 40000 ||
@@ -127,7 +129,8 @@ SELECT kind,id,ciphertext FROM (
     .toArray()[0];
   if (old) {
     if (old.executor !== actor.id) fail("forbidden");
-    if (old.value !== value) fail("idempotency_conflict");
+    // Accept an existing full-payload receipt from the previous inert candidate.
+    if (old.value !== value && old.value !== digest) fail("idempotency_conflict");
     return { committed: true, revision: old.revision };
   }
   if (expected !== revision) fail("fenced");
@@ -140,6 +143,11 @@ SELECT kind,id,ciphertext FROM (
       r.ciphertext,
     );
   sql.exec("UPDATE replica_head SET revision=? WHERE id=1", revision + 1);
-  sql.exec("INSERT INTO replica_receipts VALUES(?,?,?,?)", id, actor.id, value, revision + 1);
+  // This executor's new batch proves its prior pending batch was finished. Only
+  // its most recent commit receipt is needed for lost-response reconciliation.
+  // A stale cache replay still fails expected_revision; native UUIDs are stored
+  // separately in commands and are never pruned here.
+  sql.exec("DELETE FROM replica_receipts WHERE executor=?", actor.id);
+  sql.exec("INSERT INTO replica_receipts VALUES(?,?,?,?)", id, actor.id, digest, revision + 1);
   return { committed: true, revision: revision + 1 };
 }

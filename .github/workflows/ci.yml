@@ -85,6 +85,8 @@ jobs:
             NOTICE
             package.json
             package-lock.json
+            packages/control-plane/package.json
+            packages/control-plane/package-lock.json
   gate:
     if: always()
     needs: [quality, test, control-plane]
