@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
+import { encodePolicy, decodePolicy } from "../src/policy-transport.ts";
+import { gzipSync } from "node:zlib";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const migration = {
   id: "migration",
@@ -16,7 +18,7 @@ const migration = {
   expiresAt: Date.now() + 3600000,
   tokenSha256: hash("fixture-migration"),
 };
-async function fixture(principals: unknown[]) {
+async function fixture(principals: unknown[], binding?: string) {
   const mf = new Miniflare(
     convertV4MiniflareOptions({
       modules: true,
@@ -24,7 +26,9 @@ async function fixture(principals: unknown[]) {
       compatibilityDate: "2026-10-30",
       compatibilityFlags: ["nodejs_compat"],
       durableObjects: { FLEETS: { className: "FleetState", useSQLite: true } },
-      bindings: { AUTH_POLICY: JSON.stringify({ revision: 1, fleet: "fixture", principals }) },
+      bindings: {
+        AUTH_POLICY: binding ?? JSON.stringify({ revision: 1, fleet: "fixture", principals }),
+      },
     }),
   );
   return {
@@ -39,6 +43,60 @@ async function fixture(principals: unknown[]) {
     },
   };
 }
+
+test("encoded policy exceeds the text-binding size before compression without losing any principal or authorization rule", async () => {
+  const principals = [
+    migration,
+    ...Array.from({ length: 40 }, (_, i) => ({
+      id: "owner-" + i,
+      role: "owner",
+      hosts: ["fixture"],
+      scopes: [],
+      nativeGrants: [],
+      expiresAt: Date.now() + 3600000,
+      tokenSha256: hash("fixture-owner-" + i),
+    })),
+  ];
+  const raw = JSON.stringify({ revision: 1, fleet: "fixture", principals }),
+    encoded = encodePolicy(raw);
+  assert.ok(Buffer.byteLength(raw) > 5120);
+  assert.ok(Buffer.byteLength(encoded) < 5000);
+  assert.equal(decodePolicy(encoded), raw);
+  assert.equal(decodePolicy(raw), raw);
+  const f = await fixture(principals, encoded);
+  try {
+    assert.equal((await f.call("status")).mode, "staging");
+    assert.equal((await f.call("revoke", { principal_id: "owner-0" })).reason, "forbidden");
+    const frozen = await f.call("freeze_recovery", { expected_epoch: 0 });
+    const page = await f.call("export_recovery", {
+      epoch: frozen.epoch,
+      watermark: frozen.watermark,
+      table: 1,
+      after: 0,
+    });
+    const rows = page.rows as { values: { value: string } }[];
+    assert.deepEqual(JSON.parse(rows[0].values.value).principals, principals);
+  } finally {
+    await f.close();
+  }
+});
+test("policy transport rejects malformed/truncated data and bounded decompression overflow in real workerd", async () => {
+  const bad = [
+    "gzip-base64-v1:not_base64",
+    "gzip-base64-v1:" + Buffer.from("not gzip").toString("base64"),
+    "gzip-base64-v1:" + gzipSync(Buffer.alloc(65537, 32)).toString("base64"),
+  ];
+  for (const value of bad) {
+    assert.throws(() => decodePolicy(value));
+    const f = await fixture([], value);
+    try {
+      assert.equal((await f.call("status")).reason, "configuration_required");
+    } finally {
+      await f.close();
+    }
+  }
+  assert.throws(() => encodePolicy("x".repeat(65537)), /policy_transport_too_large/);
+});
 test("migration role permits recovery receipts/freeze/export but denies administration, native effects and future operations", async () => {
   const f = await fixture([
     migration,
