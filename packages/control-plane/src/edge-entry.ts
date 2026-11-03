@@ -7,3 +7,4 @@ export {
 } from "./production-bootstrap.ts";
 export { existingBindings } from "./existing-bindings.ts";
 export { startProductionSidecar, cachePolicyGuard } from "./production-startup.ts";
+export { uploadRecovery } from "./recovery-upload.ts";

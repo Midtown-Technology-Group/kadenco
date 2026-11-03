@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-export const coreSchema = `
+import { recoveryIngressSchema } from "./recovery-ingress.ts";
+export const coreSchema =
+  `
     CREATE TABLE IF NOT EXISTS recovery_freezes(id TEXT PRIMARY KEY,owner TEXT NOT NULL,epoch INTEGER NOT NULL,watermark INTEGER NOT NULL,counts TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS auth_policy(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS revoked(id TEXT PRIMARY KEY);
@@ -11,4 +13,4 @@ export const coreSchema = `
     CREATE INDEX IF NOT EXISTS budget_host_day ON budget_reservations(owner,host,day);
     CREATE INDEX IF NOT EXISTS budget_thread_day ON budget_reservations(owner,host,thread,day);
     CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT NOT NULL,action TEXT NOT NULL,subject TEXT NOT NULL,at INTEGER NOT NULL);
-  `;
+  ` + recoveryIngressSchema;
