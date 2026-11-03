@@ -1025,3 +1025,27 @@ test("CLI preserves request ID after accepted ask loses its transport response a
     "pending",
   );
 });
+
+test("centralized passive delivery remains pending until its central receipt is reconciled", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.exchanges.ask("caller", f.input);
+  const postedBeforeReadback = f.posts.length;
+  const d = f.store.all("delivery")[0];
+  f.store.put("delivery", d.id, { ...d, status: "centralized", central_id: "central" });
+  const pending = await f.bridge.exchanges.get("caller", { request_id: f.input.request_id });
+  assert.equal(pending.delivery.state, "pending");
+  assert.equal(pending.delivery.request_read, false);
+  assert.equal(pending.reply, null);
+  f.store.put("delivery", d.id, {
+    ...d,
+    status: "acknowledged",
+    central_id: "central",
+    httpStatus: 200,
+  });
+  const ack = await f.bridge.exchanges.get("caller", { request_id: f.input.request_id });
+  assert.equal(ack.delivery.state, "acknowledged");
+  assert.equal(ack.delivery.request_read, false);
+  assert.equal(ack.reply, null);
+  assert.equal(f.posts.length, postedBeforeReadback);
+});

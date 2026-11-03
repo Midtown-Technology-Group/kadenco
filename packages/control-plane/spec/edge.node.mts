@@ -1616,3 +1616,79 @@ test("operational cutover retains local history reference while preserving every
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("central callback receipts repair local views without sending, regressions or unbounded scans", async () => {
+  const { reconcileCallbackReceipts } = await import("../src/edge-services.ts");
+  const rows = new Map<string, any>();
+  for (let n = 0; n < 102; n++) {
+    const id = String(n).padStart(3, "0");
+    rows.set(id, { id, status: "centralized", central_id: "central-" + id });
+  }
+  let calls = 0,
+    mode = "pending",
+    drift = false;
+  const bridge = {
+    store: {
+      all: () => [...rows.values()],
+      get: (_k: string, id: string) => rows.get(id),
+      put: (_k: string, id: string, v: any) => rows.set(id, v),
+    },
+  } as any;
+  const ports = {
+    epoch: 7,
+    async refreshLease() {},
+    async call(op: string, p: any) {
+      assert.equal(op, "outbox_receipt");
+      calls++;
+      if (drift) rows.set("000", { ...rows.get("000"), status: "revoked" });
+      return {
+        id: p.id,
+        state: mode,
+        attempts: 1,
+        http_status: mode === "acknowledged" ? 200 : null,
+        delivery_acknowledged: mode === "acknowledged",
+        agent_completed: false,
+      };
+    },
+  };
+  const next = await reconcileCallbackReceipts(bridge, ports);
+  assert.equal(calls, 100);
+  assert.equal(next, "099");
+  assert.equal(await reconcileCallbackReceipts(bridge, ports, next), undefined);
+  assert.equal(calls, 102);
+  assert.equal(rows.get("000").status, "centralized");
+  mode = "acknowledged";
+  drift = true;
+  await reconcileCallbackReceipts(bridge, ports);
+  assert.equal(rows.get("000").status, "revoked");
+  assert.equal(rows.get("001").status, "acknowledged");
+  const stable = structuredClone(rows.get("001"));
+  mode = "pending";
+  drift = false;
+  await reconcileCallbackReceipts(bridge, ports);
+  assert.deepEqual(rows.get("001"), stable);
+  rows.clear();
+  rows.set("one", { id: "one", status: "centralized", central_id: "central" });
+  await assert.rejects(
+    reconcileCallbackReceipts(bridge, {
+      ...ports,
+      async call() {
+        return { reason: "forbidden" };
+      },
+    }),
+    /forbidden/,
+  );
+  assert.equal(rows.get("one").status, "centralized");
+  await assert.rejects(
+    reconcileCallbackReceipts(bridge, {
+      ...ports,
+      async call() {
+        return { id: "wrong", state: "acknowledged", agent_completed: false };
+      },
+    }),
+    /central_receipt_invalid/,
+  );
+  mode = "stopped";
+  await reconcileCallbackReceipts(bridge, ports);
+  assert.equal(rows.get("one").status, "stopped");
+});

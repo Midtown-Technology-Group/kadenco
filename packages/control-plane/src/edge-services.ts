@@ -233,3 +233,54 @@ export async function deliveryPass(ports: Parameters<typeof deliverClaimed>[1], 
   }
   return { scanned, results, next: cursor };
 }
+
+/** Reconcile existing central receipts only. Never claim or resend a callback.
+ * The cursor bounds each cycle without starving later unresolved deliveries. */
+export async function reconcileCallbackReceipts(
+  bridge: Bridge,
+  ports: {
+    epoch: number;
+    call: (op: string, p: object) => Promise<Record<string, unknown>>;
+    refreshLease: () => Promise<void>;
+  },
+  after = "",
+) {
+  const rows = bridge.store
+    .all("delivery")
+    .filter((d) => d.id > after && d.status === "centralized" && typeof d.central_id === "string")
+    .slice(0, 100);
+  for (const d of rows) {
+    await ports.refreshLease();
+    const receipt = await ports.call("outbox_receipt", { epoch: ports.epoch, id: d.central_id });
+    if (receipt.reason) throw Error(String(receipt.reason));
+    if (
+      receipt.id !== d.central_id ||
+      receipt.agent_completed !== false ||
+      !["pending", "claimed", "sending", "acknowledged", "stopped"].includes(String(receipt.state))
+    )
+      throw Error("central_receipt_invalid");
+    if (!["acknowledged", "stopped"].includes(String(receipt.state))) continue;
+    if (
+      !Number.isSafeInteger(receipt.attempts) ||
+      Number(receipt.attempts) < 1 ||
+      (!(receipt.state === "stopped" && receipt.http_status === null) &&
+        (!Number.isSafeInteger(receipt.http_status) ||
+          Number(receipt.http_status) < 0 ||
+          Number(receipt.http_status) > 599)) ||
+      receipt.delivery_acknowledged !== (receipt.state === "acknowledged") ||
+      (receipt.state === "acknowledged" &&
+        !(Number(receipt.http_status) >= 200 && Number(receipt.http_status) < 300))
+    )
+      throw Error("central_receipt_invalid");
+    await ports.refreshLease();
+    const current = bridge.store.get("delivery", d.id);
+    if (current?.status !== "centralized" || current.central_id !== d.central_id) continue;
+    bridge.store.put("delivery", d.id, {
+      ...current,
+      status: receipt.state,
+      attempts: receipt.attempts,
+      httpStatus: receipt.http_status,
+    });
+  }
+  return rows.length === 100 ? (rows.at(-1)!.id as string) : undefined;
+}

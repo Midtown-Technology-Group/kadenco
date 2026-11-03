@@ -4,7 +4,12 @@ import type { SidecarRuntime } from "../../../dist/sidecar.mjs";
 import { composeEdgeRoutes } from "./edge-routes.ts";
 import { coordinatorForBridge } from "./coordinator.ts";
 import { SqliteJournal } from "./journal.ts";
-import { observeExisting, deliveryPass, existingCallback } from "./edge-services.ts";
+import {
+  observeExisting,
+  deliveryPass,
+  existingCallback,
+  reconcileCallbackReceipts,
+} from "./edge-services.ts";
 import { openStoreReplica } from "./store-replica.ts";
 import { checkpointNativeEffects } from "./effect-checkpoint.ts";
 import { isAbsolute } from "node:path";
@@ -109,6 +114,7 @@ export async function createEdgeRuntime(
   heartbeat.unref();
   let cycling = false;
   let continuation: string | undefined;
+  let receiptContinuation: string | undefined;
   return {
     mcp: routes.mcp.server,
     collaboration: routes.collaboration.server,
@@ -146,6 +152,15 @@ export async function createEdgeRuntime(
           continuation,
         );
         continuation = pass.next ?? undefined;
+        receiptContinuation = await reconcileCallbackReceipts(
+          bridge,
+          {
+            epoch: ports.epoch,
+            call: ports.executorCall,
+            refreshLease,
+          },
+          receiptContinuation,
+        );
         await replica.flush();
       } finally {
         cycling = false;
