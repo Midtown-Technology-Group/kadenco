@@ -21,6 +21,8 @@ class GateError(Exception):
 
 def git(*args):
     """Run Git without interactive authentication or replacement objects."""
+    if not args or not all(re.fullmatch(r"[\w./@{}^~+:-]+", arg) for arg in args):
+        raise GateError(20, "BASE_ERROR: invalid Git argument.")
     env = dict(
         os.environ,
         GIT_NO_REPLACE_OBJECTS="1",
@@ -40,16 +42,23 @@ def git(*args):
 
 def commit(ref):
     """Resolve a ref to an immutable commit before selecting history."""
-    return git("rev-parse", "--verify", "--end-of-options", ref + "^{commit}")
+    if not re.fullmatch(r"(?!-)[\w./@{}^~+-]+", ref):
+        raise GateError(20, "BASE_ERROR: invalid commit reference.")
+    sha = git("rev-parse", "--verify", "--end-of-options", ref + "^{commit}")
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha):
+        raise GateError(20, "BASE_ERROR: reference did not resolve to one commit.")
+    return sha
 
 
 def remote_base(remote):
     """Resolve the configured remote default tip without guessing a branch."""
+    if not re.fullmatch(r"(?!-)[\w./-]+", remote):
+        raise GateError(20, "BASE_ERROR: invalid remote name.")
     if remote not in git("remote").splitlines():
         raise GateError(
             20, "BASE_ERROR: select a configured remote or an explicit --base."
         )
-    for line in git("ls-remote", "--symref", remote, "HEAD").splitlines():
+    for line in git("ls-remote", "--symref", "--", remote, "HEAD").splitlines():
         parts = line.split()
         if (
             len(parts) == 2
@@ -76,21 +85,26 @@ def ranges(args, stream):
             base = remote_base(args.remote)
         return [f"{base}..{head}" if base else head]
     result = []
-    # Validate all updates before scanning. Deletions contain no content.
     for line in stream:
-        fields = line.split()
-        if len(fields) != 4 or not all(
-            re.fullmatch(r"[0-9a-f]{40,64}", fields[i]) for i in (1, 3)
-        ):
-            raise GateError(20, "BASE_ERROR: malformed Git pre-push input.")
-        _, local, _, old = fields
-        if set(local) == {"0"}:
-            continue
-        head = commit(local)
-        # New refs have no previous tip: scan all reachable history, including
-        # the root. No hook commit limit, final-diff-only scan or HEAD~1 fallback.
-        result.append(head if set(old) == {"0"} else f"{commit(old)}..{head}")
+        revision = push_range(line)
+        if revision:
+            result.append(revision)
     return list(dict.fromkeys(result))
+
+
+def push_range(line):
+    """Parse one complete Git pre-push update into its outgoing range."""
+    fields = line.split()
+    if len(fields) != 4 or not all(
+        re.fullmatch(r"[0-9a-f]{40,64}", fields[i]) for i in (1, 3)
+    ):
+        raise GateError(20, "BASE_ERROR: malformed Git pre-push input.")
+    _, local, _, old = fields
+    if set(local) == {"0"}:
+        return None
+    head = commit(local)
+    # New refs include root history, without a hook commit limit or HEAD~1 guess.
+    return head if set(old) == {"0"} else f"{commit(old)}..{head}"
 
 
 def scan(revisions, executable):
