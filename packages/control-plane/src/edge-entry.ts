@@ -15,5 +15,6 @@ export { encodePolicy, decodePolicy } from "./policy-transport.ts";
 export {
   verifyManagedRetirement,
   activateManagedSource,
+  resumeManagedRecovery,
   retirementTombstone,
 } from "./managed-retirement.ts";

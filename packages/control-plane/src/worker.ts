@@ -14,6 +14,7 @@ import { serviceSchema, serviceOperation, type ServicePrincipal } from "./servic
 import { recoveryIngress } from "./recovery-ingress";
 import { activationOperation, readRetirement, type RetirementEvidence } from "./activation";
 import { decodePolicy } from "./policy-transport";
+import { frozenReactivation } from "./frozen-reactivation";
 type Principal = {
   id: string;
   tokenSha256: string;
@@ -256,11 +257,16 @@ export class FleetState extends DurableObject<Env> {
         "activation_challenge",
         "activation_receipt",
         "activate",
+        "recovery_resume_challenge",
+        "recovery_resume_receipt",
+        "resume_recovery",
       ].includes(op)
     )
       fail("forbidden");
     serviceSchema(this.sql());
     const state = this.state();
+    const resumed = frozenReactivation(this.sql(), a, this.currentPolicy(), op, p, retirement);
+    if (resumed !== undefined) return resumed;
     if (op === "activate" && !p.activation_id) fail("retirement_proof_required");
     const activation = activationOperation(this.sql(), a, this.currentPolicy(), op, p, retirement);
     if (activation !== undefined) return activation;
@@ -762,7 +768,7 @@ export class FleetState extends DurableObject<Env> {
       const p = await bounded(request),
         op = new URL(request.url).pathname.slice(1);
       const retirement =
-        op === "activate" && p.retirement !== undefined
+        ["activate", "resume_recovery"].includes(op) && p.retirement !== undefined
           ? readRetirement(p.retirement as { body: string; mac: string }, token!.slice(7))
           : undefined;
       return json(
