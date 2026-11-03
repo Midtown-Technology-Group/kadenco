@@ -95,7 +95,15 @@ const centralHistory = z.object({
   agent_completed: z.literal(false),
 });
 const localCurrent = z.object({
-  state: z.enum(["pending", "acknowledged", "stopped", "superseded", "revoked", "quarantined"]),
+  state: z.enum([
+    "pending",
+    "acknowledged",
+    "stopped",
+    "superseded",
+    "revoked",
+    "quarantined",
+    "centralization_quarantined",
+  ]),
   attempts: sequence,
   http_status: z.number().int().min(0).max(599).nullable(),
   next_at: timestamp.nullable(),

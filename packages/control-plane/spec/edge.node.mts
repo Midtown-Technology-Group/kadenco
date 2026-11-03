@@ -135,6 +135,28 @@ test("central HTTP transport bounds streaming responses, cancels oversized bodie
   });
   await assert.rejects(bad("status", {}), /central_response_invalid/);
 });
+test("rejected async diagnostics cannot terminate a process or replace request outcomes", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const module = new URL("../src/transport.ts", import.meta.url).href;
+  const script = `import assert from 'node:assert/strict';import {centralTransport} from ${JSON.stringify(module)};
+    let calls=0;const call=centralTransport({origin:'https://fixture.invalid',token:()=> 'SECRET',diagnostic:async()=>{await Promise.resolve();throw Error('SECRET telemetry');},fetch:async()=>{calls++;if(calls===2)throw Error('SECRET provider');return Response.json({stored:true});}});
+    assert.deepEqual(await call('status',{}),{stored:true});await assert.rejects(call('begin',{}),/central_transport_uncertain/);
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,2);console.log('async-diagnostics-isolated');`;
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      "--unhandled-rejections=strict",
+      "--input-type=module",
+      "-e",
+      script,
+    ],
+    { encoding: "utf8", windowsHide: true, timeout: 10000 },
+  );
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout.trim(), "async-diagnostics-isolated");
+  assert.equal(child.stderr.includes("SECRET"), false);
+});
 
 test("real sidecar boots the central runtime, fences HTTP and never runs local delivery", async () => {
   const { startSidecar } = await import("../../../dist/sidecar.mjs");

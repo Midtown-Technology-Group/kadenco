@@ -98,7 +98,7 @@ export function centralTransport(options: {
     } finally {
       clearTimeout(timer);
       try {
-        options.diagnostic?.({
+        const emitted = options.diagnostic?.({
           correlation_id,
           operation,
           duration_ms: Math.max(0, Date.now() - started),
@@ -106,6 +106,7 @@ export function centralTransport(options: {
           outcome,
           ...(remaining === undefined ? {} : { rate_limit_remaining: remaining }),
         });
+        void Promise.resolve(emitted).catch(() => {});
       } catch {
         /* Diagnostics never retry or replace the operation outcome. */
       }

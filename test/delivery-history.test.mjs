@@ -104,6 +104,24 @@ test("exact event history paginates retained results across reopen without expos
   assert.equal(JSON.stringify(second).includes("SECRET"), false);
   assert.equal(store.all("command").length, 0);
 });
+test("quarantined centralization remains inspectable without replaying or disclosing its failure payload", async (t) => {
+  const b = fixture();
+  t.after(() => b.store.close());
+  b.store.put("delivery", id, {
+    ...b.store.get("delivery", id),
+    status: "centralization_quarantined",
+    centralization_failure: "SECRET",
+  });
+  const before = b.store.get("delivery", id);
+  const result = await deliveryHistory(b, "owner", { subscription_id, event_id });
+  assert.equal(result.current.state, "centralization_quarantined");
+  assert.equal(result.current.next_at, null);
+  assert.equal(result.delivery_acknowledged, false);
+  assert.equal(result.agent_execution, "not_checked");
+  assert.equal(JSON.stringify(result).includes("SECRET"), false);
+  assert.deepEqual(b.store.get("delivery", id), before);
+  assert.equal(b.store.all("command").length, 0);
+});
 test("history rejects foreign owners, revoked grants, expired subscriptions and rebound cursor identity", async (t) => {
   const b = fixture();
   t.after(() => b.store.close());
