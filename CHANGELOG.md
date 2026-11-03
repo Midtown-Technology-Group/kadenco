@@ -3,6 +3,12 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.16
+
+- Return the public subscription identity in central delivery history while
+  retaining the internal host/thread key for authorization and receipt lookup.
+  Fixes fail-closed history reads discovered during alpha.15 live verification.
+
 ## 0.1.0-alpha.15
 
 - Expose exact-event delivery history from retained central/edge audit and current

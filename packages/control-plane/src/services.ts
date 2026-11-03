@@ -309,7 +309,7 @@ export function serviceOperation(
         attempts: r.attempts,
         http_status: r.http_status,
         next_at: r.state === "pending" ? r.next : null,
-        subscription_id: r.subscription,
+        subscription_id: JSON.parse(s.value).external_id ?? r.subscription,
         event_id: JSON.parse(r.event).event_id,
         items: rows.slice(0, Number(limit)).map((row) => ({
           sequence: row.seq,

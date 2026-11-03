@@ -800,6 +800,33 @@ describe("central observation, outbox and shared budgets", () => {
     ]);
     expect(claims.filter((v) => v.claimed)).toHaveLength(1);
   });
+  it("history returns the external subscription identity for a host/thread scoped subscription", async () => {
+    await reset();
+    const internal = JSON.stringify(["public-subscription", "local", "thread"]);
+    await call("subscribe_central", {
+      epoch: 7,
+      id: internal,
+      external_id: "public-subscription",
+      host: "local",
+      thread_id: "thread",
+      binding,
+      expires: null,
+      name: "t3.thread.activity",
+      callback_reference: "public-subscription",
+    });
+    const event = await observe(internal);
+    expect(await call("outbox_history", { epoch: 7, id: event.id })).toMatchObject({
+      id: event.id,
+      subscription_id: "public-subscription",
+      event_id: "existing-event-id",
+      state: "pending",
+      attempts: 0,
+      agent_completed: false,
+    });
+    expect(await call("outbox_history", { epoch: 7, id: event.id }, "synthetic-owner2")).toEqual({
+      reason: "forbidden",
+    });
+  });
   it("callback retry retains event ID, HTTP ack is not agent completion, and revocation denies dispatch", async () => {
     await reset();
     await subscribe();
