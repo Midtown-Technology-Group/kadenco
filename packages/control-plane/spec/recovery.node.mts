@@ -35,6 +35,17 @@ const policy = {
   fleet: "fixture",
   principals: [
     {
+      id: "migration",
+      role: "migration",
+      migrationAuthority: true,
+      maxPerDay: 0,
+      scopes: [],
+      nativeGrants: [],
+      hosts: ["fixture"],
+      tokenSha256: sha("fixture-migration"),
+      expiresAt: Date.now() + 3600000,
+    },
+    {
       id: "owner",
       role: "owner",
       migrationAuthority: true,
@@ -262,6 +273,7 @@ async function fixture() {
       completed,
       ciphertext,
       target: transport(() => destination, "fixture-owner", true),
+      migration: transport(() => destination, "fixture-migration", true),
       other: transport(() => destination, "fixture-owner2", true),
       executor: transport(() => destination, "fixture-edge", true),
       owner,
@@ -308,7 +320,7 @@ test("activation binds imported state, current authority and retirement challeng
     await uploadRecovery(archive, f.key, f.expected, {
       importId: "activation-import",
       expectedEpoch: 0,
-      call: f.target,
+      call: f.migration,
     });
     const args = {
       activation_id: "fixture-activation",
@@ -317,7 +329,7 @@ test("activation binds imported state, current authority and retirement challeng
       digest,
     };
     assert.equal((await f.executor("activation_challenge", args)).reason, "forbidden");
-    const challenge = await f.target("activation_challenge", args);
+    const challenge = await f.migration("activation_challenge", args);
     assert.equal(typeof challenge.nonce, "string");
     const now = Date.now(),
       proof: RetirementEvidence = {
@@ -329,7 +341,7 @@ test("activation binds imported state, current authority and retirement challeng
         routes: ["native:fixture", "callback", "restart"],
         denied: ["native:fixture", "callback", "restart"],
         revival_denied: true,
-        issuer: "owner",
+        issuer: "migration",
         challenge: String(challenge.nonce),
         epoch: 9,
         import_id: "activation-import",
@@ -340,8 +352,8 @@ test("activation binds imported state, current authority and retirement challeng
         processes: 0,
         ingress_closed: true,
       };
-    const attempt = (p: RetirementEvidence, token = "fixture-owner") =>
-      f.target("activate", { ...args, retirement: signRetirement(p, token) });
+    const attempt = (p: RetirementEvidence, token = "fixture-migration") =>
+      f.migration("activate", { ...args, retirement: signRetirement(p, token) });
     assert.equal((await attempt(proof, "wrong-fixture-token")).reason, "invalid_signature");
     assert.equal((await attempt({ ...proof, challenge: "wrong" })).reason, "retirement_not_proven");
     assert.equal(
@@ -360,12 +372,12 @@ test("activation binds imported state, current authority and retirement challeng
     assert.equal(activated.activated, true, JSON.stringify(activated));
     assert.equal(activated.epoch, 10);
     await f.restart();
-    const receipt = await f.target("activation_receipt", { activation_id: args.activation_id });
+    const receipt = await f.migration("activation_receipt", { activation_id: args.activation_id });
     assert.equal(receipt.committed, true);
     assert.equal(receipt.epoch, 10);
     assert.deepEqual(await attempt(proof), activated);
     assert.equal(
-      (await f.target("activation_challenge", { ...args, digest: sha("changed") })).reason,
+      (await f.migration("activation_challenge", { ...args, digest: sha("changed") })).reason,
       "idempotency_conflict",
     );
     assert.equal((await f.target("status", {})).epoch, 10);
@@ -508,7 +520,7 @@ test("an authenticated archive cannot replace policy and a failed restore retain
     const rows = structuredClone(f.verified.rows);
     const auth = rows.find((r) => r.table === "auth_policy")!;
     const changed = JSON.parse(String(auth.values.value));
-    changed.principals[0].hosts.push("ungranted");
+    changed.principals.find((p: { id: string }) => p.id === "owner")!.hosts.push("ungranted");
     auth.values.value = JSON.stringify(changed);
     const archive = packRecovery(f.verified.header, rows, f.key);
     await assert.rejects(
@@ -633,7 +645,7 @@ test("current principal expiry during upload cannot be bypassed by the retained 
     );
     const next = structuredClone(policy);
     next.revision = 2;
-    next.principals[0].expiresAt = Date.now() - 1;
+    next.principals.find((p) => p.id === "owner")!.expiresAt = Date.now() - 1;
     assert.equal(
       (await f.other("tighten_policy", { expected_revision: 1, policy: next })).revision,
       2,

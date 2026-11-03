@@ -99,7 +99,7 @@ export function activationOperation(
   proof?: RetirementEvidence,
 ) {
   if (!["activation_challenge", "activation_receipt", "activate"].includes(op)) return undefined;
-  if (a.role !== "owner" || a.migrationAuthority !== true) fail("forbidden");
+  if (!["owner", "migration"].includes(a.role) || a.migrationAuthority !== true) fail("forbidden");
   const id = text(p.activation_id);
   const prior = sql
     .exec<{ actor: string; value: string }>(
