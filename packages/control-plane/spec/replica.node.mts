@@ -76,6 +76,13 @@ test("record bounds reject before cache mutation or pending persistence and do n
           .run("command", '"'.repeat(2048), "a".repeat(32000)),
       /replica_record_exceeds_central_limit/,
     );
+    assert.throws(
+      () =>
+        store.db
+          .prepare("INSERT INTO records VALUES(?,?,?)")
+          .run("command", "escaped-envelope", "\\".repeat(15000)),
+      /replica_record_exceeds_central_limit/,
+    );
     assert.equal(store.db.prepare("SELECT COUNT(*) n FROM records").get()!.n, 0);
     assert.equal(store.db.prepare("SELECT COUNT(*) n FROM edge_replica_pending").get()!.n, 0);
     assert.equal(store.db.prepare("SELECT COUNT(*) n FROM edge_replica_changes").get()!.n, 0);

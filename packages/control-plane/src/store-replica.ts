@@ -4,6 +4,14 @@ import type { Store } from "../../../dist/store.mjs";
 type Row = { kind: string; id: string; ciphertext: string };
 type Pending = { request_id: string; expected_revision: number; through: number; records: Row[] };
 type Call = (operation: string, body: object) => Promise<Record<string, unknown>>;
+function validBatch(records: Row[]) {
+  const value = JSON.stringify({ expected_revision: Number.MAX_SAFE_INTEGER, records });
+  return (
+    Buffer.byteLength(JSON.stringify(records)) <= 35000 &&
+    Buffer.byteLength(value) <= 40000 &&
+    Buffer.byteLength(JSON.stringify(value)) <= 56000
+  );
+}
 function validRow(row: Row) {
   return (
     typeof row.kind === "string" &&
@@ -16,7 +24,7 @@ function validRow(row: Row) {
     typeof row.ciphertext === "string" &&
     row.ciphertext.length > 0 &&
     row.ciphertext.length <= 32768 &&
-    Buffer.byteLength(JSON.stringify([row])) <= 35000
+    validBatch([row])
   );
 }
 
@@ -165,7 +173,7 @@ CREATE TRIGGER IF NOT EXISTS edge_replica_no_delete BEFORE DELETE ON records BEG
     if (
       !Array.isArray(p.records) ||
       p.records.some((row) => !validRow(row)) ||
-      Buffer.byteLength(JSON.stringify(p.records)) > 35000
+      !validBatch(p.records)
     )
       throw Error("replica_record_exceeds_central_limit");
     const result = await checked("replica_apply", {
@@ -196,7 +204,7 @@ ORDER BY seq LIMIT 100`)
         let through = 0;
         for (const { seq, ...row } of changes) {
           if (!validRow(row)) throw Error("replica_record_exceeds_central_limit");
-          if (Buffer.byteLength(JSON.stringify([...records, row])) > 35000) break;
+          if (!validBatch([...records, row])) break;
           records.push(row);
           through = seq;
         }
