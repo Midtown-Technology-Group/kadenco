@@ -2,7 +2,12 @@
 import { createHash } from "node:crypto";
 import { seal, unseal } from "./authorization.ts";
 import { recoveryTables, type RecoveryRow } from "./recovery.ts";
-export type RecoveryHeader = { epoch: number; watermark: number; counts: Record<string, number> };
+export type RecoveryHeader = {
+  epoch: number;
+  watermark: number;
+  counts: Record<string, number>;
+  activation_permitted?: false;
+};
 export function packRecovery(header: RecoveryHeader, rows: RecoveryRow[], key: Buffer) {
   const digest = createHash("sha256").update(JSON.stringify({ header, rows })).digest("hex");
   const batches: RecoveryRow[][] = [];

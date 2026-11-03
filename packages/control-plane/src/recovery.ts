@@ -15,6 +15,9 @@ export const recoveryTables = [
   "replica_head",
   "replica_records",
   "replica_receipts",
+  "recovery_imports",
+  "recovery_chunks",
+  "recovery_import_receipts",
 ] as const;
 export type RecoveryRow = {
   table: (typeof recoveryTables)[number];

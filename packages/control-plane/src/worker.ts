@@ -11,6 +11,7 @@ import {
 } from "./binding";
 import { recoveryPage, recoveryTables, assertRecoverySchema } from "./recovery";
 import { serviceSchema, serviceOperation } from "./services";
+import { recoveryIngress } from "./recovery-ingress";
 type Principal = {
   id: string;
   tokenSha256: string;
@@ -225,6 +226,8 @@ export class FleetState extends DurableObject<Env> {
     this.authorized(a);
     serviceSchema(this.sql());
     const state = this.state();
+    const ingress = recoveryIngress(this.sql(), a, this.currentPolicy(), op, p);
+    if (ingress !== undefined) return ingress;
     if (op === "status") {
       keys(p, []);
       return {
@@ -757,6 +760,13 @@ export class FleetState extends DurableObject<Env> {
         "immutable_outcome",
         "command_budget_exhausted",
         "schema_mismatch",
+        "incomplete_recovery",
+        "recovery_digest_mismatch",
+        "recovery_policy_mismatch",
+        "destination_not_staging",
+        "destination_not_empty",
+        "invalid_recovery",
+        "recovery_too_large",
       ];
       if (!allowed.includes(reason)) {
         console.error("control-plane unexpected error", typeof e);
