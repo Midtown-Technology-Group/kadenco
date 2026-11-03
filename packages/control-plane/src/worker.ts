@@ -15,6 +15,7 @@ import { recoveryIngress } from "./recovery-ingress";
 import { activationOperation, readRetirement, type RetirementEvidence } from "./activation";
 import { decodePolicy } from "./policy-transport";
 import { frozenReactivation } from "./frozen-reactivation";
+import { migrationReauthorization } from "./migration-reauthorization";
 type Principal = {
   id: string;
   tokenSha256: string;
@@ -265,6 +266,8 @@ export class FleetState extends DurableObject<Env> {
       fail("forbidden");
     serviceSchema(this.sql());
     const state = this.state();
+    const reauthorization = migrationReauthorization(this.sql(), a, this.currentPolicy(), op, p);
+    if (reauthorization !== undefined) return reauthorization;
     const resumed = frozenReactivation(this.sql(), a, this.currentPolicy(), op, p, retirement);
     if (resumed !== undefined) return resumed;
     if (op === "activate" && !p.activation_id) fail("retirement_proof_required");

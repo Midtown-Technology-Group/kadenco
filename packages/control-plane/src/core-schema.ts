@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { recoveryIngressSchema } from "./recovery-ingress.ts";
 import { activationSchema } from "./activation.ts";
+import { migrationReauthorizationSchema } from "./migration-reauthorization.ts";
 export const coreSchema =
   `
     CREATE TABLE IF NOT EXISTS recovery_freezes(id TEXT PRIMARY KEY,owner TEXT NOT NULL,epoch INTEGER NOT NULL,watermark INTEGER NOT NULL,counts TEXT NOT NULL);
@@ -16,4 +17,5 @@ export const coreSchema =
     CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT NOT NULL,action TEXT NOT NULL,subject TEXT NOT NULL,at INTEGER NOT NULL);
   ` +
   recoveryIngressSchema +
-  activationSchema;
+  activationSchema +
+  migrationReauthorizationSchema;

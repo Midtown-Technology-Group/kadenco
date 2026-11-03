@@ -20,6 +20,7 @@ export const recoveryTables = [
   "recovery_import_receipts",
   "activation_challenges",
   "activation_receipts",
+  "migration_reauthorizations",
 ] as const;
 export type RecoveryRow = {
   table: (typeof recoveryTables)[number];

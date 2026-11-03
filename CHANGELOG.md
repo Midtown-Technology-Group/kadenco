@@ -3,6 +3,12 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.13
+
+- Add an owner-only operator path to reauthorize an existing expired migration
+  principal once for at most one hour. Preserve token, hosts, recovery-only role
+  and all other policy fields, with transactional drift checks and a durable receipt.
+
 ## 0.1.0-alpha.12
 
 - Reactivate the exact current frozen recovery state with current authority,

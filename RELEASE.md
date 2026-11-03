@@ -23,8 +23,8 @@ selected runtime and verified live result are separate evidence stages.
   qualification of the supported read/event/acknowledgement paths. Do not use
   a stability label to hide unresolved visibility or delivery limitations.
 
-`0.1.0-alpha.12` is the next candidate, adding managed reactivation of the exact
-current frozen recovery state with preserved receipts and stale-epoch fencing.
+`0.1.0-alpha.13` is the next candidate, adding an owner-authorized, one-time
+reauthorization of an existing expired recovery-only principal.
 Reactivation requires current recovery authority and fresh managed-writer retirement
 evidence. Earlier source deployments remain historical evidence; do not move tags
 or relabel them. A candidate is not live recovery acceptance.
