@@ -8,6 +8,7 @@ import { createEdgeRuntime } from "./edge-runtime.ts";
 import { centralTransport } from "./transport.ts";
 import { projectNativeGrant } from "./grant-projection.ts";
 import { existingBindings } from "./existing-bindings.ts";
+import { diagnosticIdentity } from "../../../dist/diagnostics.mjs";
 export type BootstrapConfig = {
   fleet: string;
   origin: string;
@@ -172,16 +173,35 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
     key: Buffer.from(input.key),
   });
   const owners = ownedCredentials(bridge.policy(), config);
+  const diagnostic =
+    (principal_id: string) => (record: import("./transport.ts").CentralDiagnostic) => {
+      const caller = diagnosticIdentity();
+      bridge.store.diagnostic({
+        at: new Date().toISOString(),
+        host: "@central_http",
+        kind: "central_http",
+        principal_id,
+        initiator_id: caller?.principal_id ?? null,
+        parent_correlation_id: caller?.correlation_id ?? null,
+        ...record,
+      });
+    };
   const ownerCalls = new Map(
     [...owners].map(([owner, token]) => [
       owner,
-      centralTransport({ origin: config.origin, token: () => token, fetch: config.fetch }),
+      centralTransport({
+        origin: config.origin,
+        token: () => token,
+        fetch: config.fetch,
+        diagnostic: diagnostic(owner),
+      }),
     ]),
   );
   const executorCall = centralTransport({
     origin: config.origin,
     token: () => config.executorToken,
     fetch: config.fetch,
+    diagnostic: diagnostic(config.executor),
   });
   const ownerCall = (owner: string, op: string, body: object) => {
     const token = owners.get(owner),
@@ -193,6 +213,15 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
   const status = await executorCall("status", {});
   if (status.mode !== "active" || status.epoch !== config.epoch)
     throw Error("central_activation_required");
+  bridge.deliveryHistory = (owner, id, after, limit) =>
+    ownerCall(owner, "outbox_history", { epoch: config.epoch, id, after_sequence: after, limit });
+  bridge.relayDiagnosticAccess = async (owner) => {
+    const current = await ownerCall(owner, "status", {});
+    if (current.reason === "forbidden")
+      throw Object.assign(Error("forbidden"), { reason: "forbidden" });
+    if (current.mode !== "active" || current.epoch !== config.epoch)
+      throw Object.assign(Error("source_unavailable"), { reason: "source_unavailable" });
+  };
   const resolvers = existingBindings(bridge, config);
   return createEdgeRuntime(bridge, {
     ...resolvers,

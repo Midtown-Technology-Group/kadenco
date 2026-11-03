@@ -34,6 +34,13 @@ export class Bridge {
   declare fleetEvents: FleetEvents;
   declare fleetReads?: FleetReader;
   declare commands?: Commands;
+  declare deliveryHistory?: (
+    owner: string,
+    id: string,
+    after: number,
+    limit: number,
+  ) => Promise<Record<string, unknown>>;
+  declare relayDiagnosticAccess?: (owner: string) => Promise<void>;
 
   constructor({
     store,

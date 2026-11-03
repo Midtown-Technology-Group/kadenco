@@ -1,4 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { randomUUID } from "node:crypto";
+export type CentralDiagnostic = {
+  correlation_id: string;
+  operation: string;
+  duration_ms: number;
+  outcome: "ok" | "refused" | "uncertain";
+  http_status: number | null;
+  rate_limit_remaining?: number;
+};
 /** Trusted operator transport. No retries, redirects, token logging or fallback
  * identity. Callers reconcile the original receipt after any uncertain response. */
 export function centralTransport(options: {
@@ -6,6 +15,7 @@ export function centralTransport(options: {
   token: () => string;
   fetch?: typeof fetch;
   timeoutMs?: number;
+  diagnostic?: (record: CentralDiagnostic) => void;
 }) {
   const url = new URL(options.origin);
   const timeout = options.timeoutMs ?? 10000;
@@ -28,6 +38,11 @@ export function centralTransport(options: {
     if (!token || token.length > 8192 || /[\r\n]/.test(token))
       throw Error("central_identity_required");
     const controller = new AbortController();
+    const started = Date.now(),
+      correlation_id = randomUUID();
+    let http_status: number | null = null,
+      outcome: CentralDiagnostic["outcome"] = "uncertain",
+      remaining: number | undefined;
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
       const response = await send(new URL("/" + operation, url), {
@@ -38,6 +53,10 @@ export function centralTransport(options: {
         body,
       });
       const reader = response.body?.getReader();
+      http_status = response.status;
+      const header = response.headers.get("x-ratelimit-remaining");
+      if (header !== null && /^\d{1,15}$/.test(header) && Number.isSafeInteger(Number(header)))
+        remaining = Number(header);
       if (!reader) throw Error("central_response_unavailable");
       let size = 0;
       const chunks: Uint8Array[] = [];
@@ -63,8 +82,10 @@ export function centralTransport(options: {
       if (!response.ok) {
         const reason = (data as { reason?: unknown }).reason;
         if (typeof reason !== "string") throw Error("central_response_unavailable");
+        outcome = "refused";
         return { reason, safe_to_resend: false };
       }
+      outcome = typeof (data as { reason?: unknown }).reason === "string" ? "refused" : "ok";
       return data as Record<string, unknown>;
     } catch (error) {
       // Never propagate fetch/URL/provider error text that might include secrets.
@@ -76,6 +97,19 @@ export function centralTransport(options: {
       throw Error("central_transport_uncertain");
     } finally {
       clearTimeout(timer);
+      try {
+        const emitted = options.diagnostic?.({
+          correlation_id,
+          operation,
+          duration_ms: Math.max(0, Date.now() - started),
+          http_status,
+          outcome,
+          ...(remaining === undefined ? {} : { rate_limit_remaining: remaining }),
+        });
+        void Promise.resolve(emitted).catch(() => {});
+      } catch {
+        /* Diagnostics never retry or replace the operation outcome. */
+      }
     }
   };
 }

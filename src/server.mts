@@ -42,6 +42,12 @@ import {
 import { communicationStatus } from "./communication-status.mjs";
 import { createArgs, creationOptionsArgs } from "./creation.mjs";
 import { diagnosticContext } from "./diagnostics.mjs";
+import {
+  deliveryHistory,
+  deliveryHistoryArgs,
+  relayDiagnostics,
+  relayDiagnosticArgs,
+} from "./delivery-history.mjs";
 
 const args = z.object({ session_id: z.string().min(1).max(100) }).strict();
 const readArgs = args.extend({
@@ -355,7 +361,7 @@ export function makeMcp(
       async (input): Promise<CallToolResult> => {
         try {
           const result = {
-            ...(await diagnosticContext("mcp", name, () => fn(input))),
+            ...(await diagnosticContext("mcp", name, () => fn(input), owner)),
             backend_version: "0.11.0",
           };
           return {
@@ -372,6 +378,7 @@ export function makeMcp(
               "source_unavailable",
               "invalid_inventory_cursor",
               "inventory_changed",
+              "history_source_changed",
               "idempotency_conflict",
               "source_run_not_active",
               "exchange_budget_exhausted",
@@ -681,6 +688,21 @@ export function makeMcp(
         }),
       ),
   );
+  register(
+    "get_event_delivery_history",
+    "Read retained operation history and the current receipt for one owned event. No native reads, webhook posts, claims or retries. Dispatch permission and webhook acknowledgement do not prove agent execution.",
+    deliveryHistoryArgs,
+    true,
+    (p) => deliveryHistory(bridge, owner, p),
+  );
+  if (bridge.deliveryHistory)
+    register(
+      "get_relay_request_diagnostics",
+      "Read bounded redacted central HTTP diagnostics attributed to this principal. Not a fleet-wide GitHub quota ledger. Follow next_cursor even after empty pages.",
+      relayDiagnosticArgs,
+      true,
+      (p) => relayDiagnostics(bridge, owner, p),
+    );
   if (bridge.fleetReads) {
     register(
       "get_visibility_diagnostics",
