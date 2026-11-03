@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { realpathSync } from "node:fs";
-import { dirname, basename, isAbsolute, relative, sep } from "node:path";
+import { realpathSync, lstatSync } from "node:fs";
+import { dirname, basename, isAbsolute, relative, sep, join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { startSidecar, type SidecarOptions } from "../../../dist/sidecar.mjs";
 import type { Policy } from "../../../dist/config.mjs";
@@ -33,6 +33,16 @@ export function cachePolicyGuard(historical: string, cache: string) {
       realpathSync(policy.stateDirectory) !== target
     )
       throw Error("production_state_directory_changed");
+    for (const file of ["bridge.db", "central-attempts.db"])
+      for (const suffix of ["", "-wal", "-shm"]) {
+        try {
+          const stat = lstatSync(join(target, file + suffix));
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
+            throw Error("production_cache_file_alias");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
   };
 }
 

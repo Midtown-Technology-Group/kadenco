@@ -11,8 +11,16 @@ import { cachePolicyGuard, startProductionSidecar } from "../src/production-star
 const hash = (x: unknown) => createHash("sha256").update(JSON.stringify(x)).digest("hex");
 
 test("supported startup refuses historical cache aliases, key mismatch and inactive central service", async () => {
-  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } =
-    await import("node:fs");
+  const {
+    mkdtempSync,
+    mkdirSync,
+    writeFileSync,
+    readFileSync,
+    rmSync,
+    symlinkSync,
+    linkSync,
+    unlinkSync,
+  } = await import("node:fs");
   const { join } = await import("node:path");
   const { tmpdir } = await import("node:os");
   const { randomBytes } = await import("node:crypto");
@@ -104,6 +112,10 @@ test("supported startup refuses historical cache aliases, key mismatch and inact
     await assert.rejects(startProductionSidecar(input), /production_state_directory_changed/);
     assert.equal(backends, 0, "validation precedes backend and writable Store construction");
     writeFileSync(configPath, JSON.stringify(policy));
+    linkSync(join(archive, "historical.db"), join(cache, "bridge.db"));
+    await assert.rejects(startProductionSidecar(input), /production_cache_file_alias/);
+    assert.equal(backends, 0);
+    unlinkSync(join(cache, "bridge.db"));
     await assert.rejects(startProductionSidecar(input), /central_activation_required/);
     assert.equal(backends, 1);
     assert.equal(closed, 1);
