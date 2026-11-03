@@ -39,7 +39,9 @@
     "test:browser": "node scripts/verify-collaboration-ui.mjs",
     "build": "node scripts/build.mjs",
     "typecheck": "tsrs -p tsconfig.json --noEmit --fast && tsc -p tsconfig.json --noEmit",
-    "release:check": "node scripts/release-check.mjs"
+    "release:check": "node scripts/release-check.mjs",
+    "secret-scan": "node scripts/secret-gate.mjs",
+    "pre-pr": "npm run secret-scan"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.3.1",
