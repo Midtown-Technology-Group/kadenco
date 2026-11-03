@@ -236,3 +236,65 @@ export async function activateManagedSource(input: {
     throw Error("activation_outcome_unverified");
   return result;
 }
+
+/** Reopen a verified CURRENT frozen snapshot, without reimporting historical state.
+ * Same physical retirement probe and signed, short-lived authority as activation. */
+export async function resumeManagedRecovery(
+  input: Omit<Parameters<typeof activateManagedSource>[0], "importId">,
+) {
+  const previous = await input.call("recovery_resume_receipt", { resume_id: input.id });
+  if (previous.committed === true) {
+    if (
+      previous.kind !== "current_recovery_resume" ||
+      previous.digest !== input.digest ||
+      previous.previous_epoch !== input.epoch
+    )
+      throw Error("activation_receipt_conflict");
+    return previous;
+  }
+  if (previous.committed !== false) throw Error("activation_receipt_unavailable");
+  const c = await input.call("recovery_resume_challenge", {
+    resume_id: input.id,
+    expected_epoch: input.epoch,
+    digest: input.digest,
+  });
+  if (
+    typeof c.nonce !== "string" ||
+    c.epoch !== input.epoch ||
+    c.digest !== input.digest ||
+    typeof c.migration !== "string" ||
+    typeof c.expires !== "number"
+  )
+    throw Error("activation_challenge_denied");
+  const physical = await verifyManagedRetirement(input.source),
+    now = Date.now();
+  const routes = [...input.hosts.map((h) => "native:" + h), "callback", "restart"];
+  const proof: RetirementEvidence = {
+    ...physical,
+    kind: "managed_bootstrap_retirement",
+    challenge: c.nonce,
+    epoch: input.epoch,
+    import_id: "freeze:" + input.epoch,
+    migration_id: c.migration,
+    snapshot: input.digest,
+    issued: now,
+    expires: Math.min(now + 60000, c.expires),
+    routes,
+    denied: routes,
+    issuer: input.actor,
+  };
+  const result = await input.call("resume_recovery", {
+    resume_id: input.id,
+    expected_epoch: input.epoch,
+    digest: input.digest,
+    retirement: signRetirement(proof, input.token),
+  });
+  if (
+    result.kind !== "current_recovery_resume" ||
+    result.activated !== true ||
+    result.epoch !== input.epoch + 1 ||
+    result.digest !== input.digest
+  )
+    throw Error("activation_outcome_unverified");
+  return result;
+}

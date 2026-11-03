@@ -3,6 +3,12 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.12
+
+- Reactivate the exact current frozen recovery state with current authority,
+  snapshot digest, audit watermark and fresh managed-writer retirement evidence.
+  Preserve receipts and fence stale epochs without reimporting local history.
+
 ## 0.1.0-alpha.11
 
 - Reconcile central callback outcomes into existing local delivery views without

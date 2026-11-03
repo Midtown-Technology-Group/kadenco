@@ -893,3 +893,200 @@ test("legacy operational state reaches the authenticated destination without pla
     await f.close();
   }
 });
+
+test("frozen current state resumes only with its exact digest and retirement proof", async () => {
+  const f = await fixture();
+  try {
+    const rows = structuredClone(f.verified.rows),
+      header = structuredClone(f.verified.header),
+      archiveHash = sha("resume history");
+    rows.find((r) => r.table === "control")!.values.migration = "fixture-retirement";
+    rows.push({
+      table: "imported",
+      key: Math.max(0, ...rows.filter((r) => r.table === "imported").map((r) => r.key)) + 1,
+      values: {
+        kind: "$history_archive",
+        id: archiveHash,
+        ciphertext: JSON.stringify({ archive_sha256: archiveHash }),
+      },
+    });
+    header.counts.imported++;
+    const archive = packRecovery(header, rows, f.key),
+      digest = JSON.parse(archive.header.body).digest;
+    await uploadRecovery(archive, f.key, f.expected, {
+      importId: "resume-import",
+      expectedEpoch: 0,
+      call: f.migration,
+    });
+    const proofFor = (c: any, epoch: number, digest: string, ref: string): RetirementEvidence => ({
+      kind: "managed_bootstrap_retirement",
+      migration_id: "fixture-retirement",
+      snapshot: digest,
+      issued: Date.now(),
+      expires: Date.now() + 30000,
+      routes: ["native:fixture", "callback", "restart"],
+      denied: ["native:fixture", "callback", "restart"],
+      revival_denied: true,
+      issuer: "migration",
+      challenge: c.nonce,
+      epoch,
+      import_id: ref,
+      archive_sha256: archiveHash,
+      source_release_sha256: sha("release"),
+      bootstrap_sha256: sha("bootstrap"),
+      credential_path_sha256: sha("path"),
+      processes: 0,
+      ingress_closed: true,
+    });
+    const initial = {
+      activation_id: "initial-for-resume",
+      expected_epoch: 9,
+      import_id: "resume-import",
+      digest,
+    };
+    const c0 = await f.migration("activation_challenge", initial);
+    assert.equal(
+      (
+        await f.migration("activate", {
+          ...initial,
+          retirement: signRetirement(
+            proofFor(c0, 9, digest, initial.import_id),
+            "fixture-migration",
+          ),
+        })
+      ).epoch,
+      10,
+    );
+    const current = await captureRecovery(f.migration, 10, f.key),
+      root = JSON.parse(current.header.body),
+      args = { resume_id: "resume-current", expected_epoch: 11, digest: root.digest };
+    assert.equal((await f.executor("recovery_resume_challenge", args)).reason, "forbidden");
+    assert.equal((await f.other("recovery_resume_challenge", args)).reason, "forbidden");
+    assert.equal(
+      (await f.migration("recovery_resume_challenge", { ...args, expected_epoch: 10 })).reason,
+      "fenced",
+    );
+    assert.equal(
+      (await f.migration("recovery_resume_challenge", { ...args, digest: sha("stale") })).reason,
+      "recovery_digest_mismatch",
+    );
+    const c = await f.migration("recovery_resume_challenge", args);
+    assert.equal(typeof c.nonce, "string", JSON.stringify(c));
+    await f.restart();
+    assert.deepEqual(await f.migration("recovery_resume_challenge", args), c);
+    const proof = proofFor(c, 11, root.digest, "freeze:11");
+    assert.equal(
+      (
+        await f.migration("resume_recovery", {
+          ...args,
+          retirement: signRetirement(
+            { ...proof, issued: Date.now() - 120000, expires: Date.now() - 1000 },
+            "fixture-migration",
+          ),
+        })
+      ).reason,
+      "activation_expired",
+    );
+    for (const changed of [
+      { ...proof, challenge: "wrong" },
+      { ...proof, archive_sha256: sha("wrong") },
+    ])
+      assert.equal(
+        (
+          await f.migration("resume_recovery", {
+            ...args,
+            retirement: signRetirement(changed, "fixture-migration"),
+          })
+        ).reason,
+        "retirement_not_proven",
+      );
+    assert.equal(
+      (
+        await f.migration("resume_recovery", {
+          ...args,
+          retirement: signRetirement(proof, "wrong key"),
+        })
+      ).reason,
+      "invalid_signature",
+    );
+    const resumed = await f.migration("resume_recovery", {
+      ...args,
+      retirement: signRetirement(proof, "fixture-migration"),
+    });
+    assert.equal(resumed.epoch, 12, JSON.stringify(resumed));
+    await f.restart();
+    assert.deepEqual(
+      await f.migration("resume_recovery", {
+        ...args,
+        retirement: signRetirement(proof, "fixture-migration"),
+      }),
+      resumed,
+    );
+    assert.equal(
+      (await f.migration("recovery_resume_receipt", { resume_id: args.resume_id })).committed,
+      true,
+    );
+    assert.equal(
+      (
+        await f.migration("resume_recovery", {
+          ...args,
+          digest: sha("changed"),
+          retirement: signRetirement(proof, "fixture-migration"),
+        })
+      ).reason,
+      "idempotency_conflict",
+    );
+    assert.equal((await f.executor("edge_lease", { epoch: 10 })).reason, "fenced");
+    assert.equal(
+      ((await f.target("receipt", { request_id: f.completed })).receipt as { evidence: string })
+        .evidence,
+      "fixture-only native receipt",
+    );
+    const uncertain = await f.target("receipt", { request_id: f.uncertain });
+    assert.equal(uncertain.safe_to_resend, false);
+    assert.equal(uncertain.receipt, null);
+    const again = await captureRecovery(f.migration, 12, f.key),
+      nextRoot = JSON.parse(again.header.body),
+      next = { resume_id: "revoked-resume", expected_epoch: 13, digest: nextRoot.digest };
+    const lateChallenge = await f.migration("recovery_resume_challenge", next);
+    assert.equal(
+      (
+        await f.executor("record_receipt", {
+          epoch: 13,
+          request_id: f.uncertain,
+          generation: 1,
+          receipt: { state: "observed", evidence: "late fixture outcome, no replay" },
+        })
+      ).receipt_recorded,
+      true,
+    );
+    assert.equal(
+      (
+        await f.migration("resume_recovery", {
+          ...next,
+          retirement: signRetirement(
+            proofFor(lateChallenge, 13, nextRoot.digest, "freeze:13"),
+            "fixture-migration",
+          ),
+        })
+      ).reason,
+      "activation_state_changed",
+    );
+    const fresh = await captureRecovery(f.migration, 13, f.key);
+    const freshRoot = JSON.parse(fresh.header.body);
+    const revoked = { resume_id: "revoked-current", expected_epoch: 14, digest: freshRoot.digest };
+    await f.migration("recovery_resume_challenge", revoked);
+    await f.target("revoke", { principal_id: "migration" });
+    assert.equal(
+      (
+        await f.migration("resume_recovery", {
+          ...revoked,
+          retirement: signRetirement(proof, "fixture-migration"),
+        })
+      ).reason,
+      "forbidden",
+    );
+  } finally {
+    await f.close();
+  }
+});

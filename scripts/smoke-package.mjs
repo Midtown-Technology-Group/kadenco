@@ -22,6 +22,7 @@ const central = await import(
 );
 for (const name of [
   "startProductionSidecar",
+  "resumeManagedRecovery",
   "prepareManagedRecovery",
   "activateManagedSource",
   "projectControlPolicy",

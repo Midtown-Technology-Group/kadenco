@@ -103,3 +103,34 @@ an obsolete cache. See https://developers.cloudflare.com/changelog/post/2026-10-
 Central receipt reconciliation is read-only at the control plane and bounded per
 cycle. Only validated terminal receipts update the existing local delivery view;
 local revocation or changed central identity cannot be overwritten.
+
+### Current frozen-state reactivation
+
+`captureRecovery` fences the current epoch and returns a signed/encrypted current
+snapshot. To reopen that same SQL state, use `resumeManagedRecovery` with the
+verified archive digest, its frozen epoch, and a separately persisted stable
+resume UUID. It uses `recovery_resume_challenge`, `resume_recovery` and
+`recovery_resume_receipt`; it does not reimport the initial historical snapshot.
+The original import activation path remains unchanged.
+
+The control plane recomputes the current bounded recovery digest transactionally,
+binds the exact freeze owner and audit watermark, and requires a fresh short-lived
+signed report from the existing physical managed-writer retirement verifier.
+Current principal authorization, expiry and revocation apply to every call.
+An executor or another recovery owner cannot reopen the freeze. A successful
+resume advances the epoch once and persists an immutable receipt. Old edges stay
+fenced; restart only the qualified edge with the returned epoch and existing
+journal. A matching receipt reconciles an uncertain response without repeating
+an external effect. No native command or callback is replayed by reactivation.
+
+Stop the edge before the physical ingress probe. Preserve the current archive and
+all receipts. If late command receipts change the audit watermark, the captured
+snapshot is no longer current and reactivation refuses. Reconcile that state and
+prepare a fresh freeze explicitly; do not forge a matching watermark or reuse an
+obsolete snapshot. A challenge expires after two minutes and is not silently
+renewed. Snapshot bounds remain 100,000 rows and 32 MiB.
+
+A valid recovery principal is required. Expired migration credentials are not
+renewed, promoted or replaced by this API. Persisted policy rotation or new trust
+requires its own reviewed authorization; replacing an environment binding alone
+does not replace the persisted policy. The production entry does not mint keys.
