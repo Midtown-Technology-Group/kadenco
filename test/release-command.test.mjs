@@ -7,7 +7,26 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { ReleaseState, advanceRelease } from "../scripts/release-state.mjs";
-import { verifyArtifacts, safeArchiveListing, installationDigest } from "../scripts/release.mjs";
+import {
+  verifyArtifacts,
+  safeArchiveListing,
+  installationDigest,
+  assertReleaseMain,
+} from "../scripts/release.mjs";
+test("advanced main refuses before recording or dispatching any release effect", () =>
+  fixture(async (dir) => {
+    const state = new ReleaseState(join(dir, "state.db"), identity),
+      p = ports();
+    try {
+      p.preflight = async () => assertReleaseMain("b".repeat(40), identity.source);
+      await assert.rejects(advanceRelease(state, p), /release_main_not_at_source/);
+      assert.equal(state.value.pending, null);
+      assert.deepEqual(p.writes, []);
+      assertReleaseMain(identity.source, identity.source);
+    } finally {
+      state.close();
+    }
+  }));
 const identity = {
   repository: "fixture/kadenco",
   source: "a".repeat(40),

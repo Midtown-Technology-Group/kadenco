@@ -15,6 +15,9 @@ import { ReleaseState, advanceRelease, releaseIdentity } from "./release-state.m
 import { verifyWorkerBuild } from "./worker-provenance.mjs";
 
 const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+export function assertReleaseMain(main, source) {
+  if (main !== source) throw Error("release_main_not_at_source");
+}
 export function installationDigest(root) {
   const files = {};
   const walk = (directory, prefix = "") => {
@@ -124,7 +127,7 @@ export function githubPorts(plan, root, directory) {
       const main = api("git/ref/heads/main").object.sha;
       run("git", ["fetch", "--no-tags", "origin", "main"], root);
       if (run("git", ["rev-parse", "FETCH_HEAD"], root) !== main) throw Error("release_main_raced");
-      run("git", ["merge-base", "--is-ancestor", identity.source, main], root);
+      assertReleaseMain(main, identity.source);
       if (run("git", ["rev-parse", "HEAD"], root) !== identity.source)
         throw Error("release_checkout_source_mismatch");
       const pkg = JSON.parse(run("git", ["show", identity.source + ":package.json"], root));

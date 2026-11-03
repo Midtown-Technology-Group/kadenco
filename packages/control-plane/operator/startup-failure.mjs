@@ -22,7 +22,25 @@ const known = new Set([
   "production_state_directory_changed",
   "production_cache_file_alias",
   "historical_state_overlap",
+  "bootstrap_runtime_configuration_required",
+  "invalid_edge_identity",
+  "replica_record_exceeds_central_limit",
+  "replica_record_too_large",
 ]);
+export function failureReporter(
+  event,
+  emit = (value) => console.error(JSON.stringify(value)),
+  now = Date.now,
+) {
+  let last, at;
+  return (reason) => {
+    const time = now();
+    if (reason === last && time >= at && time - at < 60000) return;
+    last = reason;
+    at = time;
+    emit({ event, reason, local_fallback: false });
+  };
+}
 /** Static reasons only. Unknown text is fingerprinted, never printed: fetch,
  * parser and provider errors can contain credentials, paths or private data. */
 export function startupFailure(error) {

@@ -126,6 +126,9 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
   const leaseFailures: string[] = [];
   const checkpointFailures: string[] = [];
   let rejectCheckpoint = false;
+  let loseLeaseDuringCheckpoint = false,
+    revision = 0,
+    fixtureChange = 0;
   let changeFixture: (() => void) | undefined;
   const ports: EdgeRuntimePorts = {
     epoch: 1,
@@ -143,9 +146,14 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
       if (op === "outbox_pending") return { ids: [], next: null };
       if (op === "replica_head") return { revision: 0 };
       if (op === "replica_page") return { revision: 0, records: [], next: null };
-      if (op === "replica_receipt") return { committed: false };
+      if (op === "replica_receipt") {
+        if (loseLeaseDuringCheckpoint) denied = true;
+        return { committed: false };
+      }
       if (op === "replica_apply")
-        return rejectCheckpoint ? { reason: "forbidden" } : { committed: true, revision: 1 };
+        return rejectCheckpoint
+          ? { reason: "forbidden" }
+          : { committed: true, revision: ++revision };
       throw Error("unexpected_operation");
     },
     async ownerCall() {
@@ -183,7 +191,8 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
         },
       }),
       runtimeFactory: (bridge) => {
-        changeFixture = () => bridge.store.put("fixture", "checkpoint", { synthetic: true });
+        changeFixture = () =>
+          bridge.store.put("fixture", "checkpoint", { synthetic: true, revision: ++fixtureChange });
         bridge.observe = async () => {
           observations++;
         };
@@ -206,6 +215,19 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     assert.equal(checkpointFailures.at(-1), "central_refused");
     assert.equal(leaseFailures.length, 0, "checkpoint denial is not reported as lease loss");
     rejectCheckpoint = false;
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
+    const reportedCheckpoints = checkpointFailures.length;
+    loseLeaseDuringCheckpoint = true;
+    changeFixture!();
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);
+    assert.equal(leaseFailures.at(-1), "fenced");
+    assert.equal(
+      checkpointFailures.length,
+      reportedCheckpoints,
+      "lease loss during flush is not a second checkpoint failure",
+    );
+    loseLeaseDuringCheckpoint = false;
+    denied = false;
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
     denied = true;
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);

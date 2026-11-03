@@ -1,7 +1,38 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startupFailure } from "../packages/control-plane/operator/startup-failure.mjs";
+import {
+  startupFailure,
+  failureReporter,
+} from "../packages/control-plane/operator/startup-failure.mjs";
+test("recurring diagnostic reasons are suppressed only within a bounded window", () => {
+  let time = 0;
+  const entries = [];
+  const report = failureReporter(
+    "edge_lease_failure",
+    (value) => entries.push(value),
+    () => time,
+  );
+  report("transport_uncertain");
+  time = 59999;
+  report("transport_uncertain");
+  assert.equal(entries.length, 1);
+  time = 60000;
+  report("transport_uncertain");
+  assert.equal(entries.length, 2);
+  report("fenced");
+  assert.equal(entries.length, 3);
+  time = 0;
+  report("fenced");
+  assert.equal(entries.length, 4);
+  for (const reason of [
+    "bootstrap_runtime_configuration_required",
+    "invalid_edge_identity",
+    "replica_record_exceeds_central_limit",
+    "replica_record_too_large",
+  ])
+    assert.equal(startupFailure(Error(reason)).reason, reason);
+});
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 test("startup refusals preserve static failure classes and never expose private error text", () => {

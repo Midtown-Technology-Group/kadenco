@@ -51,7 +51,7 @@ function Get-KadencoStartupFailure($Capture) {
         if ($value.event -cne 'startup_refused' -or $value.local_fallback -ne $false -or
             $value.reason -cnotmatch '^[a-z_]{1,80}$' -or $value.fingerprint -cnotmatch '^[a-f0-9]{64}$') { continue }
         # Reconstruct a strict subset even if the child emits arbitrary fields.
-        $reason='unclassified_startup_failure'; if($value.reason -cin @('central_transport_uncertain','edge_lease_unavailable','replica_inventory_changed','replica_central_unavailable','historical_state_overlap','production_state_directory_changed')){$reason=$value.reason}
+        $reason='unclassified_startup_failure'; if($value.reason -cin @('central_transport_uncertain','edge_lease_unavailable','replica_inventory_changed','replica_central_unavailable','historical_state_overlap','production_state_directory_changed','bootstrap_runtime_configuration_required','invalid_edge_identity','replica_record_exceeds_central_limit','replica_record_too_large')){$reason=$value.reason}
         return @{event='startup_refused';reason=$reason;fingerprint=$value.fingerprint;local_fallback=$false}
     }
     return $null

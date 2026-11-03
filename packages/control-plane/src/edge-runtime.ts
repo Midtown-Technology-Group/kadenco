@@ -55,6 +55,7 @@ export async function createEdgeRuntime(
   let generation: number | undefined;
   let closed = false;
   let renewal: Promise<void> | undefined;
+  const leaseErrors = new WeakSet<object>();
   const refreshLease = () => {
     if (closed) return Promise.reject(Error("edge_runtime_closed"));
     return (renewal ??= (async () => {
@@ -80,6 +81,7 @@ export async function createEdgeRuntime(
       generation = Number(lease.generation);
     })()
       .catch((error) => {
+        if (error !== null && typeof error === "object") leaseErrors.add(error);
         if (error instanceof Error && error.message === "central_transport_uncertain")
           ports.leaseFailure?.("transport_uncertain");
         throw error;
@@ -105,19 +107,24 @@ export async function createEdgeRuntime(
         await rawFlush();
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
-        ports.checkpointFailure?.(
-          message === "central_transport_uncertain"
-            ? "transport_uncertain"
-            : message === "replica_central_unavailable"
-              ? "central_refused"
-              : message === "replica_current_state_required"
-                ? "state_conflict"
-                : ["replica_record_exceeds_central_limit", "replica_record_too_large"].includes(
-                      message,
-                    )
-                  ? "record_limit"
-                  : "unknown",
-        );
+        if (
+          message !== "edge_lease_unavailable" &&
+          message !== "edge_runtime_closed" &&
+          !(error !== null && typeof error === "object" && leaseErrors.has(error))
+        )
+          ports.checkpointFailure?.(
+            message === "central_transport_uncertain"
+              ? "transport_uncertain"
+              : message === "replica_central_unavailable"
+                ? "central_refused"
+                : message === "replica_current_state_required"
+                  ? "state_conflict"
+                  : ["replica_record_exceeds_central_limit", "replica_record_too_large"].includes(
+                        message,
+                      )
+                    ? "record_limit"
+                    : "unknown",
+          );
         throw error;
       }
     };

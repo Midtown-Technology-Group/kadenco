@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
-import { startupFailure } from "./startup-failure.mjs";
+import { startupFailure, failureReporter } from "./startup-failure.mjs";
 
 let sidecar, stateKey;
 try {
@@ -54,26 +54,8 @@ try {
       key: stateKey,
       executorToken: secrets.executorToken,
       ownerTokens: new Map(secrets.ownerTokens),
-      leaseFailure: (() => {
-        let last;
-        return (reason) => {
-          if (reason === last) return;
-          last = reason;
-          console.error(
-            JSON.stringify({ event: "edge_lease_failure", reason, local_fallback: false }),
-          );
-        };
-      })(),
-      checkpointFailure: (() => {
-        let last;
-        return (reason) => {
-          if (reason === last) return;
-          last = reason;
-          console.error(
-            JSON.stringify({ event: "edge_checkpoint_failure", reason, local_fallback: false }),
-          );
-        };
-      })(),
+      leaseFailure: failureReporter("edge_lease_failure"),
+      checkpointFailure: failureReporter("edge_checkpoint_failure"),
     },
     backendFactory: async (policy) => {
       let backend =
