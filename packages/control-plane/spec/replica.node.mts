@@ -11,6 +11,9 @@ import { openStoreReplica } from "../src/store-replica.ts";
 import { durableResponse } from "../src/durable-response.ts";
 import { checkpointNativeEffects } from "../src/effect-checkpoint.ts";
 import { centralTransport } from "../src/transport.ts";
+import { projectNativeGrant } from "../src/grant-projection.ts";
+import { authorizeBinding, tightensNativeGrant } from "../src/binding.ts";
+import { reconcileExisting } from "../src/native-adapter.ts";
 
 function centralFixture() {
   let revision = 0,
@@ -93,6 +96,110 @@ test("record bounds reject before cache mutation or pending persistence and do n
   } finally {
     store.close();
   }
+});
+
+test("native grant projection preserves original scope intersection and changes identity on authority/route drift", () => {
+  const policy = {
+    principals: [
+      {
+        id: "owner",
+        readHosts: [{ host: "host", projectIds: ["a", "b"] }],
+        commandHosts: [
+          {
+            host: "host",
+            projectIds: ["b", "c"],
+            providerInstanceIds: ["provider"],
+            expiresAt: 10000,
+            maxPerDay: 3,
+            creationRuntime: { allowedModes: ["approval-required"] },
+          },
+        ],
+      },
+    ],
+    fleetRead: { hosts: [{ name: "host", runtime: "original-read" }] },
+    nativeDelivery: { hosts: [{ name: "host", command: "original-native" }] },
+  };
+  const project = (p = policy, purpose: "command" | "observation" = "command") =>
+    projectNativeGrant(p as never, "owner", "host", purpose, 20000, 1000);
+  const scope = project();
+  assert.deepEqual(scope.projects, ["b"]);
+  assert.deepEqual(scope.providers, ["provider"]);
+  assert.equal(scope.expires, 10000);
+  const read = project(policy, "observation");
+  assert.equal(read.expires, 20000);
+  assert.deepEqual(read.projects, ["a", "b"]);
+  assert.equal(read.providers, null);
+  assert.notEqual(scope.grant, read.grant);
+  const changed = structuredClone(policy);
+  changed.principals[0].commandHosts[0].maxPerDay = 4;
+  assert.notEqual(project(changed).grant, scope.grant);
+  changed.nativeDelivery.hosts[0].command = "another-native";
+  assert.notEqual(project(changed).grant, scope.grant);
+  const b = {
+    project: "b",
+    provider: "provider",
+    run: "exact-current-run",
+    grant: scope.grant,
+    revision: 1,
+    expires: 9000,
+  };
+  authorizeBinding(b, [], 1000, { host: "host", purpose: "command", grants: [scope] });
+  for (const binding of [
+    { ...b, project: "a" },
+    { ...b, provider: "other" },
+    { ...b, grant: "f".repeat(64) },
+  ])
+    assert.throws(
+      () =>
+        authorizeBinding(binding, [], 1000, { host: "host", purpose: "command", grants: [scope] }),
+      /forbidden/,
+    );
+  assert.throws(
+    () => authorizeBinding(b, [], 1000, { host: "other", purpose: "command", grants: [scope] }),
+    /forbidden/,
+  );
+  assert.throws(
+    () => authorizeBinding(b, [], 1000, { host: "host", purpose: "observation", grants: [scope] }),
+    /forbidden/,
+  );
+  assert.equal(tightensNativeGrant({ ...scope, projects: null }, scope), false);
+  assert.equal(tightensNativeGrant({ ...scope, expires: 9000 }, scope), true);
+});
+
+test("existing accepted follow-up and Standard no-op reconcile without another submission", async () => {
+  const services = {
+    async followupReceipt() {
+      return { status: "accepted", messageId: "existing-native-message" };
+    },
+    settings: {
+      receipt() {
+        return { state: "noop", reason: "already_standard", native_submitted: false };
+      },
+    },
+    async receipt() {
+      throw Error("wrong_receipt_namespace");
+    },
+  };
+  const base = { principal: "owner", request_id: "original", host: "host", thread_id: "thread" };
+  assert.equal(
+    (await reconcileExisting({ ...base, kind: "verify_result" } as never, services as never)).state,
+    "observed",
+  );
+  assert.equal(
+    (await reconcileExisting({ ...base, kind: "settings_standard" } as never, services as never))
+      .state,
+    "observed",
+  );
+  const missing = {
+    ...services,
+    async followupReceipt() {
+      return { status: "accepted", messageId: "" };
+    },
+  };
+  assert.equal(
+    (await reconcileExisting({ ...base, kind: "verify_result" } as never, missing as never)).state,
+    "unknown",
+  );
 });
 
 test("encrypted cache recovers an uncertain commit by receipt after restart and hydrates only current central state", async () => {

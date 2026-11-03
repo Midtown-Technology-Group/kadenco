@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { authorizeBinding, operationBinding, type OperationBinding } from "./binding.ts";
+import {
+  authorizeBinding,
+  operationBinding,
+  type OperationBinding,
+  type NativeGrantScope,
+} from "./binding.ts";
 import { replicaSchema, replicaOperation } from "./replica-state.ts";
 export type ServicePrincipal = {
   id: string;
@@ -7,6 +12,7 @@ export type ServicePrincipal = {
   hosts: string[];
   expiresAt: number;
   scopes?: OperationBinding[];
+  nativeGrants?: NativeGrantScope[];
   stateCustodian?: boolean;
 };
 type Context = {
@@ -57,7 +63,11 @@ export function serviceOperation(
     const owner = c.principal(s.owner);
     c.authorize(owner, s.host);
     c.authorize(a, s.host);
-    authorizeBinding(operationBinding(JSON.parse(s.binding)), owner.scopes, now);
+    authorizeBinding(operationBinding(JSON.parse(s.binding)), owner.scopes, now, {
+      host: s.host,
+      purpose: "observation",
+      grants: owner.nativeGrants,
+    });
     if (!s.active || (s.expires !== null && s.expires <= now)) bad("forbidden");
     if (a.role === "owner" && a.id !== s.owner) bad("forbidden");
   };
@@ -90,7 +100,11 @@ export function serviceOperation(
       thread = text(p.thread_id),
       binding = operationBinding(p.binding);
     c.authorize(a, host);
-    authorizeBinding(binding, a.scopes, now);
+    authorizeBinding(binding, a.scopes, now, {
+      host,
+      purpose: "observation",
+      grants: a.nativeGrants,
+    });
     if (p.expires !== null && (!Number.isSafeInteger(p.expires) || Number(p.expires) <= now))
       bad("invalid_request");
     if (
@@ -169,7 +183,11 @@ export function serviceOperation(
     if (a.role !== "executor") bad("forbidden");
     const s = sub(text(p.subscription_id));
     authorized(s);
-    authorizeBinding(operationBinding(JSON.parse(s.binding)), a.scopes, now);
+    authorizeBinding(operationBinding(JSON.parse(s.binding)), a.scopes, now, {
+      host: s.host,
+      purpose: "observation",
+      grants: a.nativeGrants,
+    });
     const source = JSON.stringify([s.id, s.host, s.thread]);
     return {
       cursor:
@@ -182,7 +200,11 @@ export function serviceOperation(
     if (a.role !== "executor") bad("forbidden");
     const s = sub(text(p.subscription_id));
     authorized(s);
-    authorizeBinding(operationBinding(JSON.parse(s.binding)), a.scopes, now);
+    authorizeBinding(operationBinding(JSON.parse(s.binding)), a.scopes, now, {
+      host: s.host,
+      purpose: "observation",
+      grants: a.nativeGrants,
+    });
     const scope = operationBinding(JSON.parse(s.binding));
     if (scope.run !== null && scope.run !== p.run) bad("forbidden");
     if (
@@ -245,7 +267,11 @@ export function serviceOperation(
       try {
         const s = sub(row.subscription);
         authorized(s);
-        authorizeBinding(operationBinding(JSON.parse(s.binding)), a.scopes, now);
+        authorizeBinding(operationBinding(JSON.parse(s.binding)), a.scopes, now, {
+          host: s.host,
+          purpose: "observation",
+          grants: a.nativeGrants,
+        });
         ids.push(row.id);
       } catch (e) {
         if ((e as Error).message !== "forbidden") throw e;
@@ -277,7 +303,11 @@ export function serviceOperation(
           .toArray()[0] ?? bad("not_found");
     const s = sub(r.subscription);
     authorized(s);
-    authorizeBinding(operationBinding(JSON.parse(s.binding)), a.scopes, now);
+    authorizeBinding(operationBinding(JSON.parse(s.binding)), a.scopes, now, {
+      host: s.host,
+      purpose: "observation",
+      grants: a.nativeGrants,
+    });
     if (op === "outbox_claim") {
       if (["acknowledged", "stopped", "revoked"].includes(r.state) || r.next > now || r.lease > now)
         return { claimed: false, state: r.state };

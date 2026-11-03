@@ -113,7 +113,12 @@ export async function reconcileExisting(e: Envelope, services: SidecarServices):
     state:
       record.native_submitted === true ||
       record.submission === "rejected" ||
-      record.state === "verified"
+      record.state === "verified" ||
+      (record.state === "noop" && record.reason === "already_standard" && !record.submitted_at) ||
+      (e.kind === "verify_result" &&
+        record.status === "accepted" &&
+        typeof record.messageId === "string" &&
+        record.messageId.length > 0)
         ? "observed"
         : "unknown",
     evidence: JSON.stringify(r),

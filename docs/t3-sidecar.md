@@ -77,6 +77,19 @@ CI exercises the compiled bundle through official MCP and retains the matching
 Worker/edge/public runtime files. A dirty local build is development evidence;
 promotion still requires the clean merged-source artifact and runtime/trust gates.
 
+`projectNativeGrant` projects the original policy's host grant for the central
+bootstrap: read/command project scopes intersect, provider lists stay explicit,
+and a fingerprint covers the full authority and routes. Changing those inputs
+invalidates the old mapping. Central policy can only narrow projected scopes;
+it cannot replace their fingerprints, add providers or widen projects through
+the tightening endpoint. Observation and command purposes stay separate. Each
+command still records exact project/provider/run and passes the original native
+service's final checks; this does not change `continue_thread` into strict steering.
+Observation projections require an explicit central service expiry ceiling and
+do not modify standing subscription lifetimes or original read permissions.
+Projection creates no credential, policy, grant or subscription. Production
+bootstrap must install reviewed mappings; unsupported mappings fail closed.
+
 ## Discovery and native boundaries
 
 Use native MCP tool/event discovery. Enumerate every authorized host and continue

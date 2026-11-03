@@ -8,6 +8,8 @@ import { observeExisting, deliveryPass, existingCallback } from "./edge-services
 import { openStoreReplica } from "./store-replica.ts";
 import { checkpointNativeEffects } from "./effect-checkpoint.ts";
 import { isAbsolute } from "node:path";
+export { projectNativeGrant } from "./grant-projection.ts";
+export { centralTransport } from "./transport.ts";
 
 export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], "journal"> & {
   executor: string;
