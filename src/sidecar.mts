@@ -34,6 +34,9 @@ export interface SidecarOptions {
   // selectable module, credential provider or authorization bypass.
   backendFactory?: (policy: Policy) => Backend | Promise<Backend>;
   runtimeFactory?: (bridge: Bridge) => SidecarRuntime | Promise<SidecarRuntime>;
+  // Trusted embedding validation runs on every policy read, including before
+  // opening the writable Store. It cannot replace or relax config validation.
+  validatePolicy?: (policy: Policy) => void;
 }
 export interface Sidecar {
   address(): AddressInfo | null;
@@ -62,9 +65,11 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
   if (key.length !== 32) throw Error("32_byte_state_key_required");
   const synchronous = new SynchronousTimings();
   const policy = () =>
-    synchronous.measure("policy", () =>
-      configSchema.parse(JSON.parse(readFileSync(configPath, "utf8"))),
-    );
+    synchronous.measure("policy", () => {
+      const value = configSchema.parse(JSON.parse(readFileSync(configPath, "utf8")));
+      options.validatePolicy?.(value);
+      return value;
+    });
   const config = policy();
   if (process.platform !== "win32" && statSync(config.stateDirectory).mode & 0o077)
     throw Error("state_directory_must_be_private");

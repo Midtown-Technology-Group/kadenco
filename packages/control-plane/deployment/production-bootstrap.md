@@ -39,6 +39,17 @@ MCP client and original command service with mocked native transport. It verifie
 single dispatch, duplicate reconciliation, uncertain no-replay and revocation.
 This is source/local runtime evidence, not production acceptance.
 
+`startProductionSidecar` is the supported supervisor entry point. Supply an
+existing private cache directory, the historical state directory, configuration
+path, matching original state key and the bootstrap above. The journal must be
+`central-attempts.db` directly inside the cache. Real-path validation rejects
+overlap, nesting and directory aliases between cache and archive. The original
+sidecar invokes this validation on every policy read and before constructing the
+writable Store. An inactive or mismatched central epoch refuses startup; no local
+delivery fallback or signal handler is installed. The supervisor must await its
+returned `shutdown()` on termination. These functions neither write configuration
+nor provision trust or retire another process.
+
 Still required before live use: reviewed immutable release, authenticated central
 ingress and policy installation, approved executor custody, verified operational
 state transfer, enforceable retirement of the legacy writer, activation and
