@@ -61,6 +61,15 @@ export function migrationReauthorization(
     )
     .toArray()[0];
   if (prior && prior.actor !== actor.id) fail("forbidden");
+  if (op !== "migration_reauthorization_challenge") {
+    const used = sql
+      .exec<{ principal: string }>(
+        "SELECT principal FROM migration_reauthorizations WHERE request=?",
+        text(p.request_id),
+      )
+      .toArray()[0];
+    if (used && used.principal !== principal) fail("idempotency_conflict");
+  }
   if (op === "migration_reauthorization_receipt") {
     keys(p, ["principal_id", "request_id"]);
     const request = text(p.request_id);

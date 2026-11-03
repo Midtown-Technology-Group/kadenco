@@ -413,6 +413,71 @@ test("competing approvals commit once; owner revocation and policy drift stop a 
     await drift.close();
   }
 });
+
+test("a request UUID cannot be reused across migration principals or mutate the second policy", async () => {
+  const expired = { ...migration, expiresAt: Date.now() - 1000 };
+  const second = { ...expired, id: "migration-second", tokenSha256: hash("fixture-second") };
+  const owner = {
+    id: "owner",
+    role: "owner",
+    hosts: ["fixture"],
+    tokenSha256: hash("fixture-owner"),
+    expiresAt: Date.now() + 7200000,
+  };
+  const f = await fixture([expired, second, owner]);
+  try {
+    const challenge = (principal_id: string) =>
+      f.call("migration_reauthorization_challenge", { principal_id }, "fixture-owner");
+    const first = await challenge(expired.id);
+    const input = {
+      principal_id: expired.id,
+      request_id: "one-uuid",
+      approval_reference: "owner-approved",
+      expected_revision: first.revision,
+      expected_principal_sha256: first.principal_sha256,
+      previous_expires_at: first.previous_expires_at,
+      expires_at: Date.now() + 3500000,
+    };
+    const receipt = await f.call("reauthorize_migration", input, "fixture-owner");
+    assert.equal(receipt.revision, 2);
+    const next = await challenge(second.id);
+    const crossed = {
+      ...input,
+      principal_id: second.id,
+      expected_revision: next.revision,
+      expected_principal_sha256: next.principal_sha256,
+      previous_expires_at: next.previous_expires_at,
+    };
+    assert.equal(
+      (await f.call("reauthorize_migration", crossed, "fixture-owner")).reason,
+      "idempotency_conflict",
+    );
+    assert.equal(
+      (
+        await f.call(
+          "migration_reauthorization_receipt",
+          { principal_id: second.id, request_id: input.request_id },
+          "fixture-owner",
+        )
+      ).reason,
+      "idempotency_conflict",
+    );
+    const { maximum_expires_at: _beforeWindow, ...beforePolicy } = next;
+    const { maximum_expires_at: _afterWindow, ...afterPolicy } = await challenge(second.id);
+    assert.deepEqual(afterPolicy, beforePolicy);
+    assert.equal((await f.call("status", {}, "fixture-second")).reason, "forbidden");
+    assert.deepEqual(
+      await f.call(
+        "migration_reauthorization_receipt",
+        { principal_id: expired.id, request_id: input.request_id },
+        "fixture-owner",
+      ),
+      { committed: true, ...receipt },
+    );
+  } finally {
+    await f.close();
+  }
+});
 test("policy transport rejects malformed/truncated data and bounded decompression overflow in real workerd", async () => {
   const bad = [
     "gzip-base64-v1:not_base64",
