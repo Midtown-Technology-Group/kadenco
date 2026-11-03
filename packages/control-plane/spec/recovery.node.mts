@@ -3,9 +3,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
-import { verifyManagedRetirement, retirementTombstone } from "../src/managed-retirement.ts";
+import {
+  verifyManagedRetirement,
+  retirementTombstone,
+  resumeManagedRecovery,
+} from "../src/managed-retirement.ts";
 import { localArchiveReference } from "../src/local-archive.ts";
-import { signRetirement, type RetirementEvidence } from "../src/activation.ts";
+import { signRetirement, readRetirement, type RetirementEvidence } from "../src/activation.ts";
 import { prepareManagedRecovery } from "../src/managed-transfer.ts";
 import { openStoreReplica } from "../src/store-replica.ts";
 import { tmpdir } from "node:os";
@@ -121,6 +125,61 @@ test(
       assert.equal(result.ingress_closed, true);
       assert.equal(result.revival_denied, true);
       assert.equal(localArchiveReference(archivePath).archive_sha256, input.archiveSha256);
+      const digest = sha("fixture current frozen snapshot");
+      const token = "fixture-recovery-signing-token";
+      const operations: string[] = [];
+      let committed: Record<string, unknown> | undefined;
+      const resume = {
+        id: "fixture-current-resume",
+        epoch: 7,
+        digest,
+        token,
+        actor: "migration",
+        hosts: ["fixture"],
+        source: input,
+        async call(op: string, p: object): Promise<Record<string, unknown>> {
+          operations.push(op);
+          if (op === "recovery_resume_receipt")
+            return committed ? { committed: true, ...committed } : { committed: false };
+          if (op === "recovery_resume_challenge")
+            return {
+              nonce: "fixture-resume-nonce",
+              epoch: 7,
+              digest,
+              migration: "fixture",
+              expires: Date.now() + 120000,
+            };
+          assert.equal(op, "resume_recovery");
+          const proof = readRetirement(
+            (p as { retirement: { body: string; mac: string } }).retirement,
+            token,
+          );
+          assert.equal(proof.challenge, "fixture-resume-nonce");
+          assert.equal(proof.import_id, "freeze:7");
+          assert.equal(proof.archive_sha256, input.archiveSha256);
+          assert.equal(proof.revival_denied, true);
+          committed = {
+            kind: "current_recovery_resume",
+            activated: true,
+            previous_epoch: 7,
+            epoch: 8,
+            digest,
+          };
+          throw Error("central_transport_uncertain");
+        },
+      };
+      await assert.rejects(resumeManagedRecovery(resume), /central_transport_uncertain/);
+      assert.deepEqual(operations, [
+        "recovery_resume_receipt",
+        "recovery_resume_challenge",
+        "resume_recovery",
+      ]);
+      assert.equal((await resumeManagedRecovery(resume)).epoch, 8);
+      assert.equal(operations.filter((op) => op === "resume_recovery").length, 1);
+      await assert.rejects(
+        resumeManagedRecovery({ ...resume, digest: sha("different snapshot") }),
+        /activation_receipt_conflict/,
+      );
       const f = nativeFixture();
       try {
         const config = {
