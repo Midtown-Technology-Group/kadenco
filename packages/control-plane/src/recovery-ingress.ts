@@ -44,7 +44,8 @@ export function recoveryIngress(
     !["stage_recovery", "recovery_chunk", "commit_recovery", "recovery_import_receipt"].includes(op)
   )
     return undefined;
-  if (actor.role !== "owner" || actor.migrationAuthority !== true) fail("forbidden");
+  if (!["owner", "migration"].includes(actor.role) || actor.migrationAuthority !== true)
+    fail("forbidden");
   const id = text(p.import_id);
   const prior = sql
     .exec<{ actor: string; digest: string; value: string }>(

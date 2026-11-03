@@ -3,6 +3,12 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.8
+
+- Restrict temporary migration credentials to explicit import, recovery and
+  activation operations. Deny native execution, general administration and
+  future unlisted operations; preserve ordinary owner/executor behavior.
+
 ## 0.1.0-alpha.7
 
 - Cloudflare SQLite coordination and encrypted operational replication with

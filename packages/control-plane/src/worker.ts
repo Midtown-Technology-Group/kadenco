@@ -10,13 +10,13 @@ import {
   type OperationBinding,
 } from "./binding";
 import { recoveryPage, recoveryTables, assertRecoverySchema } from "./recovery";
-import { serviceSchema, serviceOperation } from "./services";
+import { serviceSchema, serviceOperation, type ServicePrincipal } from "./services";
 import { recoveryIngress } from "./recovery-ingress";
 import { activationOperation, readRetirement, type RetirementEvidence } from "./activation";
 type Principal = {
   id: string;
   tokenSha256: string;
-  role: "owner" | "executor";
+  role: "owner" | "executor" | "migration";
   hosts: string[];
   scopes?: OperationBinding[];
   nativeGrants?: NativeGrantScope[];
@@ -35,6 +35,11 @@ const str = (v: unknown, max = 200): string =>
   typeof v === "string" && v.length > 0 && v.length <= max ? v : fail("invalid_request");
 const number = (v: unknown): number =>
   typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : fail("invalid_request");
+function servicePrincipal(a: Principal): ServicePrincipal {
+  const role =
+    a.role === "owner" ? "owner" : a.role === "executor" ? "executor" : fail("forbidden");
+  return { ...a, role };
+}
 function policy(raw: string | undefined): Policy {
   if (!raw || raw.length > 65536) fail("configuration_required");
   const p = JSON.parse(raw!) as Policy;
@@ -49,7 +54,7 @@ function policy(raw: string | undefined): Policy {
       !/^[a-f0-9]{64}$/.test(a.tokenSha256) ||
       ids.has(a.id) ||
       tokens.has(a.tokenSha256) ||
-      !["owner", "executor"].includes(a.role) ||
+      !["owner", "executor", "migration"].includes(a.role) ||
       !Array.isArray(a.hosts) ||
       a.hosts.length > 20
     )
@@ -63,6 +68,16 @@ function policy(raw: string | undefined): Policy {
     if (a.nativeGrants && (!Array.isArray(a.nativeGrants) || a.nativeGrants.length > 40))
       fail("configuration_required");
     a.nativeGrants?.forEach(nativeGrantScope);
+    if (
+      a.role === "migration" &&
+      (a.migrationAuthority !== true ||
+        a.maxPerDay !== 0 ||
+        a.stateCustodian === true ||
+        (a.scopes?.length ?? 0) > 0 ||
+        (a.nativeGrants?.length ?? 0) > 0 ||
+        (a.threadBudgets?.length ?? 0) > 0)
+    )
+      fail("configuration_required");
     if (
       new Set((a.nativeGrants ?? []).map((s) => JSON.stringify([s.host, s.purpose, s.grant])))
         .size !== (a.nativeGrants ?? []).length
@@ -225,6 +240,24 @@ export class FleetState extends DurableObject<Env> {
   }
   apply(a: Principal, op: string, p: Record<string, unknown>, retirement?: RetirementEvidence) {
     this.authorized(a);
+    // A temporary migration credential is not a general administrative owner.
+    // Default-deny also covers future operations added to this control plane.
+    if (
+      a.role === "migration" &&
+      ![
+        "status",
+        "freeze_recovery",
+        "export_recovery",
+        "stage_recovery",
+        "recovery_chunk",
+        "commit_recovery",
+        "recovery_import_receipt",
+        "activation_challenge",
+        "activation_receipt",
+        "activate",
+      ].includes(op)
+    )
+      fail("forbidden");
     serviceSchema(this.sql());
     const state = this.state();
     if (op === "activate" && !p.activation_id) fail("retirement_proof_required");
@@ -249,7 +282,8 @@ export class FleetState extends DurableObject<Env> {
             freezeId,
           )
           .toArray()[0];
-      if (a.role !== "owner" || a.migrationAuthority !== true) fail("forbidden");
+      if (!["owner", "migration"].includes(a.role) || a.migrationAuthority !== true)
+        fail("forbidden");
       if (prior) {
         if (
           state.epoch !== prior.epoch ||
@@ -265,7 +299,7 @@ export class FleetState extends DurableObject<Env> {
         };
       }
       if (
-        a.role !== "owner" ||
+        !["owner", "migration"].includes(a.role) ||
         a.migrationAuthority !== true ||
         state.epoch !== number(p.expected_epoch)
       )
@@ -302,7 +336,7 @@ export class FleetState extends DurableObject<Env> {
     if (op === "export_recovery") {
       keys(p, ["epoch", "watermark", "table", "after"]);
       if (
-        a.role !== "owner" ||
+        !["owner", "migration"].includes(a.role) ||
         a.migrationAuthority !== true ||
         state.mode !== "quiesced" ||
         state.epoch !== number(p.epoch) ||
@@ -457,9 +491,11 @@ export class FleetState extends DurableObject<Env> {
     const service = serviceOperation(
       {
         sql: this.sql(),
-        actor: a,
+        actor: servicePrincipal(a),
         principal: (id) =>
-          this.currentPolicy().principals.find((p) => p.id === id) ?? fail("forbidden"),
+          servicePrincipal(
+            this.currentPolicy().principals.find((p) => p.id === id) ?? fail("forbidden"),
+          ),
         authorize: (actor, host) => this.authorized(actor, host),
         now: Date.now(),
       },

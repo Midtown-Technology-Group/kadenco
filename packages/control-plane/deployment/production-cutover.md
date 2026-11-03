@@ -64,6 +64,12 @@ Create the approved central executor separately from existing caller credentials
 with authority bounded by original fleet grants and no later than their expiry.
 Create the approved one-hour migration credential immediately before transfer;
 keep it separate from native execution and existing Eddie owner/caller identities.
+Use the explicit `migration` role with `migrationAuthority: true`, zero command
+budget, no scopes/native grants and no state-custodian privilege. This role permits
+only status, authenticated recovery transfer, freeze/export and activation receipts.
+It cannot revoke principals, tighten policy, issue native operations or acquire an
+edge lease. Unknown future operations fail closed. Existing owners retain their
+original permissions; this does not promote a caller to owner.
 Never place bearer values or the original encryption key in source, logs or CLI
 arguments. Preserve original callback signing and all six standing subscriptions.
 
