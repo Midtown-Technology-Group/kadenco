@@ -17,7 +17,7 @@ activation remains disabled until the separately reviewed migration requirements
 ## Secret gate before publication
 
 Before publishing the current PR branch, commit the complete candidate and run
-`python3 scripts/secret_gate.py` (native Windows: `python`). Require exit 0;
+`python3 scripts/secret_gate.py --base origin/main` (native Windows: `python`). Require exit 0;
 missing tooling/authentication, scan errors and skipped scans block publication.
 Then run the existing repository gates. Repeat after changing outgoing commits.
 Push exactly the scanned HEAD. This PR scan covers the current branch against its
@@ -27,3 +27,6 @@ uncovered. See [secret scanning](SECRET-SCANNING.md) for base selection, new bra
 pre-push input and prerequisites. Preserve GitGuardian App, CI and Gitleaks checks.
 
 Local tooling: `npm run pre-pr`.
+
+For a non-default PR target, fetch its destination and pass that exact ref to
+`--base`; the remote default is not a substitute for a release/maintenance base.
