@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,owner TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS observations(source TEXT PRIMARY KEY,cursor INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,subscription TEXT NOT NULL,event TEXT NOT NULL,state TEXT NOT NULL,executor TEXT,generation INTEGER NOT NULL DEFAULT 0,lease INTEGER,attempts INTEGER NOT NULL DEFAULT 0,next INTEGER NOT NULL DEFAULT 0,http_status INTEGER);
 CREATE INDEX IF NOT EXISTS outbox_due ON outbox(state,next,lease,id);
+CREATE INDEX IF NOT EXISTS audit_delivery_operations ON audit(subject,seq) WHERE action IN ('outbox_claim','outbox_begin','outbox_result','outbox_stop');
 `);
 }
 /** Invoked only inside the parent's SQL transaction; network IO stays outside. */
@@ -251,14 +252,26 @@ export function serviceOperation(
     );
     return { stored: true, duplicate: false, id };
   }
-  if (op === "outbox_receipt") {
-    if (Object.keys(p).some((k) => !["id", "epoch"].includes(k))) bad("invalid_request");
+  if (op === "outbox_receipt" || op === "outbox_history") {
+    if (
+      Object.keys(p).some(
+        (k) =>
+          !(
+            op === "outbox_history" ? ["id", "epoch", "after_sequence", "limit"] : ["id", "epoch"]
+          ).includes(k),
+      )
+    )
+      bad("invalid_request");
     const id = text(p.id);
     const r = sql
-      .exec<{ subscription: string; state: string; attempts: number; http_status: number | null }>(
-        "SELECT subscription,state,attempts,http_status FROM outbox WHERE id=?",
-        id,
-      )
+      .exec<{
+        subscription: string;
+        state: string;
+        attempts: number;
+        http_status: number | null;
+        next: number;
+        event: string;
+      }>("SELECT subscription,state,attempts,http_status,next,event FROM outbox WHERE id=?", id)
       .toArray()[0];
     if (!r) bad("not_found");
     const s = sub(r.subscription);
@@ -270,6 +283,45 @@ export function serviceOperation(
         grants: a.nativeGrants,
       });
     else if (a.role !== "owner") bad("forbidden");
+    if (op === "outbox_history") {
+      const after = p.after_sequence ?? 0,
+        limit = p.limit ?? 50;
+      if (
+        !Number.isSafeInteger(after) ||
+        Number(after) < 0 ||
+        !Number.isSafeInteger(limit) ||
+        Number(limit) < 1 ||
+        Number(limit) > 100
+      )
+        bad("invalid_request");
+      const rows = sql
+        .exec<{ seq: number; at: number; action: string; actor: string }>(
+          "SELECT seq,at,action,actor FROM audit WHERE subject=? AND seq>? AND at>=? AND action IN ('outbox_claim','outbox_begin','outbox_result','outbox_stop') ORDER BY seq LIMIT ?",
+          id,
+          Number(after),
+          now - 7 * 86400000,
+          Number(limit) + 1,
+        )
+        .toArray();
+      return {
+        id,
+        state: r.state,
+        attempts: r.attempts,
+        http_status: r.http_status,
+        next_at: r.state === "pending" ? r.next : null,
+        subscription_id: r.subscription,
+        event_id: JSON.parse(r.event).event_id,
+        items: rows.slice(0, Number(limit)).map((row) => ({
+          sequence: row.seq,
+          at: row.at,
+          operation: row.action,
+          principal_id: row.actor,
+        })),
+        next_sequence: rows.length > Number(limit) ? rows[Number(limit) - 1].seq : null,
+        delivery_acknowledged: r.state === "acknowledged",
+        agent_completed: false,
+      };
+    }
     return {
       id,
       state: r.state,

@@ -65,6 +65,49 @@ test("central HTTP transport preserves refusals and never retries uncertain muta
     );
   }
 });
+test("central transport diagnostics retain fixed fields without secrets or outcome changes", async () => {
+  const rows: import("../src/transport.ts").CentralDiagnostic[] = [];
+  let calls = 0,
+    status = 200;
+  const transport = centralTransport({
+    origin: "https://fixture.invalid",
+    token: () => "SECRET",
+    diagnostic: (r) => {
+      rows.push(r);
+      throw Error("telemetry failed SECRET");
+    },
+    fetch: async () => {
+      calls++;
+      if (status === 0) throw Error("SECRET provider body");
+      return Response.json(
+        status === 200 ? { stored: true } : { reason: "forbidden", secret: "SECRET" },
+        { status, headers: { "x-ratelimit-remaining": "12" } },
+      );
+    },
+  });
+  assert.deepEqual(await transport("status", { secret: "SECRET" }), { stored: true });
+  status = 403;
+  assert.deepEqual(await transport("begin", {}), { reason: "forbidden", safe_to_resend: false });
+  status = 0;
+  await assert.rejects(transport("begin", {}), /central_transport_uncertain/);
+  assert.equal(calls, 3);
+  assert.deepEqual(
+    rows.map((r) => r.outcome),
+    ["ok", "refused", "uncertain"],
+  );
+  assert.equal(rows[0].rate_limit_remaining, 12);
+  assert.equal(rows[2].http_status, null);
+  assert.equal(new Set(rows.map((r) => r.correlation_id)).size, 3);
+  assert.equal(JSON.stringify(rows).includes("SECRET"), false);
+  assert.deepEqual(Object.keys(rows[0]).sort(), [
+    "correlation_id",
+    "duration_ms",
+    "http_status",
+    "operation",
+    "outcome",
+    "rate_limit_remaining",
+  ]);
+});
 
 test("central HTTP transport bounds streaming responses, cancels oversized bodies and does not accept malformed success", async () => {
   let cancelled = false;

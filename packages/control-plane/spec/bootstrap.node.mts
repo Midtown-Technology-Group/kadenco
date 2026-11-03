@@ -540,6 +540,37 @@ test("compiled production composition routes official MCP through central reserv
     );
     await client.callTool({ name: "continue_thread", arguments: uncertain });
     assert.equal(f.effects(), 2, "uncertain retry only reconciles, never dispatches again");
+    const diagnosticRead = await client.callTool({
+      name: "get_relay_request_diagnostics",
+      arguments: { limit: 100 },
+    });
+    assert.equal(diagnosticRead.isError, undefined);
+    const diagnostics = value(diagnosticRead);
+    assert.ok(
+      diagnostics.items.some(
+        (r: { operation: string; principal_id: string }) =>
+          r.operation === "reserve" && r.principal_id === "owner",
+      ),
+    );
+    assert.ok(
+      diagnostics.items.some(
+        (r: { principal_id: string; initiator_id: string }) =>
+          r.principal_id === "fixture-edge" && r.initiator_id === "owner",
+      ),
+    );
+    assert.equal(JSON.stringify(diagnostics).includes("fixture-owner"), false);
+    assert.equal(f.effects(), 2, "diagnostic read performs no additional native effect");
+    const revoked = await fetchImpl("https://fixture.invalid/revoke", {
+      method: "POST",
+      headers: { authorization: "Bearer fixture-owner", "content-type": "application/json" },
+      body: JSON.stringify({ principal_id: "owner" }),
+    });
+    assert.equal(revoked.status, 200);
+    assert.equal(
+      (await client.callTool({ name: "get_relay_request_diagnostics", arguments: {} })).isError,
+      true,
+      "central revocation blocks diagnostics even before edge policy catches up",
+    );
     f.policy.principals[0].enabled = false;
     await assert.rejects(
       client.callTool({ name: "continue_thread", arguments: { ...p, request_id: randomUUID() } }),

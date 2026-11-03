@@ -15,6 +15,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS audit (seq INTEGER PRIMARY KEY, at TEXT, action TEXT, subject TEXT, outcome TEXT);
       CREATE TABLE IF NOT EXISTS diagnostics (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, host TEXT NOT NULL, value TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS diagnostics_host_seq ON diagnostics(host,seq);`);
+    this.db.exec("CREATE INDEX IF NOT EXISTS audit_subject_seq ON audit(subject,seq)");
     this.diagnosticWrites = 0;
   }
   encode(value) {
@@ -85,6 +86,13 @@ export class Store {
       )
       .all(host, after, new Date(Date.now() - 7 * 86400000).toISOString(), limit + 1)
       .map((r) => ({ sequence: r.seq, ...this.decode(r.value) }));
+  }
+  deliveryHistory(id: string, after: number, limit: number, since: string) {
+    return this.db
+      .prepare(
+        "SELECT seq,at,outcome FROM audit WHERE subject=? AND seq>? AND at>=? AND action='webhook.delivery' ORDER BY seq LIMIT ?",
+      )
+      .all(id, after, since, limit + 1);
   }
   latestDiagnostic(host) {
     const r = this.db
