@@ -13,6 +13,7 @@ import { recoveryPage, recoveryTables, assertRecoverySchema } from "./recovery";
 import { serviceSchema, serviceOperation, type ServicePrincipal } from "./services";
 import { recoveryIngress } from "./recovery-ingress";
 import { activationOperation, readRetirement, type RetirementEvidence } from "./activation";
+import { decodePolicy } from "./policy-transport";
 type Principal = {
   id: string;
   tokenSha256: string;
@@ -42,7 +43,7 @@ function servicePrincipal(a: Principal): ServicePrincipal {
 }
 function policy(raw: string | undefined): Policy {
   if (!raw || raw.length > 65536) fail("configuration_required");
-  const p = JSON.parse(raw!) as Policy;
+  const p = JSON.parse(decodePolicy(raw!)) as Policy;
   str(p.fleet);
   if (number(p.revision) < 1) fail("configuration_required");
   if (!Array.isArray(p.principals) || p.principals.length > 100) fail("configuration_required");

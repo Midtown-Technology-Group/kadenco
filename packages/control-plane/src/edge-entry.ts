@@ -11,6 +11,7 @@ export { uploadRecovery } from "./recovery-upload.ts";
 export { captureRecovery, verifyRecovery } from "./recovery-archive.ts";
 export { prepareLegacyRecovery } from "./legacy-recovery.ts";
 export { prepareManagedRecovery } from "./managed-transfer.ts";
+export { encodePolicy, decodePolicy } from "./policy-transport.ts";
 export {
   verifyManagedRetirement,
   activateManagedSource,

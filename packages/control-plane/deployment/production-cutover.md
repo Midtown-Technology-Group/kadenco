@@ -70,6 +70,14 @@ only status, authenticated recovery transfer, freeze/export and activation recei
 It cannot revoke principals, tighten policy, issue native operations or acquire an
 edge lease. Unknown future operations fail closed. Existing owners retain their
 original permissions; this does not promote a caller to owner.
+
+Use `encodePolicy(JSON.stringify(policy))` for the `AUTH_POLICY` binding. Cloudflare
+[limits each binding, including secrets, to 5 KB](https://developers.cloudflare.com/workers/platform/limits/#environment-variables); the observed full six-host policy
+does not fit as plain JSON. The versioned gzip/base64 transport is bounded before
+upload and during decompression. `decodePolicy` restores the identical policy
+before the existing parser validates it; persisted policy and authorization logic
+use the expanded object. Do not reduce grants or omit principals to fit the wire.
+Plain JSON remains accepted for smaller policies and existing installations.
 Never place bearer values or the original encryption key in source, logs or CLI
 arguments. Preserve original callback signing and all six standing subscriptions.
 
