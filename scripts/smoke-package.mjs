@@ -20,6 +20,8 @@ for (const name of [
   "prepareManagedRecovery",
   "activateManagedSource",
   "projectControlPolicy",
+  "captureRecovery",
+  "verifyRecovery",
 ])
   assert.equal(typeof central[name], "function");
 const refused = spawnSync(
