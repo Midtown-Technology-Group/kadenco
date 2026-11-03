@@ -30,3 +30,5 @@ Local tooling: `npm run pre-pr`.
 
 For a non-default PR target, fetch its destination and pass that exact ref to
 `--base`; the remote default is not a substitute for a release/maintenance base.
+
+The secret gate requires Python 3.11+ and approved ggshield >=1.56.1,<2.
