@@ -48,15 +48,15 @@ and [configuration](https://docs.gitguardian.com/ggshield-docs/configuration) re
 
 Only exit **0 / CLEAN** means a successful scanner run. Other outcomes block:
 
-| Exit | Outcome |
-| --- | --- |
-| 1 | Findings; remediate before publication |
-| 2 | Invalid gate arguments |
-| 3 | Authentication failed/unavailable; owner must restore approved native auth |
-| 4 | Scan/transport/server/timeout error, or HEAD changed during the scan |
-| 10 | Skipped: empty range or deletion-only input; no clean scan claimed |
-| 20 | Invalid/unavailable base, Git operation, history or hook input |
-| 21 | Required executable unavailable |
+| Exit | Outcome                                                                    |
+| ---- | -------------------------------------------------------------------------- |
+| 1    | Findings; remediate before publication                                     |
+| 2    | Invalid gate arguments                                                     |
+| 3    | Authentication failed/unavailable; owner must restore approved native auth |
+| 4    | Scan/transport/server/timeout error, or HEAD changed during the scan       |
+| 10   | Skipped: empty range or deletion-only input; no clean scan claimed         |
+| 20   | Invalid/unavailable base, Git operation, history or hook input             |
+| 21   | Required executable unavailable                                            |
 
 No skip or fail-open switch is provided. Strict temporary scanner configuration
 ignores local/global exclusions and exit-zero settings; dotenv loading and scanner
