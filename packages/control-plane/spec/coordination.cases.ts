@@ -1603,3 +1603,162 @@ describe("caller policy validation", () => {
     ).toEqual({ reason: "forbidden" });
   });
 });
+
+describe("central encrypted operational replica", () => {
+  async function setup() {
+    await call("status");
+    await runInDurableObject(stub(), (_o, s) => {
+      serviceSchema(s.storage.sql);
+      for (const table of [
+        "auth_policy",
+        "revoked",
+        "edge_lease",
+        "replica_records",
+        "replica_receipts",
+        "imported",
+      ])
+        s.storage.sql.exec(`DELETE FROM ${table}`);
+      s.storage.sql.exec(
+        "UPDATE replica_head SET revision=0 WHERE id=1; UPDATE control SET mode='active',epoch=7 WHERE id=1",
+      );
+      s.storage.sql.exec(
+        "INSERT INTO imported VALUES('command','retained-uncertain','original-encrypted-envelope')",
+      );
+    });
+    const lease = await call("edge_lease", { epoch: 7 }, "synthetic-agent");
+    const base = { epoch: 7, generation: lease.generation };
+    return {
+      base,
+      replica: (op: string, p: object = {}) => call(op, { ...base, ...p }, "synthetic-agent"),
+    };
+  }
+  it("persists exact batches, rejects drift/rebinding, and pages original plus current envelopes", async () => {
+    const { replica } = await setup();
+    const id = "00000000-0000-4000-8000-000000000001";
+    const batch = {
+      request_id: id,
+      expected_revision: 0,
+      records: [{ kind: "command", id: "new", ciphertext: "new-encrypted-receipt" }],
+    };
+    expect(await replica("replica_apply", batch)).toEqual({ committed: true, revision: 1 });
+    await abortAllDurableObjects();
+    expect(await replica("replica_receipt", { request_id: id })).toEqual({
+      committed: true,
+      revision: 1,
+    });
+    expect(await replica("replica_apply", batch)).toEqual({ committed: true, revision: 1 });
+    expect(
+      await replica("replica_apply", {
+        ...batch,
+        records: [{ kind: "command", id: "new", ciphertext: "changed" }],
+      }),
+    ).toEqual({ reason: "idempotency_conflict" });
+    expect(
+      await replica("replica_apply", {
+        ...batch,
+        request_id: "00000000-0000-4000-8000-000000000002",
+      }),
+    ).toEqual({ reason: "fenced" });
+    expect(await replica("replica_page", { revision: 0 })).toEqual({ reason: "fenced" });
+    expect(await replica("replica_page", { revision: 1 })).toMatchObject({
+      revision: 1,
+      next: null,
+      records: [
+        { kind: "command", id: "new", ciphertext: "new-encrypted-receipt" },
+        { kind: "command", id: "retained-uncertain", ciphertext: "original-encrypted-envelope" },
+      ],
+    });
+  });
+  it("requires explicit state custody and a live exact lease, preserving revocation", async () => {
+    const { base, replica } = await setup();
+    expect(await call("replica_head", base)).toEqual({ reason: "forbidden" });
+    expect(await call("replica_head", base, "synthetic-agent2")).toEqual({ reason: "forbidden" });
+    expect(await replica("replica_head", { generation: base.generation + 1 })).toEqual({
+      reason: "fenced",
+    });
+    await runInDurableObject(stub(), (_o, s) => {
+      s.storage.sql.exec("UPDATE edge_lease SET expires=0 WHERE id=1");
+    });
+    expect(await replica("replica_head")).toEqual({ reason: "fenced" });
+    const next = await call("edge_lease", { epoch: 7 }, "synthetic-agent");
+    expect(next.generation).toBe(base.generation + 1);
+    expect(await replica("replica_head")).toEqual({ reason: "fenced" });
+    await call("revoke", { principal_id: "agent" });
+    expect(
+      await call("replica_head", { ...base, generation: next.generation }, "synthetic-agent"),
+    ).toEqual({ reason: "forbidden" });
+  });
+  it("keeps one compact commit receipt per executor and fences old-cache replays", async () => {
+    const { replica } = await setup();
+    const first = {
+      request_id: "00000000-0000-4000-8000-000000000021",
+      expected_revision: 0,
+      records: [{ kind: "command", id: "receipt-test", ciphertext: "a".repeat(16000) }],
+    };
+    expect(await replica("replica_apply", first)).toEqual({ committed: true, revision: 1 });
+    const second = {
+      ...first,
+      request_id: "00000000-0000-4000-8000-000000000022",
+      expected_revision: 1,
+    };
+    expect(await replica("replica_apply", second)).toEqual({ committed: true, revision: 2 });
+    expect(await replica("replica_apply", second)).toEqual({ committed: true, revision: 2 });
+    expect(await replica("replica_receipt", { request_id: first.request_id })).toEqual({
+      committed: false,
+      revision: null,
+    });
+    expect(await replica("replica_apply", first)).toEqual({ reason: "fenced" });
+    expect(
+      await replica("replica_apply", {
+        ...second,
+        records: [{ ...second.records[0], ciphertext: "changed" }],
+      }),
+    ).toEqual({ reason: "idempotency_conflict" });
+    const saved = await runInDurableObject(stub(), (_o, s) =>
+      s.storage.sql.exec<{ value: string }>("SELECT value FROM replica_receipts").toArray(),
+    );
+    expect(saved).toHaveLength(1);
+    expect(saved[0].value).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(await replica("replica_head")).toEqual({ revision: 2 });
+  });
+  it("tightening revokes state custody immediately and cannot regrant it", async () => {
+    const { replica } = await setup();
+    const next = await runInDurableObject(stub(), (_o, s) =>
+      JSON.parse(
+        s.storage.sql.exec<{ value: string }>("SELECT value FROM auth_policy WHERE id=1").one()
+          .value,
+      ),
+    );
+    next.revision = 2;
+    next.principals.find((p: { id: string }) => p.id === "agent").stateCustodian = false;
+    expect(await call("tighten_policy", { expected_revision: 1, policy: next })).toEqual({
+      revision: 2,
+    });
+    expect(await replica("replica_head")).toEqual({ reason: "forbidden" });
+    next.revision = 3;
+    next.principals.find((p: { id: string }) => p.id === "agent").stateCustodian = true;
+    expect(await call("tighten_policy", { expected_revision: 2, policy: next })).toEqual({
+      reason: "forbidden",
+    });
+  });
+  it("concurrent batches have one winner and malformed batches commit no rows", async () => {
+    const { replica } = await setup();
+    const records = [{ kind: "command", id: "new", ciphertext: "encrypted" }];
+    expect(
+      await replica("replica_apply", {
+        request_id: "00000000-0000-4000-8000-000000000011",
+        expected_revision: 0,
+        records: [...records, { kind: "$history_archive", id: "forbidden", ciphertext: "changed" }],
+      }),
+    ).toEqual({ reason: "invalid_request" });
+    expect(await replica("replica_head")).toEqual({ revision: 0 });
+    const results = await Promise.all(
+      ["00000000-0000-4000-8000-000000000012", "00000000-0000-4000-8000-000000000013"].map(
+        (request_id) => replica("replica_apply", { request_id, expected_revision: 0, records }),
+      ),
+    );
+    expect(results.filter((r) => r.committed === true)).toHaveLength(1);
+    expect(results.filter((r) => r.reason === "fenced")).toHaveLength(1);
+    expect(await replica("replica_head")).toEqual({ revision: 1 });
+  });
+});

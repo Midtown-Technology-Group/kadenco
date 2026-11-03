@@ -42,7 +42,7 @@ import { signedPost } from "../../../dist/webhook.mjs";
 import { subscriptionActive } from "../../../dist/subscription-state.mjs";
 /** Callback secrets/allowlist, pending-question/native checks remain on the one
  * edge that already owns the encrypted subscription and signer. */
-export function existingCallback(bridge: Bridge) {
+export function existingCallback(bridge: Bridge, beforePost: () => Promise<void> = async () => {}) {
   return async (reference: string, envelope: unknown) => {
     const event = (envelope as { data: unknown }).data;
     const subscription = bridge.store.get("subscription", reference);
@@ -72,6 +72,9 @@ export function existingCallback(bridge: Bridge) {
       JSON.stringify(refreshed) !== JSON.stringify(subscription)
     )
       throw Error("forbidden");
+    // Native pending-question/read checks can outlast the edge lease. Recheck at
+    // the actual HTTP effect boundary rather than only when the pass started.
+    await beforePost();
     return (await signedPost(subscription, event, bridge.post, bridge.now())).status;
   };
 }
@@ -96,7 +99,16 @@ export async function observeExisting(
   await refresh();
   await bridge.observe();
   await bridge.fleetEvents.observe();
-  const passFailures = new Set(["fenced", "not_active"]);
+  const passFailures = new Set([
+    "fenced",
+    "not_active",
+    "configuration_required",
+    "forwarding_failed",
+    "internal_error",
+    "central_transport_uncertain",
+    "central_response_too_large",
+    "central_response_invalid",
+  ]);
   const checked = (result: Record<string, unknown>) => {
     if (passFailures.has(String(result.reason))) throw Error(String(result.reason));
     return result;

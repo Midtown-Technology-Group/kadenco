@@ -7,6 +7,7 @@ import { join, resolve, dirname } from "node:path";
 import { createServer } from "node:net";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { createServer as httpServer } from "node:http";
 import { startSidecar } from "../dist/sidecar.mjs";
 
 async function fixture() {
@@ -86,6 +87,68 @@ test("occupied listener refuses startup and closes the injected backend", async 
     assert.deepEqual(f.counts(), { created: 1, closed: 1 });
   } finally {
     await new Promise((r) => f.listener.close(r));
+    f.cleanup();
+  }
+});
+
+test("operator runtime replaces local observation and owns startup and cleanup", async () => {
+  const f = await fixture();
+  await new Promise((r) => f.listener.close(r));
+  let cycles = 0,
+    closes = 0,
+    localEffects = 0;
+  const sidecar = await startSidecar({
+    ...f.options,
+    runtimeFactory(bridge) {
+      bridge.observe = bridge.deliver = async () => {
+        localEffects++;
+      };
+      return {
+        mcp: httpServer((_req, res) => {
+          res.end("central-runtime");
+        }),
+        async cycle() {
+          cycles++;
+        },
+        async close() {
+          closes++;
+        },
+      };
+    },
+  });
+  try {
+    assert.equal(
+      await (await fetch(`http://127.0.0.1:${f.port}/healthz`)).text(),
+      "central-runtime",
+    );
+    assert.equal(cycles, 1);
+    assert.equal(localEffects, 0);
+  } finally {
+    await sidecar.shutdown();
+    f.cleanup();
+  }
+  assert.equal(closes, 1);
+  assert.equal(localEffects, 0);
+});
+
+test("failed runtime bootstrap opens no listener and releases backend and store", async () => {
+  const f = await fixture();
+  await new Promise((r) => f.listener.close(r));
+  try {
+    await assert.rejects(
+      startSidecar({
+        ...f.options,
+        runtimeFactory() {
+          throw Error("not_active");
+        },
+      }),
+      /not_active/,
+    );
+    await assert.rejects(startSidecar({ ...f.options, runtimeFactory() {} }), /runtime_required/);
+    assert.deepEqual(f.counts(), { created: 2, closed: 2 });
+    const recovered = await startSidecar(f.options);
+    await recovered.shutdown();
+  } finally {
     f.cleanup();
   }
 });

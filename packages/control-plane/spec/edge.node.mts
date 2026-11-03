@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { SqliteJournal } from "../src/journal.ts";
+import { createEdgeRuntime, type EdgeRuntimePorts } from "../src/edge-runtime.ts";
+import { centralTransport } from "../src/transport.ts";
 import { consume } from "../src/edge.ts";
 import {
   validateOperation,
@@ -15,6 +17,209 @@ import {
   type Grant,
 } from "../src/authorization.ts";
 import { manifestOf, signedSnapshot, verifySnapshot } from "../src/snapshot.ts";
+
+test("central HTTP transport preserves refusals and never retries uncertain mutations", async () => {
+  let calls = 0;
+  const call = centralTransport({
+    origin: "https://fixture.invalid",
+    token: () => "test-only-identity",
+    fetch: async (url, init) => {
+      calls++;
+      assert.equal(String(url), "https://fixture.invalid/begin");
+      assert.equal(init?.redirect, "error");
+      assert.equal(
+        (init?.headers as Record<string, string> | undefined)?.authorization,
+        "Bearer test-only-identity",
+      );
+      assert.deepEqual(JSON.parse(String(init?.body)), { request_id: "original" });
+      return Response.json({ reason: "forbidden", may_attempt: true }, { status: 403 });
+    },
+  });
+  assert.deepEqual(await call("begin", { request_id: "original" }), {
+    reason: "forbidden",
+    safe_to_resend: false,
+  });
+  assert.equal(calls, 1);
+  const lost = centralTransport({
+    origin: "https://fixture.invalid",
+    token: () => "secret-not-in-errors",
+    fetch: async () => {
+      calls++;
+      throw Error("provider echoed secret-not-in-errors");
+    },
+  });
+  await assert.rejects(lost("begin", {}), /^Error: central_transport_uncertain$/);
+  assert.equal(calls, 2);
+  await assert.rejects(call("../other", {}), /invalid_central_operation/);
+  await assert.rejects(call("begin", { large: "x".repeat(65536) }), /central_request_too_large/);
+  assert.equal(calls, 2);
+  for (const origin of [
+    "http://fixture.invalid",
+    "https://fixture.invalid/path",
+    "https://user:secret@fixture.invalid",
+    "https://fixture.invalid?token=secret",
+  ]) {
+    assert.throws(
+      () => centralTransport({ origin, token: () => "fixture" }),
+      /invalid_central_transport/,
+    );
+  }
+});
+
+test("central HTTP transport bounds streaming responses, cancels oversized bodies and does not accept malformed success", async () => {
+  let cancelled = false;
+  const large = centralTransport({
+    origin: "https://fixture.invalid",
+    token: () => "fixture",
+    fetch: async () =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(new Uint8Array(65537));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      ),
+  });
+  await assert.rejects(large("status", {}), /central_response_too_large/);
+  assert.equal(cancelled, true);
+  const bad = centralTransport({
+    origin: "https://fixture.invalid",
+    token: () => "fixture",
+    fetch: async () => Response.json([]),
+  });
+  await assert.rejects(bad("status", {}), /central_response_invalid/);
+});
+
+test("real sidecar boots the central runtime, fences HTTP and never runs local delivery", async () => {
+  const { startSidecar } = await import("../../../dist/sidecar.mjs");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "kadenco-runtime-"));
+  const state = join(root, "state");
+  mkdirSync(state, { mode: 0o700 });
+  const configPath = join(root, "policy.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      port: 41899,
+      stateDirectory: state,
+      source: { type: "local-projection", databasePath: "unused-fixture" },
+      callbackHosts: [],
+      principals: [],
+      sessions: [],
+    }),
+  );
+  // Reserve an OS-assigned port rather than relying on a free fixed port.
+  const { createServer } = await import("node:net");
+  const reservation = createServer();
+  await new Promise<void>((r) => reservation.listen(0, "127.0.0.1", r));
+  const port = (reservation.address() as { port: number }).port;
+  await new Promise<void>((r) => reservation.close(() => r()));
+  const config = JSON.parse((await import("node:fs")).readFileSync(configPath, "utf8"));
+  writeFileSync(configPath, JSON.stringify({ ...config, port }));
+  let denied = false,
+    observations = 0,
+    deliveries = 0;
+  const generations: unknown[] = [];
+  const ports: EdgeRuntimePorts = {
+    epoch: 1,
+    executor: "fixture-executor",
+    key: randomBytes(32),
+    journalPath: join(state, "attempts.db"),
+    async executorCall(op, p) {
+      if (op === "edge_lease") {
+        generations.push((p as { generation?: number }).generation);
+        if (denied) return { reason: "fenced" };
+        return { holder: "fixture-executor", generation: 9, expires: Date.now() + 10000 };
+      }
+      if (op === "outbox_pending") return { ids: [], next: null };
+      if (op === "replica_head") return { revision: 0 };
+      if (op === "replica_page") return { revision: 0, records: [], next: null };
+      throw Error("unexpected_operation");
+    },
+    async ownerCall() {
+      throw Error("no_mutation_in_fixture");
+    },
+    async observationOwnerCall() {
+      throw Error("no_subscriptions_in_fixture");
+    },
+    async bind() {
+      throw Error("no_mutation_in_fixture");
+    },
+    async currentGrant() {
+      throw Error("no_mutation_in_fixture");
+    },
+    async observe() {
+      return { state: "unknown", evidence: "fixture" };
+    },
+    observationBinding() {
+      throw Error("no_subscriptions_in_fixture");
+    },
+  };
+  let sidecar: Awaited<ReturnType<typeof startSidecar>> | undefined;
+  try {
+    sidecar = await startSidecar({
+      configPath,
+      stateKey: randomBytes(32),
+      backendFactory: () => ({
+        close: async () => {},
+        supportsFollowup: false,
+        read: async () => {
+          throw Error("unused");
+        },
+        followup: async () => {
+          throw Error("unused");
+        },
+      }),
+      runtimeFactory: (bridge) => {
+        bridge.observe = async () => {
+          observations++;
+        };
+        bridge.deliver = async () => {
+          deliveries++;
+        };
+        bridge.fleetEvents.observe = async () => {};
+        return createEdgeRuntime(bridge, ports);
+      },
+    });
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
+    assert.equal(observations, 1);
+    assert.equal(deliveries, 0);
+    const renewals = generations.length;
+    await new Promise((resolve) => setTimeout(resolve, 2750));
+    assert.ok(generations.length > renewals, "idle runtime independently renews its lease");
+    denied = true;
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);
+    assert.equal(generations[0], undefined);
+    assert.ok(generations.slice(1).every((g) => g === 9));
+    await sidecar.shutdown();
+    sidecar = undefined;
+    // Restart under denial must refuse before exposing even the health endpoint.
+    await assert.rejects(
+      startSidecar({
+        configPath,
+        stateKey: randomBytes(32),
+        backendFactory: () => ({
+          close: async () => {},
+          supportsFollowup: false,
+          read: async () => {
+            throw Error("unused");
+          },
+          followup: async () => {
+            throw Error("unused");
+          },
+        }),
+        runtimeFactory: (bridge) => createEdgeRuntime(bridge, ports),
+      }),
+      /edge_lease_unavailable/,
+    );
+  } finally {
+    await sidecar?.shutdown();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("persistent journal survives reopen, concurrent handles and immutable outcome", async () => {
   const dir = mkdtempSync(join(tmpdir(), "kadenco-journal-"));
@@ -37,6 +242,56 @@ test("persistent journal survives reopen, concurrent handles and immutable outco
     await assert.rejects(a.finish("id", { state: "unknown", evidence: "changed" }));
     a.close();
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runtime journal encrypts evidence, authenticates reopen and retains immutable plaintext comparison", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const dir = mkdtempSync(join(tmpdir(), "kadenco-encrypted-journal-"));
+  const path = join(dir, "journal.db"),
+    key = randomBytes(32);
+  let journal = new SqliteJournal(path, key);
+  const outcome = { state: "observed" as const, evidence: "sensitive-fixture-receipt" };
+  try {
+    await journal.reserve("original");
+    await journal.finish("original", outcome);
+    await journal.finish("original", outcome);
+    journal.close();
+    const raw = new DatabaseSync(path, { readOnly: true });
+    try {
+      assert.equal(
+        String(raw.prepare("SELECT outcome FROM attempts").get()!.outcome).includes(
+          outcome.evidence,
+        ),
+        false,
+      );
+    } finally {
+      raw.close();
+    }
+    journal = new SqliteJournal(path, key);
+    assert.equal(journal.read("original")?.outcome, JSON.stringify(outcome));
+    assert.equal(await journal.reserve("original"), false);
+    await assert.rejects(journal.finish("original", { state: "unknown", evidence: "changed" }));
+    const wrong = new SqliteJournal(path, randomBytes(32));
+    try {
+      assert.throws(() => wrong.read("original"));
+    } finally {
+      wrong.close();
+    }
+    const changed = new DatabaseSync(path);
+    try {
+      changed
+        .prepare(
+          "INSERT INTO attempts(id,outcome) SELECT 'swapped',outcome FROM attempts WHERE id='original'",
+        )
+        .run();
+    } finally {
+      changed.close();
+    }
+    assert.throws(() => journal.read("swapped"), "ciphertext cannot be rebound to another UUID");
+  } finally {
+    journal.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -623,6 +878,19 @@ test("bounded observation hands off exact events once; callback adapter rechecks
     assert.equal(stopped.source_reason, "input_request_not_pending");
     assert.equal(posts, 1);
     assert.equal(checks, 2);
+    pending = true;
+    const fencedPost = existingCallback(bridge, async () => {
+      throw Error("fenced");
+    });
+    await assert.rejects(
+      fencedPost("standing", {
+        data: event,
+        scope: { owner: "owner", host: "local", thread: "thread", name: event.name },
+      }),
+      /fenced/,
+    );
+    assert.equal(checks, 3);
+    assert.equal(posts, 1);
   } finally {
     store.close();
   }
@@ -1082,6 +1350,24 @@ test("centralization quarantines one delivery but fences stop the entire pass", 
     /fenced/,
   );
   assert.equal(fenced.state.get("first")?.status, "pending");
+  for (const reason of [
+    "central_transport_uncertain",
+    "forwarding_failed",
+    "configuration_required",
+  ]) {
+    const unavailable = setup();
+    await assert.rejects(
+      observeExisting(unavailable.bridge, {
+        ...ports,
+        async ownerCall() {
+          if (reason === "central_transport_uncertain") throw Error(reason);
+          return { reason };
+        },
+      }),
+      new RegExp(reason),
+    );
+    assert.equal(unavailable.state.get("first")?.status, "pending");
+  }
   const thrown = setup();
   await assert.rejects(
     observeExisting(thrown.bridge, {

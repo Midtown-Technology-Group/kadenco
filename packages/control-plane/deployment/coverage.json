@@ -1,6 +1,12 @@
 {
   "surfaces": [
     {
+      "status": "local-runtime-integrated",
+      "name": "operational state and sidecar lifecycle",
+      "source": "src/sidecar.mts, packages/control-plane/src/edge-runtime.ts, packages/control-plane/src/store-replica.ts, packages/control-plane/src/replica-state.ts",
+      "reason": "A single composed sidecar replaces the local loop. Exact lease generation gates admission/effects; encrypted record commits precede HTTP acknowledgement/native dispatch/callbacks. Durable batch identities reconcile lost replies and reject stale caches. Current central recovery retains replicas and receipts. Local workerd plus official MCP discovery/read is exercised; production identity/grant mapping, retirement and activation remain unqualified."
+    },
+    {
       "status": "local-split-integrated",
       "name": "events/subscriptions/passive inbox",
       "source": "src/bridge.mts, src/fleet-events.mts, packages/control-plane/src/services.ts, packages/control-plane/src/edge-services.ts",
@@ -10,13 +16,13 @@
       "status": "edge-adapter",
       "name": "collaboration",
       "source": "src/collaboration.mts, src/collaboration-http.mts, src/sharing-requests.mts",
-      "reason": "Reuses existing Access/Entra HTTP, capability/grant isolation, proposal/review/SSE services behind lease gate. Synchronous encrypted state remains single-edge; no claim that collaboration state became DO-authoritative."
+      "reason": "Reuses existing Access/Entra HTTP, capability/grant isolation, proposal/review/SSE services behind lease gate. Operational envelopes commit centrally before HTTP/SSE bytes; the original synchronous services operate on the one edge cache. Production identity/ingress and real colleague acceptance remain unverified."
     },
     {
       "status": "edge-adapter",
       "name": "owner/caller MCP routes",
       "source": "src/server.mts, src/host-callers.mts",
-      "reason": "Original MCP auth/role registration and caller grants/pending routing remain unchanged behind request lease gate. No generic raw forwarding or new central MCP principal."
+      "reason": "Original MCP auth/role registration and caller grants/pending routing remain behind lease and durable-response gates. Compiled runtime discovery/read passes against local workerd. No generic raw forwarding; production central principal/grant mappings remain unprovisioned."
     },
     {
       "status": "local-integrated",

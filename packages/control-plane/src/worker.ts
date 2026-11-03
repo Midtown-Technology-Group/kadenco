@@ -11,6 +11,7 @@ type Principal = {
   hosts: string[];
   scopes?: OperationBinding[];
   migrationAuthority?: boolean;
+  stateCustodian?: boolean;
   maxPerDay?: number | null;
   threadBudgets?: { thread: string; provider: string; maxPerDay: number; expiresAt: number }[];
   expiresAt: number;
@@ -49,6 +50,8 @@ function policy(raw: string | undefined): Policy {
     if (a.scopes && (!Array.isArray(a.scopes) || a.scopes.length > 100))
       fail("configuration_required");
     a.scopes?.forEach(operationBinding);
+    if (a.stateCustodian !== undefined && typeof a.stateCustodian !== "boolean")
+      fail("configuration_required");
     number(a.expiresAt);
     if (
       a.maxPerDay !== undefined &&
@@ -299,6 +302,7 @@ export class FleetState extends DurableObject<Env> {
           !prior ||
           prior.role !== n.role ||
           (n.migrationAuthority === true && prior.migrationAuthority !== true) ||
+          (n.stateCustodian === true && prior.stateCustodian !== true) ||
           (prior.threadBudgets ?? []).some(
             (oldCap) =>
               !(n.threadBudgets ?? []).some(

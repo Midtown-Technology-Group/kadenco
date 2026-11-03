@@ -41,6 +41,42 @@ operator composition can now reuse the same public lifecycle instead of copying
 the application entrypoint. Keep paths, identities and credential providers in
 the private operator adapter.
 
+`runtimeFactory` is a second operator-only composition hook. It receives the
+fully constructed bridge and supplies the MCP/collaboration listeners, one
+observation/delivery cycle and cleanup. Selecting it replaces the entire local
+cycle; local delivery does not continue alongside a central outbox. The sidecar
+still owns loopback binding, its single timer, startup failure cleanup and
+shutdown. An enabled collaboration profile requires a collaboration listener.
+No runtime module or factory is selected by an MCP argument or policy path.
+
+The private control-plane package's `createEdgeRuntime` composes these hooks
+with the existing services, lease-gated routes, claimed central outbox and
+mandatory mutation coordinator. It renews its exact lease generation separately
+from long native reads, checks the lease again before callbacks/native effects,
+and encrypts journal evidence using a domain-separated key. Its HTTPS transport
+has bounded bodies/timeouts and no redirects, automatic retries or identity
+fallback. Encrypted operational records have a durable edge change journal and
+revision-checked central commits. HTTP bytes, native dispatch and callbacks wait
+for their preceding operational writes to commit. Lost commit responses reconcile
+the exact persisted batch receipt; a fresh edge hydrates current central records
+and rejects a stale or mismatched local snapshot. Central recovery includes the
+latest records, revisions and immutable batch receipts. Historical audit and
+diagnostics remain local; new coordination audit stays central. State custody
+requires a separate explicit executor capability and a current exact edge lease.
+The operator must supply reviewed current-grant/identity resolvers, an existing
+authenticated transport and a durable journal path. This composition is verified
+with local workerd, SQLite and the official MCP client. It is not production trust
+provisioning, old-writer retirement or activation evidence.
+
+The control-plane build now emits a Node ESM edge bundle alongside the Worker.
+It keeps public `dist/` modules external so HTTP assets, diagnostics context and
+authorization services remain the same artifact instance. No TypeScript compiler
+or source loader runs on startup. `edge-build.json` binds the source commit,
+dirty status, bundle checksum and every public runtime module/asset checksum.
+CI exercises the compiled bundle through official MCP and retains the matching
+Worker/edge/public runtime files. A dirty local build is development evidence;
+promotion still requires the clean merged-source artifact and runtime/trust gates.
+
 ## Discovery and native boundaries
 
 Use native MCP tool/event discovery. Enumerate every authorized host and continue

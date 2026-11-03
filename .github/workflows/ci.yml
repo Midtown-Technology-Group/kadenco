@@ -72,6 +72,21 @@ jobs:
         working-directory: packages/control-plane
       - run: npm run staging:qualify
         working-directory: packages/control-plane
+      - name: Retain exact-source central and edge runtime artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: kadenco-central-runtime-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/
+            packages/control-plane/dist/
+            LICENSE
+            NOTICE
+            package.json
+            package-lock.json
+            packages/control-plane/package.json
+            packages/control-plane/package-lock.json
   gate:
     if: always()
     needs: [quality, test, control-plane]
