@@ -22,7 +22,7 @@ jobs:
       - run: npm ci --ignore-scripts
         working-directory: packages/control-plane
       - name: Build matching central Worker and compiled edge runtime
-        run: npm run build && node node_modules/cf/bin/cf build --mode production && node node_modules/cf/bin/cf deploy --prebuilt --dry-run --mode production
+        run: npm run build && node operator/build-worker.mjs && node node_modules/cf/bin/cf deploy --prebuilt --dry-run --mode production
         working-directory: packages/control-plane
       - name: Package and smoke-test extracted production installation
         run: node scripts/package-release.mjs

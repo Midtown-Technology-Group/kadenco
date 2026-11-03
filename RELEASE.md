@@ -60,6 +60,10 @@ test imports the central runtime and checks the supervisor's fail-closed startup
 The separate control-plane tarball contains cf Build Output Specification files
 for prebuilt promotion. Both tarballs share BUILD source/run identity and
 SHA256SUMS; do not mix a Worker from another run with an edge package.
+The Worker build records `WORKER-BUILD.json` with its source, version, clean-state
+flag and every output-file hash. Packaging and prebuilt promotion must verify it
+with the shipped `scripts/worker-provenance.mjs`; stale, missing, modified and
+unrecorded output refuses promotion even if a separate edge build is current.
 
 The `Release artifact` workflow builds and smoke-tests packages on PRs, and can
 be dispatched on protected main after merge. It has read-only repository

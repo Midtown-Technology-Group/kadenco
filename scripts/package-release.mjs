@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { checkRelease } from "./release-check.mjs";
+import { verifyWorkerBuild } from "./worker-provenance.mjs";
 
 const root = resolve(import.meta.dirname, ".."),
   output = join(root, "release-output");
@@ -48,11 +49,7 @@ for (const [name, hash] of Object.entries(centralBuild.sidecar_modules))
   if (digest(join(root, "dist", name)) !== hash) throw Error("central_sidecar_artifact_mismatch");
 for (const [name, hash] of Object.entries(centralBuild.dependency_locks))
   if (digest(join(root, name)) !== hash) throw Error("central_dependency_lock_mismatch");
-const workerConfig = JSON.parse(
-  readFileSync(join(central, ".cloudflare/output/v0/workers/default/worker.config.json"), "utf8"),
-);
-if (workerConfig.name !== "kadenco-control-plane" || workerConfig.previewUrls !== false)
-  throw Error("production_worker_artifact_required");
+verifyWorkerBuild(join(central, ".cloudflare/output"), { source, version: pkg.version });
 mkdirSync(output); // Refuse replacement of an earlier artifact set.
 const temp = mkdtempSync(join(tmpdir(), "kadenco-release-"));
 try {
@@ -88,6 +85,7 @@ try {
     "caller-mcp.mjs",
     "caller.mjs",
     "pi-eddie.mjs",
+    "worker-provenance.mjs",
   ])
     cpSync(join(root, "scripts", file), join(stage, "scripts", file));
   const provenance = {

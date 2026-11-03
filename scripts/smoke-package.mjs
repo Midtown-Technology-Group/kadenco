@@ -12,6 +12,11 @@ const root = resolve(process.argv[2]);
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 assert.equal(pkg.name, "kadenco");
 const { startSidecar } = await import(pathToFileURL(join(root, "dist/sidecar.mjs")));
+assert.equal(
+  typeof (await import(pathToFileURL(join(root, "scripts/worker-provenance.mjs"))))
+    .verifyWorkerBuild,
+  "function",
+);
 const central = await import(
   pathToFileURL(join(root, "packages/control-plane/dist/edge-runtime.mjs"))
 );
