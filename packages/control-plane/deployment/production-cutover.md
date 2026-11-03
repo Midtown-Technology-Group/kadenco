@@ -134,3 +134,30 @@ A valid recovery principal is required. Expired migration credentials are not
 renewed, promoted or replaced by this API. Persisted policy rotation or new trust
 requires its own reviewed authorization; replacing an environment binding alone
 does not replace the persisted policy. The production entry does not mint keys.
+
+### Explicit one-time recovery reauthorization
+
+With a separate explicit owner approval, the authenticated owner may use the
+non-MCP operator endpoints `migration_reauthorization_challenge`,
+`reauthorize_migration` and `migration_reauthorization_receipt`. This is the only
+exception to tightening-only policy updates. It renews an existing expired
+`migration` principal once in its retained lifetime, never creates a principal
+or token, and never clears revocation. The target must retain zero command budget,
+no operation/native grants, no custody privilege, and hosts within the owner scope.
+
+Read the challenge with `principal_id`, then persist one exact request containing
+`principal_id`, stable `request_id`, `expected_revision`,
+`expected_principal_sha256`, `previous_expires_at`, `expires_at` and an
+`approval_reference`. Expiry must be in the future, at most one hour from apply,
+and no later than the acting owner's expiry. All target fields except expiry
+remain byte-for-byte equivalent in the decoded policy. The revision, policy,
+receipt and audit update commit in one transaction. Quiesced fleets refuse a new
+authorization change. Do this before freezing recovery, not during its watermark.
+
+Reconcile `migration_reauthorization_receipt` with the exact principal/request
+after an uncertain response. Never generate another UUID or expiry to retry.
+Identical replay returns the immutable receipt; another extension is refused.
+Only after a matching committed receipt may the operator update local credential
+expiry metadata, preserving the existing encrypted bearer. No Worker binding
+replacement is needed. Current-state recovery retains the authorization receipt
+and single-use fence; older archives lacking the new table fail closed.
