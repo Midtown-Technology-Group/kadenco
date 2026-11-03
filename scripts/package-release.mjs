@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { checkRelease } from "./release-check.mjs";
+import { verifyWorkerBuild } from "./worker-provenance.mjs";
 
 const root = resolve(import.meta.dirname, ".."),
   output = join(root, "release-output");
@@ -34,6 +35,21 @@ if (process.platform === "win32") throw Error("release_builder_requires_linux_ci
 const source = run("git", ["rev-parse", "HEAD"], root, true);
 if (run("git", ["status", "--porcelain", "--untracked-files=normal"], root, true))
   throw Error("release_requires_clean_checkout");
+const central = join(root, "packages/control-plane"),
+  centralBuild = JSON.parse(readFileSync(join(central, "dist/edge-build.json"), "utf8"));
+const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+if (
+  centralBuild.source !== source ||
+  centralBuild.dirty ||
+  centralBuild.package_version !== pkg.version ||
+  centralBuild.sha256 !== digest(join(central, "dist/edge-runtime.mjs"))
+)
+  throw Error("central_release_provenance_mismatch");
+for (const [name, hash] of Object.entries(centralBuild.sidecar_modules))
+  if (digest(join(root, "dist", name)) !== hash) throw Error("central_sidecar_artifact_mismatch");
+for (const [name, hash] of Object.entries(centralBuild.dependency_locks))
+  if (digest(join(root, name)) !== hash) throw Error("central_dependency_lock_mismatch");
+verifyWorkerBuild(join(central, ".cloudflare/output"), { source, version: pkg.version });
 mkdirSync(output); // Refuse replacement of an earlier artifact set.
 const temp = mkdtempSync(join(tmpdir(), "kadenco-release-"));
 try {
@@ -57,6 +73,11 @@ try {
   ])
     cpSync(join(root, file), join(stage, file), { recursive: true });
   mkdirSync(join(stage, "scripts"));
+  const stagedCentral = join(stage, "packages/control-plane");
+  mkdirSync(stagedCentral, { recursive: true });
+  cpSync(join(central, "dist"), join(stagedCentral, "dist"), { recursive: true });
+  mkdirSync(join(stagedCentral, "operator"));
+  cpSync(join(central, "operator/run-edge.mjs"), join(stagedCentral, "operator/run-edge.mjs"));
   for (const file of [
     "agent-client.mjs",
     "agent-tool.mjs",
@@ -64,6 +85,7 @@ try {
     "caller-mcp.mjs",
     "caller.mjs",
     "pi-eddie.mjs",
+    "worker-provenance.mjs",
   ])
     cpSync(join(root, "scripts", file), join(stage, "scripts", file));
   const provenance = {
@@ -81,6 +103,8 @@ try {
     scripts: { start: "node dist/main.mjs" },
     files: [
       "dist",
+      "packages/control-plane/dist",
+      "packages/control-plane/operator/run-edge.mjs",
       "scripts",
       "src",
       "docs",
@@ -115,7 +139,9 @@ try {
   );
   writeFileSync(join(output, "BUILD.json"), JSON.stringify(provenance, null, 2) + "\n");
   cpSync(join(root, "CHANGELOG.md"), join(output, "CHANGELOG.md"));
-  const names = [filename, "sbom.cdx.json", "BUILD.json", "CHANGELOG.md"];
+  const workerArchive = `kadenco-control-plane-${pkg.version}.tar.gz`;
+  run("tar", ["-czf", join(output, workerArchive), "-C", central, ".cloudflare/output"], root);
+  const names = [filename, workerArchive, "sbom.cdx.json", "BUILD.json", "CHANGELOG.md"];
   writeFileSync(
     join(output, "SHA256SUMS"),
     names

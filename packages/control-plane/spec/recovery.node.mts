@@ -6,6 +6,8 @@ import { createServer } from "node:net";
 import { verifyManagedRetirement, retirementTombstone } from "../src/managed-retirement.ts";
 import { localArchiveReference } from "../src/local-archive.ts";
 import { signRetirement, type RetirementEvidence } from "../src/activation.ts";
+import { prepareManagedRecovery } from "../src/managed-transfer.ts";
+import { openStoreReplica } from "../src/store-replica.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
@@ -73,7 +75,9 @@ test(
       entry = join(dir, "retired.ps1"),
       credentials = join(dir, "old-credentials.clixml"),
       releaseEntry = join(dir, "old-main.mjs");
-    const store = new Store(archivePath, randomBytes(32));
+    const stateKey = randomBytes(32),
+      store = new Store(archivePath, stateKey);
+    store.audit("fixture history", "retained only locally", "not exported");
     store.close();
     writeFileSync(entry, retirementTombstone("fixture"));
     writeFileSync(releaseEntry, "// inert fixture only\n");
@@ -106,6 +110,41 @@ test(
       assert.equal(result.ingress_closed, true);
       assert.equal(result.revival_denied, true);
       assert.equal(localArchiveReference(archivePath).archive_sha256, input.archiveSha256);
+      const f = nativeFixture();
+      try {
+        const config = {
+          fleet: "fixture",
+          origin: "https://fixture.invalid",
+          epoch: 1,
+          executor: "central-edge",
+          executorToken: "fixture-executor-token-that-is-long-enough",
+          ownerTokens: new Map([["owner", "fixture-owner"]]),
+          observationOwner: "owner",
+          serviceExpiresAt: Date.now() + 300000,
+          key: stateKey,
+          journalPath: join(dir, "unused-journal.db"),
+        };
+        const prepared = await prepareManagedRecovery({
+          source: input,
+          migrationId: "fixture-transfer",
+          encryptionProvenance: "fixture-key",
+          key: stateKey,
+          originalPolicy: f.policy,
+          centralPolicy: projectControlPolicy(f.policy, config),
+          serviceExpiresAt: config.serviceExpiresAt,
+        });
+        const rows = verifyRecovery(prepared.archive, stateKey, prepared.expected).rows;
+        assert.equal(rows.filter((r) => r.table === "audit").length, 0);
+        assert.equal(
+          rows.filter((r) => r.table === "imported" && r.values.kind === "$history_archive").length,
+          1,
+        );
+        assert.equal(JSON.stringify(rows).includes("retained only locally"), false);
+        assert.equal(f.effects(), 0);
+        assert.equal(localArchiveReference(archivePath).archive_sha256, input.archiveSha256);
+      } finally {
+        await f.close();
+      }
     } finally {
       if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(dir, { recursive: true, force: true });
@@ -330,6 +369,25 @@ test("activation binds imported state, current authority and retirement challeng
       "idempotency_conflict",
     );
     assert.equal((await f.target("status", {})).epoch, 10);
+    const fresh = new Store(":memory:", f.key);
+    try {
+      const lease = await f.executor("edge_lease", { epoch: 10 });
+      const replica = await openStoreReplica(fresh, 10, (op, p) =>
+        f.executor(op, { ...p, epoch: 10, generation: lease.generation }),
+      );
+      assert.equal(
+        replica.revision(),
+        f.verified.rows.find((r) => r.table === "replica_head")!.values.revision,
+      );
+      assert.equal(fresh.get("command", f.uncertain).safe_to_resend, false);
+      assert.equal(
+        fresh.db.prepare("SELECT COUNT(*) n FROM records WHERE kind LIKE '$%'").get()!.n,
+        0,
+      );
+      await replica.flush();
+    } finally {
+      fresh.close();
+    }
   } finally {
     await f.close();
   }

@@ -12,6 +12,23 @@ the SQL receipt holds only a reference to the encrypted original, not a prompt.
 Audit and diagnostic history stay in the original local database. Its exact
 `$history_archive` descriptor must be present in the imported operational state.
 
+`prepareManagedRecovery` is the actual Windows transfer entry point. It invokes
+the physical retirement verifier before and after a read-only SQLite transaction,
+checks the operational digest against the unchanged archive descriptor and passes
+the authenticated segments to operational adoption. It returns an encrypted
+archive in memory; it does not write the source or upload anything automatically.
+
+`operator/run-edge.mjs` is the compiled runtime's supervisor entry point. Its one
+argument is an absolute nonsecret configuration path. A private inherited stdin
+pipe supplies JSON with `stateKey` (original base64 key), `executorToken`, and
+`ownerTokens` (pairs of original owner ID and original bearer). Bootstrap fields
+and original/cache/config paths belong in the nonsecret configuration. Secrets
+never enter argv or a persistent JSON file. Startup failures are sanitized and
+never fall back to the historical local writer. The backend composition retains
+the original projection/fleet helper/local-followup choices and all original
+authorization checks. The existing private supervisor continues to own the
+tunnel, caller reverse forwards, private custody and process lifecycle.
+
 Use `uploadRecovery` with a stable import ID. Receipt lookup precedes commit
 recovery. A successful import remains quiesced. Do not import the original
 snapshot again after central writes: use CURRENT `captureRecovery` state for

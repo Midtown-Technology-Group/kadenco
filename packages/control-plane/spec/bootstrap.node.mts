@@ -10,6 +10,38 @@ import { projectControlPolicy, projectVerificationPolicy } from "../src/producti
 import { cachePolicyGuard, startProductionSidecar } from "../src/production-startup.ts";
 const hash = (x: unknown) => createHash("sha256").update(JSON.stringify(x)).digest("hex");
 
+test("installed supervisor entry refuses malformed private input without logging it or starting a fallback", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs"),
+    { join } = await import("node:path"),
+    { tmpdir } = await import("node:os"),
+    { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "kadenco-supervisor-entry-"));
+  try {
+    const config = join(dir, "supervisor.json");
+    writeFileSync(config, "{}");
+    const entry = new URL("../operator/run-edge.mjs", import.meta.url);
+    const { fileURLToPath } = await import("node:url");
+    for (const input of [
+      "fixture-private-marker",
+      JSON.stringify({ stateKey: "fixture-private-marker" }),
+      "x".repeat(65537),
+    ]) {
+      const result = spawnSync(process.execPath, [fileURLToPath(entry), config], {
+        input,
+        encoding: "utf8",
+        timeout: 10000,
+        windowsHide: true,
+      });
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr.trim(), "Kadenco central edge startup refused; no local fallback");
+      assert.equal(result.stderr.includes("fixture-private-marker"), false);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("supported startup refuses historical cache aliases, key mismatch and inactive central service", async () => {
   const {
     mkdtempSync,
