@@ -23,7 +23,7 @@ selected runtime and verified live result are separate evidence stages.
   qualification of the supported read/event/acknowledgement paths. Do not use
   a stability label to hide unresolved visibility or delivery limitations.
 
-`0.1.0-alpha.9` is the next candidate, adding bounded policy transport to Cloudflare-backed operational
+`0.1.0-alpha.10` is the next candidate, adding bounded policy transport to Cloudflare-backed operational
 state, protected activation and compiled supervisor/transfer entry points. Previous alpha.2 SHA-qualified
 source deployments remain historical evidence; do not move tags or relabel them.
 

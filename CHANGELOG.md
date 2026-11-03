@@ -3,6 +3,11 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.10
+
+- Read central callback receipts without claiming agent execution or exposing event
+  payloads and signing details. Recheck current owner/executor scope and revocation.
+
 ## 0.1.0-alpha.9
 
 - Bound and encode authorization policy transport to fit Cloudflare's per-binding
