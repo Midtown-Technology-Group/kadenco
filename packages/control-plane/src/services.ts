@@ -328,6 +328,7 @@ export function serviceOperation(
           host: s.host,
           thread: s.thread,
           name: JSON.parse(s.value).name,
+          binding: JSON.parse(s.binding),
         },
       };
     }

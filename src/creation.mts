@@ -48,7 +48,7 @@ const sameSelection = (a, b) =>
   a.model === b.model &&
   hash([...(a.options ?? [])].sort((x, y) => x.id.localeCompare(y.id))) ===
     hash([...b.options].sort((x, y) => x.id.localeCompare(y.id)));
-const nativeThreadId = (owner, request) => {
+export const nativeThreadId = (owner, request) => {
   const s = hash(["eddie-create-thread", owner, request]);
   return (
     s.slice(0, 8) +

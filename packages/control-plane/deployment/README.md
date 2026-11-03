@@ -6,8 +6,10 @@ receipt reconciliation, durable HTTP/SSE responses and native/callback checkpoin
 are exercised with workerd and the official MCP client. The build emits a Node
 ESM edge bundle and a source/checksum manifest; CI retains the matching public
 runtime and Worker. No production compiler or TypeScript loader is required.
-Existing grant/identity mapping, secret custody, old-writer retirement, activation
-and live acceptance remain separate unfinished deployment requirements. This
+Existing-service grant/identity mapping now has an executable operator bootstrap
+and compiled MCP/native-service fixture; see [production-bootstrap.md](production-bootstrap.md).
+Production trust installation, secret custody, old-writer retirement, activation
+and live acceptance remain unfinished deployment requirements. This
 does not promote the staging Worker or claim a production replacement.
 
 Native cf build/prebuilt dry-run qualification is now available in

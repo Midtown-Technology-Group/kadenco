@@ -8,6 +8,7 @@ import { observeExisting, deliveryPass, existingCallback } from "./edge-services
 import { openStoreReplica } from "./store-replica.ts";
 import { checkpointNativeEffects } from "./effect-checkpoint.ts";
 import { isAbsolute } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 export { projectNativeGrant } from "./grant-projection.ts";
 export { centralTransport } from "./transport.ts";
 
@@ -36,6 +37,7 @@ export async function createEdgeRuntime(
     !isAbsolute(ports.journalPath)
   )
     throw Error("invalid_edge_identity");
+  ports = Object.freeze({ ...ports, key: Buffer.from(ports.key) });
   let generation: number | undefined;
   let closed = false;
   let renewal: Promise<void> | undefined;
@@ -129,10 +131,17 @@ export async function createEdgeRuntime(
               await refreshLease();
               return ports.executorCall(op, p);
             },
-            postExisting: existingCallback(bridge, async () => {
-              await replica.flush();
-              await refreshLease();
-            }),
+            postExisting: existingCallback(
+              bridge,
+              async () => {
+                await replica.flush();
+                await refreshLease();
+              },
+              (subscription, event, binding) => {
+                if (!isDeepStrictEqual(binding, ports.observationBinding(subscription, event)))
+                  throw Error("forbidden");
+              },
+            ),
           },
           continuation,
         );
