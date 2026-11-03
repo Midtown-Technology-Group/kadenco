@@ -11,6 +11,7 @@ import { scrub } from "./fleet-read.mjs";
 import { readReason } from "./read-errors.mjs";
 import { Creation } from "./creation.mjs";
 import { deliveryObservation } from "./delivery-observation.mjs";
+import { Goalkeeper, type GoalkeeperTarget } from "./goalkeeper.mjs";
 const id = z.string().min(1).max(2048),
   uuid = z.string().uuid().toLowerCase();
 const target = { host: z.string().min(1).max(100), thread_id: id };
@@ -93,11 +94,110 @@ export class Commands {
   declare now: () => number;
   declare creation: Creation;
   declare settings: ThreadSettings;
+  declare goalkeeper: Goalkeeper;
 
   constructor({ policy, store, reader, session = nativeSession, now = Date.now }) {
     Object.assign(this, { policy, store, reader, session, now });
     this.creation = new Creation(this);
     this.settings = new ThreadSettings(this);
+    this.goalkeeper = new Goalkeeper(
+      store,
+      {
+        read: (owner, target) => this.goalkeeperState(owner, target),
+        send: async (owner, p, guard) => {
+          await guard();
+          const r = await this.continue(owner, { ...p, execution: "allow_new_turn" });
+          if (r.submission !== "accepted") throw fail("goalkeeper_submission_uncertain");
+          return {
+            host: p.host,
+            thread_id: p.thread_id,
+            source_run_id: p.source_run_id,
+            request_id: p.request_id,
+            owner,
+            stage: "accepted_queued",
+            run_id: null,
+          };
+        },
+        receipt: async (owner, request_id) => {
+          const r = await this.receipt(owner, { request_id });
+          if (r.submission !== "accepted") return null;
+          // A containing run's completion is not proof the message was acted on.
+          return {
+            owner,
+            host: r.host,
+            thread_id: r.thread_id,
+            source_run_id: r.source_run_id,
+            request_id,
+            stage: "accepted_queued",
+            run_id: null,
+          };
+        },
+        preservesStopThroughSubmission: false,
+        enforcesContinuationEntry: false,
+        checkpoint: async () => {
+          throw fail("goalkeeper_activation_disabled");
+        },
+      },
+      now,
+    );
+  }
+  async prepareGoalkeeper(owner: string, target: GoalkeeperTarget) {
+    this.grant(owner, target.host);
+    const state = await this.goalkeeperState(owner, target);
+    if (state.latest_run_id !== target.source_run_id || state.latest_status !== "completed")
+      throw fail("goalkeeper_source_changed_or_busy");
+    const candidate = this.goalkeeper.prepare(owner, target);
+    return {
+      ...candidate,
+      unattended_dispatch_enabled: false,
+      reason: "native_stop_preservation_and_entry_gate_unavailable",
+    };
+  }
+  async goalkeeperState(owner: string, p: GoalkeeperTarget) {
+    return this.reader.withHost(owner, p.host, undefined, (client) => {
+      const { route } = this.grant(owner, p.host);
+      return this.session({ ...route, readOnly: true }, async (call) => {
+        const projection = await call(client.base, "orchestration.getThreadProjection", {
+          threadId: p.thread_id,
+        });
+        const { grant } = this.validateProjection(owner, p, projection);
+        const runs = Array.isArray(projection.runs) ? projection.runs : null;
+        const latest = runs?.reduce(
+          (a, r) => (!a || Number(r.ordinal) > Number(a.ordinal) ? r : a),
+          null,
+        );
+        if (latest) this.provider(projection, latest, grant);
+        return {
+          host: p.host,
+          thread_id: projection.thread.id,
+          latest_run_id: latest?.id ?? null,
+          latest_status: latest?.status ?? null,
+          active: runs
+            ? runs.some((r) => ["preparing", "starting", "running", "waiting"].includes(r.status))
+            : null,
+          queued: runs?.some((r) => r.status === "queued") ? true : null,
+          pending_request: Array.isArray(projection.runtimeRequests)
+            ? projection.runtimeRequests.some((r) => r.status === "pending")
+            : null,
+          pending_question: Array.isArray(projection.runtimeRequests)
+            ? projection.runtimeRequests.some((r) => r.status === "pending")
+            : null,
+          // getThreadProjection has no verified durable explicit-stop contract.
+          stopped: null,
+          snoozed:
+            typeof projection.thread.snoozed === "boolean" ? projection.thread.snoozed : null,
+          unavailable: !!(
+            projection.thread.archivedAt ||
+            projection.thread.deletedAt ||
+            projection.thread.settledAt
+          ),
+          authorized: true,
+          authorization_revision: hash([owner, grant, projection.thread.projectId]),
+          // Native capability is not a judgment that the owner's goal has work.
+          work_remaining: null,
+        };
+      });
+    });
   }
   grant(owner, host, projectId = undefined) {
     const p = this.policy(),
