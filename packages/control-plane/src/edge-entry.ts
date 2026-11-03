@@ -8,3 +8,9 @@ export {
 export { existingBindings } from "./existing-bindings.ts";
 export { startProductionSidecar, cachePolicyGuard } from "./production-startup.ts";
 export { uploadRecovery } from "./recovery-upload.ts";
+export { prepareLegacyRecovery } from "./legacy-recovery.ts";
+export {
+  verifyManagedRetirement,
+  activateManagedSource,
+  retirementTombstone,
+} from "./managed-retirement.ts";

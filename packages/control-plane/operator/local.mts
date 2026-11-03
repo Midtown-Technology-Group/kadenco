@@ -136,7 +136,7 @@ export async function migrate(path: string) {
       call,
     );
     const denied = await call("activate", { expected_epoch: 0, migration_id: "fixture-migration" });
-    if (denied.reason !== "cutover_not_implemented") throw Error("activation_guard_failed");
+    if (denied.reason !== "retirement_proof_required") throw Error("activation_guard_failed");
     save(join(root, "acceptance.json"), {
       ...result,
       activation_denied: true,

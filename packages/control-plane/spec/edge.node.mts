@@ -1455,7 +1455,17 @@ test("parity runner builds a clean fixture checkout and stops on build failure",
   }
 });
 
-import { selectStagingConfig } from "../cloudflare.config.ts";
+import { selectStagingConfig, selectDeploymentConfig } from "../cloudflare.config.ts";
+test("explicit production profile has independent SQLite ownership and no embedded trust or preview", () => {
+  const { worker } = selectDeploymentConfig("production");
+  assert.equal(worker.name, "kadenco-control-plane");
+  assert.equal(worker.env.FLEETS.worker, worker.name);
+  assert.equal(worker.workersDev, true);
+  assert.equal(worker.previewUrls, false);
+  assert.deepEqual(Object.keys(worker.env), ["FLEETS"]);
+  assert.throws(() => selectDeploymentConfig(undefined), /explicit_staging_mode_required/);
+  assert.throws(() => selectDeploymentConfig("production", true), /preview_deployment_disabled/);
+});
 test("cf staging conversion has isolated SQLite lifecycle and no production credentials or ingress", () => {
   const { worker } = selectStagingConfig("staging");
   assert.equal(worker.name, "kadenco-control-plane-staging");

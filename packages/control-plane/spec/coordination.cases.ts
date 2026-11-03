@@ -71,7 +71,7 @@ describe("real SQLite DO coordination", () => {
       expect(state.storage.sql.exec("SELECT * FROM imported").toArray()).toHaveLength(1);
     });
     expect(await call("activate", { expected_epoch: 0, migration_id: "migration-1" })).toEqual({
-      reason: "cutover_not_implemented",
+      reason: "retirement_proof_required",
     });
   });
   it("checks auth, target bounds, roles, revocation and request identity", async () => {

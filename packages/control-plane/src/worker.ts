@@ -12,6 +12,7 @@ import {
 import { recoveryPage, recoveryTables, assertRecoverySchema } from "./recovery";
 import { serviceSchema, serviceOperation } from "./services";
 import { recoveryIngress } from "./recovery-ingress";
+import { activationOperation, readRetirement, type RetirementEvidence } from "./activation";
 type Principal = {
   id: string;
   tokenSha256: string;
@@ -222,10 +223,13 @@ export class FleetState extends DurableObject<Env> {
       Date.now(),
     );
   }
-  apply(a: Principal, op: string, p: Record<string, unknown>) {
+  apply(a: Principal, op: string, p: Record<string, unknown>, retirement?: RetirementEvidence) {
     this.authorized(a);
     serviceSchema(this.sql());
     const state = this.state();
+    if (op === "activate" && !p.activation_id) fail("retirement_proof_required");
+    const activation = activationOperation(this.sql(), a, this.currentPolicy(), op, p, retirement);
+    if (activation !== undefined) return activation;
     const ingress = recoveryIngress(this.sql(), a, this.currentPolicy(), op, p);
     if (ingress !== undefined) return ingress;
     if (op === "status") {
@@ -432,18 +436,6 @@ export class FleetState extends DurableObject<Env> {
       this.sql().exec("UPDATE control SET migration=? WHERE id=1", id);
       this.audit(a, op, id);
       return { stored: (p.records as unknown[]).length, active: false };
-    }
-    if (op === "activate") {
-      keys(p, ["expected_epoch", "migration_id"]);
-      if (
-        a.role !== "owner" ||
-        state.mode !== "staging" ||
-        state.epoch !== number(p.expected_epoch) ||
-        state.migration !== str(p.migration_id)
-      )
-        fail("fenced");
-      // Activation deliberately unavailable until a quiescence certificate + manifest verifier land.
-      fail("cutover_not_implemented");
     }
     if (op === "receipt") {
       keys(p, ["request_id"]);
@@ -732,6 +724,10 @@ export class FleetState extends DurableObject<Env> {
       if (!config.principals.some((a) => a.tokenSha256 === hex)) fail("forbidden");
       const p = await bounded(request),
         op = new URL(request.url).pathname.slice(1);
+      const retirement =
+        op === "activate" && p.retirement !== undefined
+          ? readRetirement(p.retirement as { body: string; mac: string }, token!.slice(7))
+          : undefined;
       return json(
         this.ctx.storage.transactionSync(() => {
           this.sql().exec("INSERT OR IGNORE INTO auth_policy VALUES(1,?)", JSON.stringify(config));
@@ -740,7 +736,7 @@ export class FleetState extends DurableObject<Env> {
               .value,
           );
           const live = current.principals.find((a) => a.tokenSha256 === hex) ?? fail("forbidden");
-          return this.apply(live, op, p);
+          return this.apply(live, op, p, retirement);
         }),
       );
     } catch (e) {
@@ -767,6 +763,11 @@ export class FleetState extends DurableObject<Env> {
         "destination_not_empty",
         "invalid_recovery",
         "recovery_too_large",
+        "retirement_proof_required",
+        "retirement_not_proven",
+        "invalid_signature",
+        "activation_expired",
+        "activation_state_changed",
       ];
       if (!allowed.includes(reason)) {
         console.error("control-plane unexpected error", typeof e);
@@ -784,6 +785,15 @@ export default {
         return json({ reason: "method_not_allowed" }, 405);
       }
       const config = policy(env.AUTH_POLICY);
+      const bearer = request.headers.get("authorization");
+      if (!bearer?.startsWith("Bearer ") || bearer.length > 8192) fail("forbidden");
+      const fingerprint = Array.from(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(bearer!.slice(7))),
+        ),
+        (b) => b.toString(16).padStart(2, "0"),
+      ).join("");
+      if (!config.principals.some((p) => p.tokenSha256 === fingerprint)) fail("forbidden");
       // Own and finish the bounded incoming stream before handing bytes to another actor.
       // This avoids a forwarded stream outliving the request that produced it.
       const body = await bounded(request);
@@ -804,11 +814,17 @@ export default {
       const reason = e instanceof Error ? e.message : "configuration_required";
       return json(
         {
-          reason: ["invalid_request", "body_too_large"].includes(reason)
+          reason: ["invalid_request", "body_too_large", "forbidden"].includes(reason)
             ? reason
             : "configuration_required",
         },
-        reason === "body_too_large" ? 413 : reason === "invalid_request" ? 400 : 503,
+        reason === "body_too_large"
+          ? 413
+          : reason === "invalid_request"
+            ? 400
+            : reason === "forbidden"
+              ? 403
+              : 503,
       );
     }
   },
