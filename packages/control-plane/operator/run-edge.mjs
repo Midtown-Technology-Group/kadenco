@@ -4,10 +4,6 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
-import { startProductionSidecar } from "../dist/edge-runtime.mjs";
-import { fleetBackend } from "../../../dist/backend.mjs";
-import { localSource } from "../../../dist/local-source.mjs";
-import { withLocalFollowup } from "../../../dist/local-client.mjs";
 
 let sidecar, stateKey;
 try {
@@ -36,6 +32,16 @@ try {
     !Array.isArray(secrets.ownerTokens)
   )
     throw Error("supervisor_identity_required");
+  // Validate private input before loading SQLite/native runtime modules. Besides
+  // avoiding unnecessary initialization, malformed requests retain the same
+  // sanitized refusal on Node versions that warn when importing node:sqlite.
+  const [{ startProductionSidecar }, { fleetBackend }, { localSource }, { withLocalFollowup }] =
+    await Promise.all([
+      import("../dist/edge-runtime.mjs"),
+      import("../../../dist/backend.mjs"),
+      import("../../../dist/local-source.mjs"),
+      import("../../../dist/local-client.mjs"),
+    ]);
   process.env.T3_FLEET_DIR ??= join(homedir(), ".config", "mtg-t3-fleet");
   sidecar = await startProductionSidecar({
     configPath: config.configPath,
