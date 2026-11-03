@@ -2,6 +2,7 @@
 import { operationBinding, type OperationBinding } from "./binding.ts";
 import type { Snapshot } from "./snapshot.ts";
 import { serviceSchema } from "./services.ts";
+import { subscriptionActive } from "../../../dist/subscription-state.mjs";
 export type LegacyTarget = {
   owner: string;
   host: string;
@@ -16,6 +17,7 @@ function adoptLegacyRows(
   snapshot: Snapshot,
   decode: (ciphertext: string) => unknown,
   resolve: (kind: string, value: Record<string, unknown>) => LegacyTarget[],
+  operationalAt?: number,
 ) {
   serviceSchema(sql);
   if (sql.exec<{ mode: string }>("SELECT mode FROM control WHERE id=1").one().mode !== "staging")
@@ -67,6 +69,12 @@ function adoptLegacyRows(
         })();
   for (const { record, value } of values) {
     if (record.kind === "delivery") continue;
+    if (
+      operationalAt !== undefined &&
+      record.kind === "subscription" &&
+      !subscriptionActive(value, operationalAt)
+    )
+      continue;
     const bound = resolve(record.kind, value);
     if (!bound.length || bound.length > 100) throw Error("legacy_binding_required");
     for (const t of bound) {
@@ -110,7 +118,14 @@ function adoptLegacyRows(
       typeof v.digest === "string" ? v.digest : "legacy-opaque",
       t.owner,
       JSON.stringify(binding),
-      JSON.stringify(v),
+      JSON.stringify({
+        state: "unknown",
+        evidence: JSON.stringify({
+          legacy_record: { kind: record.kind, id: record.id },
+          retained_encrypted: true,
+          safe_to_resend: false,
+        }),
+      }),
     );
     commands++;
     if (record.kind !== "settings_mutation" || v.submitted_at) {
@@ -131,6 +146,7 @@ function adoptLegacyRows(
   >();
   for (const { record, value: v } of values) {
     if (record.kind !== "subscription") continue;
+    if (operationalAt !== undefined && !subscriptionActive(v, operationalAt)) continue;
     const bound = targets.get(record.kind + ":" + record.id)!;
     subscriptionById.set(record.id, { value: v, targets: bound });
     const expires = v.expires;
@@ -173,7 +189,23 @@ function adoptLegacyRows(
   }
   for (const { record, value: v } of values) {
     if (record.kind !== "delivery") continue;
+    if (
+      operationalAt !== undefined &&
+      ["acknowledged", "stopped", "revoked", "superseded"].includes(String(v.status))
+    )
+      continue;
     const source = subscriptionById.get(text(v.subId));
+    if (
+      operationalAt !== undefined &&
+      !source &&
+      values.some(
+        (r) =>
+          r.record.kind === "subscription" &&
+          r.record.id === v.subId &&
+          !subscriptionActive(r.value, operationalAt),
+      )
+    )
+      continue;
     if (!source) throw Error("legacy_subscription_missing");
     const event = v.event as { eventId: string; name: string; data: Record<string, unknown> };
     if (!event?.eventId || event.name !== source.value.name) throw Error("invalid_legacy_event");
@@ -228,6 +260,9 @@ export function adoptLegacy(
   snapshot: Snapshot,
   decode: (ciphertext: string) => unknown,
   resolve: (kind: string, value: Record<string, unknown>) => LegacyTarget[],
+  operationalAt?: number,
 ) {
-  return storage.transactionSync(() => adoptLegacyRows(storage.sql, snapshot, decode, resolve));
+  return storage.transactionSync(() =>
+    adoptLegacyRows(storage.sql, snapshot, decode, resolve, operationalAt),
+  );
 }

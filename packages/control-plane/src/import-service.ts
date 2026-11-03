@@ -84,11 +84,10 @@ export function segmentSnapshot(snapshot: Snapshot, key: Buffer) {
     seal({ meta, digest, index, total: chunks.length, records }, key),
   );
 }
-export async function importSegments(
+export function verifySegments(
   packets: { body: string; mac: string }[],
   key: Buffer,
   expected: ReturnType<typeof manifestOf>,
-  call: (op: string, p: object) => Promise<Record<string, unknown>>,
 ) {
   if (!packets.length || packets.length > 10000) throw Error("invalid_segments");
   const digest = createHash("sha256").update(JSON.stringify(expected)).digest("hex");
@@ -122,5 +121,14 @@ export async function importSegments(
   };
   if (JSON.stringify(manifestOf(snapshot)) !== JSON.stringify(expected))
     throw Error("snapshot_manifest_mismatch");
-  return importSnapshot(snapshot, expected, call);
+  return snapshot;
+}
+
+export async function importSegments(
+  packets: { body: string; mac: string }[],
+  key: Buffer,
+  expected: ReturnType<typeof manifestOf>,
+  call: (op: string, p: object) => Promise<Record<string, unknown>>,
+) {
+  return importSnapshot(verifySegments(packets, key, expected), expected, call);
 }

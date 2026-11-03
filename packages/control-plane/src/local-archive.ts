@@ -24,6 +24,12 @@ function fingerprint(path: string) {
     try {
       const before = fstatSync(fd);
       if (!before.isFile()) throw Error("local_archive_unavailable");
+      // SQLite may create an empty WAL while opening a quiesced WAL-mode DB
+      // read-only. Empty and absent WALs both contain no retained frames.
+      if (suffix && before.size === 0) {
+        hash.update("absent");
+        continue;
+      }
       hash.update(String(before.size) + ":");
       for (;;) {
         const n = readSync(fd, buffer);
