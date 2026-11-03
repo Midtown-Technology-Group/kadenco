@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { readFileSync, lstatSync, realpathSync } from "node:fs";
+import {
+  readFileSync,
+  lstatSync,
+  realpathSync,
+  openSync,
+  fstatSync,
+  closeSync,
+  constants,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -67,14 +75,21 @@ export async function verifyManagedRetirement(input: ManagedRetirementInput) {
   )
     throw Error("retirement_ports_invalid");
   const check = () => {
-    const entry = lstatSync(input.entry);
-    if (
-      !entry.isFile() ||
-      entry.isSymbolicLink() ||
-      entry.nlink !== 1 ||
-      readFileSync(input.entry, "utf8") !== retirementTombstone(input.fenceId)
-    )
-      throw Error("legacy_bootstrap_not_retired");
+    const fd = openSync(input.entry, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const entry = fstatSync(fd);
+      if (
+        !entry.isFile() ||
+        entry.nlink !== 1 ||
+        readFileSync(fd, "utf8") !== retirementTombstone(input.fenceId)
+      )
+        throw Error("legacy_bootstrap_not_retired");
+      const path = lstatSync(input.entry);
+      if (path.isSymbolicLink() || path.dev !== entry.dev || path.ino !== entry.ino)
+        throw Error("legacy_bootstrap_not_retired");
+    } finally {
+      closeSync(fd);
+    }
     try {
       lstatSync(input.credentials);
       throw Error("legacy_credentials_still_present");
@@ -112,10 +127,22 @@ export async function verifyManagedRetirement(input: ManagedRetirementInput) {
   if (!(await Promise.all(input.ports.map(closed))).every(Boolean))
     throw Error("legacy_ingress_still_open");
   let refused = false;
+  // Hold a Windows deny-write/deny-delete handle from the final content check
+  // through execution. A separate stat/read followed by -File would reopen an
+  // unpinned path and could execute replacement bytes instead of the tombstone.
+  const revival =
+    "$ErrorActionPreference='Stop'; $f=[IO.File]::Open(" +
+    psLiteral(input.entry) +
+    ", [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read); " +
+    "try {$r=New-Object IO.StreamReader($f); $s=$r.ReadToEnd(); if($s -cne " +
+    psLiteral(retirementTombstone(input.fenceId)) +
+    "){throw 'retirement_content_changed'}; & " +
+    psLiteral(input.entry) +
+    "} finally {$f.Dispose()}";
   try {
     await run(
       "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-File", input.entry],
+      ["-NoProfile", "-NonInteractive", "-Command", revival],
       { windowsHide: true, timeout: 10000, maxBuffer: 8192 },
     );
   } catch (e) {
