@@ -20,6 +20,8 @@ export type BootstrapConfig = {
   key: Buffer;
   journalPath: string;
   fetch?: typeof fetch;
+  leaseFailure?: import("./edge-runtime.ts").EdgeRuntimePorts["leaseFailure"];
+  checkpointFailure?: import("./edge-runtime.ts").EdgeRuntimePorts["checkpointFailure"];
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 function ownedCredentials(policy: Policy, config: BootstrapConfig) {
@@ -200,6 +202,8 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
     journalPath: config.journalPath,
     ownerCall,
     executorCall,
+    leaseFailure: config.leaseFailure,
+    checkpointFailure: config.checkpointFailure,
     observationOwnerCall: (op, p) => ownerCall(config.observationOwner, op, p),
   });
 }

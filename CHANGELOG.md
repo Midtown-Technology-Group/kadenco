@@ -3,6 +3,16 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.14
+
+- Add a resumable maintainer release command that binds one build request to an
+  immutable source, qualifies extracted artifacts, and reconciles publication
+  before retry. Keep the existing account and private promotion boundary.
+- Report the deployed package version from the Durable Object and sanitize
+  supervisor startup failures into explicit reasons and fingerprints.
+- Prepare the existing Windows-edge / Cloudflare deployment scope for beta;
+  always-on PVE, guest sharing acceptance and automatic goalkeeper remain excluded.
+
 ## 0.1.0-alpha.13
 
 - Add an owner-only operator path to reauthorize an existing expired migration

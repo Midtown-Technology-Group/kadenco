@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
+import { startupFailure, failureReporter } from "./startup-failure.mjs";
 
 let sidecar, stateKey;
 try {
@@ -53,6 +54,8 @@ try {
       key: stateKey,
       executorToken: secrets.executorToken,
       ownerTokens: new Map(secrets.ownerTokens),
+      leaseFailure: failureReporter("edge_lease_failure"),
+      checkpointFailure: failureReporter("edge_checkpoint_failure"),
     },
     backendFactory: async (policy) => {
       let backend =
@@ -73,10 +76,10 @@ try {
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
   console.error("Kadenco central edge ready; original native routes and authorization retained");
-} catch {
+} catch (error) {
   await sidecar?.shutdown();
   stateKey?.fill(0);
   // Do not print input, path, provider errors or secret-bearing exception text.
-  console.error("Kadenco central edge startup refused; no local fallback");
+  console.error(JSON.stringify(startupFailure(error)));
   process.exitCode = 1;
 }

@@ -34,7 +34,10 @@ test("installed supervisor entry refuses malformed private input without logging
       });
       assert.equal(result.status, 1);
       assert.equal(result.stdout, "");
-      assert.equal(result.stderr.trim(), "Kadenco central edge startup refused; no local fallback");
+      const refusal = JSON.parse(result.stderr);
+      assert.equal(refusal.event, "startup_refused");
+      assert.equal(refusal.local_fallback, false);
+      assert.match(refusal.fingerprint, /^[a-f0-9]{64}$/);
       assert.equal(result.stderr.includes("fixture-private-marker"), false);
     }
   } finally {

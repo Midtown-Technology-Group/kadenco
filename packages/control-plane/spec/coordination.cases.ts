@@ -1,4 +1,5 @@
 import { env, exports } from "cloudflare:workers";
+import packageInfo from "../../../package.json" with { type: "json" };
 import { runInDurableObject, abortAllDurableObjects } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 const stub = () => env.FLEETS.getByName("test-fleet");
@@ -51,6 +52,10 @@ describe("real SQLite DO coordination", () => {
     });
   });
   it("stays inert by default; staged import is atomic, replayable and cannot activate", async () => {
+    expect(await call("status")).toMatchObject({
+      release_version: packageInfo.version,
+      mode: "staging",
+    });
     expect(await reserve("off")).toEqual({ reason: "not_active" });
     const batch = {
       migration_id: "migration-1",

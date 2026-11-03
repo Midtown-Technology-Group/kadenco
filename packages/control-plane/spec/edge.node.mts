@@ -123,11 +123,20 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     observations = 0,
     deliveries = 0;
   const generations: unknown[] = [];
+  const leaseFailures: string[] = [];
+  const checkpointFailures: string[] = [];
+  let rejectCheckpoint = false;
+  let loseLeaseDuringCheckpoint = false,
+    revision = 0,
+    fixtureChange = 0;
+  let changeFixture: (() => void) | undefined;
   const ports: EdgeRuntimePorts = {
     epoch: 1,
     executor: "fixture-executor",
     key: randomBytes(32),
     journalPath: join(state, "attempts.db"),
+    leaseFailure: (reason) => leaseFailures.push(reason),
+    checkpointFailure: (reason) => checkpointFailures.push(reason),
     async executorCall(op, p) {
       if (op === "edge_lease") {
         generations.push((p as { generation?: number }).generation);
@@ -137,6 +146,14 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
       if (op === "outbox_pending") return { ids: [], next: null };
       if (op === "replica_head") return { revision: 0 };
       if (op === "replica_page") return { revision: 0, records: [], next: null };
+      if (op === "replica_receipt") {
+        if (loseLeaseDuringCheckpoint) denied = true;
+        return { committed: false };
+      }
+      if (op === "replica_apply")
+        return rejectCheckpoint
+          ? { reason: "forbidden" }
+          : { committed: true, revision: ++revision };
       throw Error("unexpected_operation");
     },
     async ownerCall() {
@@ -174,6 +191,8 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
         },
       }),
       runtimeFactory: (bridge) => {
+        changeFixture = () =>
+          bridge.store.put("fixture", "checkpoint", { synthetic: true, revision: ++fixtureChange });
         bridge.observe = async () => {
           observations++;
         };
@@ -190,8 +209,29 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     const renewals = generations.length;
     await new Promise((resolve) => setTimeout(resolve, 2750));
     assert.ok(generations.length > renewals, "idle runtime independently renews its lease");
+    rejectCheckpoint = true;
+    changeFixture!();
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);
+    assert.equal(checkpointFailures.at(-1), "central_refused");
+    assert.equal(leaseFailures.length, 0, "checkpoint denial is not reported as lease loss");
+    rejectCheckpoint = false;
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
+    const reportedCheckpoints = checkpointFailures.length;
+    loseLeaseDuringCheckpoint = true;
+    changeFixture!();
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);
+    assert.equal(leaseFailures.at(-1), "fenced");
+    assert.equal(
+      checkpointFailures.length,
+      reportedCheckpoints,
+      "lease loss during flush is not a second checkpoint failure",
+    );
+    loseLeaseDuringCheckpoint = false;
+    denied = false;
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
     denied = true;
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);
+    assert.equal(leaseFailures.at(-1), "fenced");
     assert.equal(generations[0], undefined);
     assert.ok(generations.slice(1).every((g) => g === 9));
     await sidecar.shutdown();

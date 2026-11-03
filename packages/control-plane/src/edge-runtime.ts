@@ -22,6 +22,15 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
   journalPath: string;
   observationBinding: Parameters<typeof observeExisting>[1]["binding"];
   observationOwnerCall: Parameters<typeof observeExisting>[1]["ownerCall"];
+  leaseFailure?: (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => void;
+  checkpointFailure?: (
+    reason:
+      | "transport_uncertain"
+      | "central_refused"
+      | "state_conflict"
+      | "record_limit"
+      | "unknown",
+  ) => void;
 };
 
 /** Executable composition of the original relay, not a second scheduler. The
@@ -46,6 +55,7 @@ export async function createEdgeRuntime(
   let generation: number | undefined;
   let closed = false;
   let renewal: Promise<void> | undefined;
+  const leaseErrors = new WeakSet<object>();
   const refreshLease = () => {
     if (closed) return Promise.reject(Error("edge_runtime_closed"));
     return (renewal ??= (async () => {
@@ -53,6 +63,10 @@ export async function createEdgeRuntime(
         epoch: ports.epoch,
         ...(generation === undefined ? {} : { generation }),
       });
+      if (lease.reason !== undefined) {
+        ports.leaseFailure?.(lease.reason === "fenced" ? "fenced" : "refused");
+        throw Error("edge_lease_unavailable");
+      }
       if (
         lease.holder !== ports.executor ||
         !Number.isSafeInteger(lease.generation) ||
@@ -60,12 +74,21 @@ export async function createEdgeRuntime(
         !Number.isSafeInteger(lease.expires) ||
         Number(lease.expires) <= (ports.now ?? Date.now)() ||
         (generation !== undefined && lease.generation !== generation)
-      )
+      ) {
+        ports.leaseFailure?.("invalid_lease");
         throw Error("edge_lease_unavailable");
+      }
       generation = Number(lease.generation);
-    })().finally(() => {
-      renewal = undefined;
-    }));
+    })()
+      .catch((error) => {
+        if (error !== null && typeof error === "object") leaseErrors.add(error);
+        if (error instanceof Error && error.message === "central_transport_uncertain")
+          ports.leaseFailure?.("transport_uncertain");
+        throw error;
+      })
+      .finally(() => {
+        renewal = undefined;
+      }));
   };
   // Refuse before creating listeners or opening an attempt journal.
   await refreshLease();
@@ -78,6 +101,33 @@ export async function createEdgeRuntime(
       await refreshLease();
       return ports.executorCall(op, { ...p, epoch: ports.epoch, generation });
     });
+    const rawFlush = replica.flush;
+    replica.flush = async () => {
+      try {
+        await rawFlush();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (
+          message !== "edge_lease_unavailable" &&
+          message !== "edge_runtime_closed" &&
+          !(error !== null && typeof error === "object" && leaseErrors.has(error))
+        )
+          ports.checkpointFailure?.(
+            message === "central_transport_uncertain"
+              ? "transport_uncertain"
+              : message === "replica_central_unavailable"
+                ? "central_refused"
+                : message === "replica_current_state_required"
+                  ? "state_conflict"
+                  : ["replica_record_exceeds_central_limit", "replica_record_too_large"].includes(
+                        message,
+                      )
+                    ? "record_limit"
+                    : "unknown",
+          );
+        throw error;
+      }
+    };
     restoreEffects = checkpointNativeEffects(bridge, async () => {
       await replica.flush();
       await refreshLease();

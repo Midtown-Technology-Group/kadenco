@@ -16,6 +16,7 @@ import { activationOperation, readRetirement, type RetirementEvidence } from "./
 import { decodePolicy } from "./policy-transport";
 import { frozenReactivation } from "./frozen-reactivation";
 import { migrationReauthorization } from "./migration-reauthorization";
+import packageInfo from "../../../package.json" with { type: "json" };
 type Principal = {
   id: string;
   tokenSha256: string;
@@ -279,6 +280,7 @@ export class FleetState extends DurableObject<Env> {
       keys(p, []);
       return {
         ...state,
+        release_version: packageInfo.version,
         commands: this.sql().exec<{ n: number }>("SELECT COUNT(*) n FROM commands").one().n,
       };
     }
