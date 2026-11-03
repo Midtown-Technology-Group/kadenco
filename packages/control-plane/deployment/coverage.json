@@ -66,6 +66,16 @@
   "owner_tools": [
     {
       "central_route": "edge-adapter",
+      "name": "get_event_delivery_history",
+      "boundary": "Exact owned active event, current host/project grant and central outbox authorization. Reads retained audit/receipt only; no native reads or sends."
+    },
+    {
+      "central_route": "edge-adapter",
+      "name": "get_relay_request_diagnostics",
+      "boundary": "Central runtime only; current owner status authorization and principal-filtered encrypted edge diagnostics. No fleet-wide quota claim."
+    },
+    {
+      "central_route": "edge-adapter",
       "name": "acknowledge_eddie_reply",
       "boundary": "Existing role-specific MCP server behind cooperating-edge lease; encrypted edge state and authentication remain at edge, no central MCP route."
     },

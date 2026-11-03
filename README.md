@@ -11,7 +11,7 @@ and run the compiled output. See [CONTRIBUTING.md](CONTRIBUTING.md) for syntheti
 browser validation and [the sidecar contract](docs/t3-sidecar.md) for lifecycle,
 integration boundaries and remaining dynamic types.
 
-Experimental standalone release candidate, 0.1.0-alpha.14. No T3 source edits.
+Experimental standalone release candidate, 0.1.0-alpha.15. No T3 source edits.
 
 MCP tools for native T3 inventory/results, persistent signed events, explicit bounded delegation and durable receipts. Not a replacement agent, orchestrator, queue or memory system. Existing Eddie tool/environment names are retained as compatibility identifiers; they do not require an OpenAI dot. A persistent agent needs an MCP client plus a compatible wake-up runtime. OpenAI MCP Events is the implemented event protocol; other runtimes need compatible webhook ingress or explicit read-only polling. Basic MCP tool support alone is insufficient.
 
@@ -34,5 +34,7 @@ Collaboration remains opt-in and disabled by default. The current identity verif
 Experimental GitHub source release. The private package flag deliberately prevents npm publication; install from source. Project code is AGPL-3.0-or-later, selected by the owner. Project: https://github.com/Midtown-Technology-Group/kadenco . No real fleet credentials, runtime files, private Git history or deployment evidence are included. EXPORT-MANIFEST.json is a historical record of the initial extraction, not a manifest for later revisions. Use the exact Git commit and lockfile for current source provenance.
 
 See [fleet visibility and recovery](docs/fleet-visibility.md) for retained scan freshness, degraded reads, coverage notification coalescing and worker timing diagnostics.
+
+See [delivery evidence and scoped request diagnostics](docs/observability-goal.md) for the read-only event history, attribution boundaries, retention limits and public-project scout dispositions.
 
 See [existing-thread speed](docs/thread-speed.md) for the narrow Standard conversion, native race limits and durable receipts.

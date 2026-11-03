@@ -850,6 +850,37 @@ describe("central observation, outbox and shared budgets", () => {
       reason: "invalid_request",
     });
     expect(await call("outbox_receipt", { epoch: 7, id: event.id })).toEqual(receipt);
+    const history = await call("outbox_history", { epoch: 7, id: event.id, limit: 2 });
+    expect(history).toMatchObject({
+      id: event.id,
+      state: "acknowledged",
+      attempts: 2,
+      delivery_acknowledged: true,
+      agent_completed: false,
+    });
+    expect(history.items).toHaveLength(2);
+    expect(history.next_sequence).toBe(history.items[1].sequence);
+    await abortAllDurableObjects();
+    const rest = await call("outbox_history", {
+      epoch: 7,
+      id: event.id,
+      after_sequence: history.next_sequence,
+    });
+    expect(rest.items.every((r: { sequence: number }) => r.sequence > history.next_sequence)).toBe(
+      true,
+    );
+    expect(rest.items.some((r: { operation: string }) => r.operation === "outbox_result")).toBe(
+      true,
+    );
+    expect(await call("outbox_history", { epoch: 7, id: event.id }, "synthetic-owner2")).toEqual({
+      reason: "forbidden",
+    });
+    expect(await call("outbox_history", { epoch: 7, id: event.id, limit: 101 })).toEqual({
+      reason: "invalid_request",
+    });
+    expect(await call("outbox_history", { epoch: 7, id: event.id, claim: true })).toEqual({
+      reason: "invalid_request",
+    });
     expect(await call("outbox_receipt", { epoch: 7, id: event.id }, "synthetic-owner2")).toEqual({
       reason: "forbidden",
     });
@@ -857,6 +888,9 @@ describe("central observation, outbox and shared budgets", () => {
       { claimed: false, state: "acknowledged" },
     );
     await call("revoke", { principal_id: "owner" });
+    expect(await call("outbox_history", { epoch: 7, id: event.id }, "synthetic-agent")).toEqual({
+      reason: "forbidden",
+    });
     expect(await call("outbox_receipt", { epoch: 7, id: event.id }, "synthetic-agent")).toEqual({
       reason: "forbidden",
     });

@@ -9,9 +9,21 @@ const context = new AsyncLocalStorage<{
   origin: string;
   operation: string;
   correlation_id: string;
+  principal_id?: string;
 }>();
-export function diagnosticContext<T>(origin: string, operation: string, fn: () => T): T {
-  return context.run({ origin, operation, correlation_id: randomUUID() }, fn);
+export function diagnosticContext<T>(
+  origin: string,
+  operation: string,
+  fn: () => T,
+  principal_id?: string,
+): T {
+  return context.run({ origin, operation, correlation_id: randomUUID(), principal_id }, fn);
+}
+export function diagnosticIdentity() {
+  const value = context.getStore();
+  return value
+    ? { correlation_id: value.correlation_id, principal_id: value.principal_id }
+    : undefined;
 }
 const codes = new Set([
   "ECONNREFUSED",
