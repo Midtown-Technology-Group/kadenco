@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import assert from "node:assert/strict";
 
@@ -11,6 +12,23 @@ const root = resolve(process.argv[2]);
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 assert.equal(pkg.name, "kadenco");
 const { startSidecar } = await import(pathToFileURL(join(root, "dist/sidecar.mjs")));
+const central = await import(
+  pathToFileURL(join(root, "packages/control-plane/dist/edge-runtime.mjs"))
+);
+for (const name of [
+  "startProductionSidecar",
+  "prepareManagedRecovery",
+  "activateManagedSource",
+  "projectControlPolicy",
+])
+  assert.equal(typeof central[name], "function");
+const refused = spawnSync(
+  process.execPath,
+  [join(root, "packages/control-plane/operator/run-edge.mjs")],
+  { encoding: "utf8", input: "", timeout: 10000, windowsHide: true },
+);
+assert.equal(refused.status, 1);
+assert.match(refused.stderr, /startup refused/);
 const directory = mkdtempSync(join(tmpdir(), "kadenco-package-smoke-"));
 let sidecar;
 try {

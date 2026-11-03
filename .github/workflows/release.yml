@@ -19,6 +19,11 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run release:check
       - run: npm run build
+      - run: npm ci --ignore-scripts
+        working-directory: packages/control-plane
+      - name: Build matching central Worker and compiled edge runtime
+        run: npm run build && node node_modules/cf/bin/cf build --mode production && node node_modules/cf/bin/cf deploy --prebuilt --dry-run --mode production
+        working-directory: packages/control-plane
       - name: Package and smoke-test extracted production installation
         run: node scripts/package-release.mjs
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

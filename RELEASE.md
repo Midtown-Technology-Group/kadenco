@@ -23,8 +23,8 @@ selected runtime and verified live result are separate evidence stages.
   qualification of the supported read/event/acknowledgement paths. Do not use
   a stability label to hide unresolved visibility or delivery limitations.
 
-`0.1.0-alpha.6` is the next candidate, matching the supplied native guest join
-and conversation screens on top of the published alpha.5 terminal repair. Previous alpha.2 SHA-qualified
+`0.1.0-alpha.7` is the next candidate, adding Cloudflare-backed operational
+state, protected activation and compiled supervisor/transfer entry points. Previous alpha.2 SHA-qualified
 source deployments remain historical evidence; do not move tags or relabel them.
 
 ## Prepare and qualify
@@ -53,6 +53,13 @@ source deployments remain historical evidence; do not move tags or relabel them.
    artifact: compare its checksum on resume, reuse identical bytes, and stop on
    a mismatch. Reconcile an uncertain publication/dispatch response before
    retrying; no duplicate workflow dispatch or release on guessed failure.
+
+The `Release artifact` workflow builds the matching compiled central edge and
+production Worker before packaging. The extracted production-only package smoke
+test imports the central runtime and checks the supervisor's fail-closed startup.
+The separate control-plane tarball contains cf Build Output Specification files
+for prebuilt promotion. Both tarballs share BUILD source/run identity and
+SHA256SUMS; do not mix a Worker from another run with an edge package.
 
 The `Release artifact` workflow builds and smoke-tests packages on PRs, and can
 be dispatched on protected main after merge. It has read-only repository

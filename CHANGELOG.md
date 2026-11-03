@@ -3,6 +3,16 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.7
+
+- Cloudflare SQLite coordination and encrypted operational replication with
+  durable request reconciliation, exact grant bindings and no uncertain replay.
+- Protected operational adoption, local history retention, managed-writer
+  retirement checks and challenge-bound activation receipts.
+- Compiled central supervisor and read-only transfer entry points; matching
+  central Worker/edge artifacts now ship through the immutable release lane.
+- Source and package qualification do not establish production cutover or HA.
+
 ## 0.1.0-alpha.6
 
 - Match native guest join and conversation screens: name/Join form, compact title
