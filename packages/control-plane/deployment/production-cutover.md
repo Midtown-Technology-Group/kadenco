@@ -93,3 +93,13 @@ attempt count and HTTP status; it rechecks current subscription ownership,
 authorization and expiry. `delivery_acknowledged` never proves agent completion.
 This read does not claim, send, retry or revive a delivery. Migration credentials
 cannot use it. A missing receipt is not permission to replay an uncertain event.
+
+During upgrades, distinguish Worker traffic rollout from Durable Object code adoption.
+Cloudflare defaults to deferred object code updates (up to five minutes). Read
+back the target operation after that window before declaring the new handler live.
+A fenced edge remains fail-closed; restart the same qualified edge with its existing
+journal and current central state. Do not replay uncertain operations or restore
+an obsolete cache. See https://developers.cloudflare.com/changelog/post/2026-10-30-durable-objects-deferred-code-updates/ .
+Central receipt reconciliation is read-only at the control plane and bounded per
+cycle. Only validated terminal receipts update the existing local delivery view;
+local revocation or changed central identity cannot be overwritten.

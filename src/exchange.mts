@@ -144,7 +144,7 @@ export class Exchanges {
       delivery: {
         state: deliveries.some((d) => d.status === "acknowledged")
           ? "acknowledged"
-          : deliveries.some((d) => d.status === "pending")
+          : deliveries.some((d) => ["pending", "centralized"].includes(d.status))
             ? "pending"
             : deliveries.length
               ? "stopped"

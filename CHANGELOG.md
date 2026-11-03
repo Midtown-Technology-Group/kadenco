@@ -3,6 +3,12 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## 0.1.0-alpha.11
+
+- Reconcile central callback outcomes into existing local delivery views without
+  resending events. Keep centralized passive requests pending until a receipt
+  proves acknowledgement or stopped delivery; never imply agent execution.
+
 ## 0.1.0-alpha.10
 
 - Read central callback receipts without claiming agent execution or exposing event
