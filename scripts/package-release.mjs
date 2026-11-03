@@ -78,6 +78,14 @@ try {
   cpSync(join(central, "dist"), join(stagedCentral, "dist"), { recursive: true });
   mkdirSync(join(stagedCentral, "operator"));
   cpSync(join(central, "operator/run-edge.mjs"), join(stagedCentral, "operator/run-edge.mjs"));
+  cpSync(
+    join(central, "operator/startup-diagnostics.ps1"),
+    join(stagedCentral, "operator/startup-diagnostics.ps1"),
+  );
+  cpSync(
+    join(central, "operator/startup-failure.mjs"),
+    join(stagedCentral, "operator/startup-failure.mjs"),
+  );
   for (const file of [
     "agent-client.mjs",
     "agent-tool.mjs",
@@ -105,6 +113,8 @@ try {
       "dist",
       "packages/control-plane/dist",
       "packages/control-plane/operator/run-edge.mjs",
+      "packages/control-plane/operator/startup-failure.mjs",
+      "packages/control-plane/operator/startup-diagnostics.ps1",
       "scripts",
       "src",
       "docs",

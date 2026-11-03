@@ -38,7 +38,7 @@ const refused = spawnSync(
   { encoding: "utf8", input: "", timeout: 10000, windowsHide: true },
 );
 assert.equal(refused.status, 1);
-assert.match(refused.stderr, /startup refused/);
+assert.equal(JSON.parse(refused.stderr).event, "startup_refused");
 const directory = mkdtempSync(join(tmpdir(), "kadenco-package-smoke-"));
 let sidecar;
 try {

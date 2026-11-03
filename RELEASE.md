@@ -23,11 +23,77 @@ selected runtime and verified live result are separate evidence stages.
   qualification of the supported read/event/acknowledgement paths. Do not use
   a stability label to hide unresolved visibility or delivery limitations.
 
-`0.1.0-alpha.13` is the next candidate, adding an owner-authorized, one-time
-reauthorization of an existing expired recovery-only principal.
-Reactivation requires current recovery authority and fresh managed-writer retirement
-evidence. Earlier source deployments remain historical evidence; do not move tags
-or relabel them. A candidate is not live recovery acceptance.
+`0.1.0-beta.1` is the next candidate for the existing authenticated Cloudflare
+SQLite control plane with one managed Windows edge. Beta qualification covers
+read/results, durable event receipts, the passive inbox, and separately authorized
+native commands. It excludes always-on PVE/laptop-loss acceptance, real guest
+enrollment and automatic goalkeeper continuation. An alpha13 live recovery drill
+is evidence for that implementation, not proof of a new beta deployment.
+Promotion remains gated on sustained read/event availability. The current alpha
+has exhibited lease-loss restarts and an unclassified startup failure during a
+recovery drill; an automatic restart is recovery evidence, not a resolved cause.
+Use the structured lease and bounded supervisor diagnostics to classify a
+recurrence before declaring this qualification passed.
+
+## Resumable maintainer command
+
+Use a clean checkout at the exact merged source and an operator-owned state
+directory outside the checkout. The directory contains a nonsecret plan:
+
+```json
+{
+  "identity": {
+    "repository": "OWNER/kadenco",
+    "source": "EXACT_MERGED_40_CHARACTER_SHA",
+    "version": "0.1.0-beta.1",
+    "request_id": "ONE_STABLE_UUID"
+  },
+  "operatorRuntimeDirectory": "C:/Ops/kadenco"
+}
+```
+
+Run `node scripts/release.mjs ABSOLUTE_PLAN_JSON --apply --deploy`.
+Omit `--deploy` to stop at publication. The command uses the existing authenticated
+GitHub CLI. It never logs in, reads tokens, changes review gates or merges PRs.
+The source must belong to protected main history and match the checked-out version.
+One stable workflow dispatch marker identifies the build. If a build is pending,
+the command returns `waiting`; use the harness's supported observation mechanism,
+then invoke the same command again. It has no background monitor or polling loop.
+
+The SQLite release ledger stores identity, exclusive process ownership, pending
+effect and immutable phase receipts. A process crash releases OS process identity;
+the next owner reconciles the pending remote effect before advancing. Missing or
+ambiguous evidence remains a hold, never permission to dispatch again. Per-asset
+receipts let an interrupted upload continue without replacing existing bytes.
+Artifact hashes are revalidated on resume. An incomplete local extraction refuses
+qualification and must be inspected; it is not silently overwritten.
+
+Deployment calls only the existing, separately qualified private Windows operator
+`central-promote-release.candidate.ps1` in the bound runtime directory. Its receipt
+must match the exact source/version and retain current central state. No credentials,
+account bindings, private controller or production setup are shipped in this repo.
+An unconfigured operator refuses deployment. Initial provisioning, new access and
+authority changes remain separate decisions.
+
+## Recovery maintenance
+
+Before stopping the managed edge, retain its exact task definition and pause its
+automatic revival. Verify exact process ancestry/creation identity and closed
+ingress before capture. Checkpoints and native attempt journals are separate:
+never replace the attempt journal to recover availability. A changed epoch requires
+rehydration of the projection from current central state, retaining any old cache
+and uncommitted observations for reconciliation. Do not replay native effects.
+
+Capture and resume each use one stable cycle identity and an authenticated current
+snapshot. Reconcile a failed response using that same receipt and watermark.
+Restore the exact task definition and verify health, tunnel readiness, subscriptions
+and new scan completeness. The one-time recovery principal is not a release token;
+normal source promotion must not renew it or depend on its continued validity.
+
+Supervisor failures report static reasons, standard error codes and a fingerprint;
+unknown exception text and private input never enter logs. A fingerprint alone is
+not a diagnosis. The deployed control-plane `status.release_version` distinguishes
+Worker publication from actual Durable Object code adoption.
 
 ## Prepare and qualify
 
