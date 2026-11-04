@@ -152,3 +152,8 @@ The Node adapter resolves Python through absolute PATH entries outside its
 checkout, or the explicit absolute MTG_SECRET_GATE_PYTHON selector, then launches
 that absolute path with -I. It never uses Windows implicit current-directory
 executable lookup. Invalid explicit selectors block instead of falling back.
+
+Tool candidates are checked against their own Git association as well as the
+registered roots. A stale or rewritten registration cannot admit a scanner from
+a linked checkout. Obsolete registrations are left untouched; this gate does not
+prune other tasks worktree metadata.
