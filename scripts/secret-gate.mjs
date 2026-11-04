@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, realpathSync, statSync } from "node:fs";
-import { delimiter, isAbsolute, join, relative, sep } from "node:path";
+import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs";
+import { delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Resolve from explicit approved configuration or absolute PATH entries only.
@@ -14,11 +14,24 @@ const external = (path) =>
     const part = relative(root, path);
     return isAbsolute(part) || part === ".." || part.startsWith(`..${sep}`);
   });
+// Python is the bootstrap: reject every Git checkout before executing it.
+// Inspect both spellings so symlinks cannot hide a checkout-owned installation.
+const inCheckout = (path) => {
+  for (let directory = dirname(path); ; directory = dirname(directory)) {
+    try {
+      lstatSync(join(directory, ".git"));
+      return true;
+    } catch (error) {
+      if (error.code !== "ENOENT") return true;
+    }
+    if (dirname(directory) === directory) return false;
+  }
+};
 const approved = (path) => {
   try {
-    if (!isAbsolute(path) || !external(path)) return null;
+    if (!isAbsolute(path) || !external(path) || inCheckout(path)) return null;
     const resolved = realpathSync(path);
-    if (!external(resolved) || !statSync(resolved).isFile()) return null;
+    if (!external(resolved) || inCheckout(resolved) || !statSync(resolved).isFile()) return null;
     accessSync(resolved, process.platform === "win32" ? constants.F_OK : constants.X_OK);
     return resolved;
   } catch {
