@@ -29,6 +29,14 @@ receipt stage remains separate when receipt availability becomes uncertain.
 Dispatched intent is durable before submission; a crash there is ambiguous even
 if no IO actually happened. Reconstruct and reconcile the same UUID. Neither a
 missing receipt nor an exception permits another submission. Receipt identity
+distinguishes a locally observed read-only guard refusal before entering the send
+adapter: that refusal atomically releases only its own unbound lane clock and
+retains the fifteen-minute cooldown. The refused source keeps its UUID and is
+never resent; a later completed source can become eligible after cooldown. Any
+failure after entering the send adapter remains uncertain, including an adapter's
+own final guard error.
+
+Receipt identity
 includes principal, host, thread, source run, request UUID and any observed run.
 Terminal state is immutable; an older accepted receipt cannot regress observed
 running evidence. Accepted/queued is not execution or completion.

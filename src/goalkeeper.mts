@@ -216,7 +216,7 @@ export class Goalkeeper {
       if (clock && (now < clock.observed || now - clock.attempted < GOALKEEPER_COOLDOWN_MS))
         return false;
       // An unbound prior outcome cannot exclude self-triggered or covered work.
-      if (clock && !clock.run_id) return false;
+      if (clock && !clock.run_id && clock.released !== true) return false;
       // A goalkeeper's own completion cannot form an endless automatic chain.
       if (
         clock?.run_id === c.source_run_id &&
@@ -258,6 +258,32 @@ export class Goalkeeper {
     };
     try {
       await guard();
+    } catch {
+      // Only this local guard has run: ports.send has not been entered. Retain
+      // cooldown history but atomically refuse/release this exact unbound claim.
+      return this.store.transaction(() => {
+        const current = this.get(owner, input);
+        if (
+          !["dispatched", "uncertain"].includes(current.state) ||
+          current.observed_stage ||
+          current.run_id
+        )
+          return current;
+        const k = lane(owner, current),
+          clock = this.store.get("goalkeeper_clock", k);
+        if (clock?.request_id === current.request_id)
+          this.store.put("goalkeeper_clock", k, { ...clock, released: true });
+        const refused = {
+          ...current,
+          state: "refused" as const,
+          reason: "goalkeeper_guard_refused_before_send",
+        };
+        this.store.put("goalkeeper", identity(owner, current), refused);
+        this.audit(refused, "refused");
+        return refused;
+      });
+    }
+    try {
       const receipt = await this.ports.send(
         owner,
         { ...input, request_id: c.request_id, message: GOALKEEPER_INSTRUCTION },

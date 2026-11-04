@@ -235,7 +235,7 @@ test("fresh read catches a competing run before send", async (t) => {
   f.prepare();
   let n = 0;
   f.ports.read = async () => ({ ...f.state, ...(++n > 1 ? { latest_run_id: "manual-run" } : {}) });
-  assert.equal((await f.g.dispatch("owner", target)).state, "uncertain");
+  assert.equal((await f.g.dispatch("owner", target)).state, "refused");
   assert.equal(f.counts().sends, 0);
 });
 test("authority withdrawn between admission and final read cannot dispatch", async (t) => {
@@ -243,8 +243,59 @@ test("authority withdrawn between admission and final read cannot dispatch", asy
   f.prepare();
   let reads = 0;
   f.ports.read = async () => ({ ...f.state, authorized: ++reads === 1 });
-  assert.equal((await f.g.dispatch("owner", target)).state, "uncertain");
+  assert.equal((await f.g.dispatch("owner", target)).state, "refused");
   assert.equal(f.counts().sends, 0);
+});
+for (const cause of ["new-run", "authority", "read-outage", "stop", "snooze"])
+  test(`definite local guard refusal releases only its lane claim after cooldown: ${cause}`, async (t) => {
+    const f = fixture(t),
+      first = f.prepare();
+    let reads = 0;
+    f.ports.read = async () => {
+      if (++reads === 2) {
+        if (cause === "read-outage") throw Error("fixture outage");
+        return {
+          ...f.state,
+          ...(cause === "new-run"
+            ? { latest_run_id: "manual-run" }
+            : cause === "authority"
+              ? { authorized: false }
+              : cause === "stop"
+                ? { stopped: true }
+                : { snoozed: true }),
+        };
+      }
+      return { ...f.state };
+    };
+    const refused = await f.g.dispatch("owner", target);
+    assert.equal(refused.state, "refused");
+    assert.equal(refused.request_id, first.request_id);
+    assert.equal(f.counts().sends, 0);
+    const next = { ...target, source_run_id: "later-completed" };
+    f.state.latest_run_id = next.source_run_id;
+    const later = f.g.prepare("owner", next);
+    f.setNow(1000000 + GOALKEEPER_COOLDOWN_MS - 1);
+    assert.ok((await f.g.dispatch("owner", next)).blocked);
+    f.setNow(1000000 + GOALKEEPER_COOLDOWN_MS);
+    assert.equal((await f.g.dispatch("owner", next)).state, "accepted_queued");
+    assert.equal(f.counts().sends, 1);
+    assert.equal(f.g.prepare("owner", target).request_id, first.request_id);
+    assert.notEqual(later.request_id, first.request_id);
+  });
+test("guard failure inside ports.send stays ambiguous and cannot release the lane", async (t) => {
+  const f = fixture(t);
+  f.prepare();
+  f.ports.send = async (_owner, _p, guard) => {
+    f.state.stopped = true;
+    await guard();
+    throw Error("unreachable");
+  };
+  assert.equal((await f.g.dispatch("owner", target)).state, "uncertain");
+  const next = { ...target, source_run_id: "later-completed" };
+  Object.assign(f.state, { stopped: false, latest_run_id: next.source_run_id });
+  f.g.prepare("owner", next);
+  f.setNow(1000000 + GOALKEEPER_COOLDOWN_MS);
+  assert.ok((await f.g.dispatch("owner", next)).blocked);
 });
 test("an older accepted receipt after a running receipt outage cannot erase running evidence", async (t) => {
   const f = fixture(t);
