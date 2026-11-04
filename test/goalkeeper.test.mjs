@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { Store } from "../dist/store.mjs";
 import { Goalkeeper, GOALKEEPER_COOLDOWN_MS, GOALKEEPER_INSTRUCTION } from "../dist/goalkeeper.mjs";
 import { Commands } from "../dist/commands.mjs";
@@ -119,6 +120,42 @@ test("atomic file-backed claims converge across separate processes and survive r
     assert.equal(f.counts().sends, 1);
   } finally {
     reopened.close();
+  }
+});
+test("Store installs its existing busy timeout before WAL initialization waits on another opener", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "goalkeeper-open-lock-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "locked.db"),
+    key = randomBytes(32),
+    holder = new DatabaseSync(path);
+  holder.exec("CREATE TABLE fixture(id INTEGER); BEGIN EXCLUSIVE");
+  const code = `import {Store} from ${JSON.stringify(new URL("../dist/store.mjs", import.meta.url).href)};process.stdout.write('opening\\n');const s=new Store(process.argv[1],Buffer.from(process.argv[2],'hex'));s.close();`;
+  let release;
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        ["--input-type=module", "-e", code, path, key.toString("hex")],
+        { windowsHide: true },
+      );
+      let err = "",
+        scheduled = false;
+      child.stderr.on("data", (x) => (err += x));
+      child.stdout.on("data", () => {
+        if (!scheduled) {
+          scheduled = true;
+          release = setTimeout(() => holder.exec("COMMIT"), 100);
+        }
+      });
+      child.on("error", reject);
+      child.on("exit", (status) => (status === 0 ? resolve() : reject(Error(err))));
+    });
+  } finally {
+    clearTimeout(release);
+    try {
+      holder.exec("ROLLBACK");
+    } catch {}
+    holder.close();
   }
 });
 for (const point of [

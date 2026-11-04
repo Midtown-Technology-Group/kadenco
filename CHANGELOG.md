@@ -10,6 +10,8 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
   preflight and exact receipt reconciliation. Unattended dispatch remains
   disabled pending native stop-preservation and enforced entry interfaces.
   Existing monitors, manual continuations and production are unchanged.
+- Install the existing SQLite busy timeout before WAL initialization so
+  simultaneous Store openers can wait rather than fail before atomic claims.
 
 ## 0.1.0-alpha.16
 
