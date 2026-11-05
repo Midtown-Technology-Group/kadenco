@@ -32,8 +32,8 @@ export type HostLinkContext = {
 const fail = (reason: string): never => {
   throw Error(reason);
 };
-const text = (v: unknown) =>
-  typeof v === "string" && v.length > 0 && v.length <= 200 ? v : fail("invalid_request");
+const text = (v: unknown, max = 200) =>
+  typeof v === "string" && v.length > 0 && v.length <= max ? v : fail("invalid_request");
 export function linkUuid(v: unknown): string {
   return typeof v === "string" &&
     /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(v)
@@ -52,9 +52,9 @@ export function linkFrame(value: unknown): LinkFrame {
   )
     fail("invalid_request");
   const frame = {
-    request_id: linkUuid(f.request_id),
+    request_id: text(f.request_id),
     host: text(f.host),
-    thread_id: text(f.thread_id),
+    thread_id: text(f.thread_id, 2048),
     binding: operationBinding(f.binding),
     sequence: integer(f.sequence),
   };
@@ -65,15 +65,19 @@ export function linkFrame(value: unknown): LinkFrame {
     fail("invalid_request");
   return frame;
 }
-/** Separate schema, not installed or called by the production Worker. Call only
- * inside the owning DO transactionSync, with no network IO in the transaction. */
-export function hostLinkSchema(sql: SqlStorage) {
-  sql.exec(`
+/** Included in the versioned recovery inventory. Worker operations stay disabled
+ * by default. Mutate only inside the owning DO transactionSync, without network IO. */
+export const hostLinkSql = `
     CREATE TABLE IF NOT EXISTS host_links(host TEXT PRIMARY KEY,principal TEXT NOT NULL,connection TEXT NOT NULL,generation INTEGER NOT NULL,expires INTEGER NOT NULL,ack INTEGER NOT NULL DEFAULT 0,sent INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS host_link_sessions(host TEXT NOT NULL,connection TEXT NOT NULL,principal TEXT NOT NULL,generation INTEGER NOT NULL,opened INTEGER NOT NULL,PRIMARY KEY(host,connection));
     CREATE TABLE IF NOT EXISTS host_link_refs(sequence INTEGER PRIMARY KEY AUTOINCREMENT,host TEXT NOT NULL,request TEXT NOT NULL UNIQUE,owner TEXT NOT NULL,thread TEXT NOT NULL,binding TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS host_link_refs_page ON host_link_refs(host,sequence);
-  `);
+    CREATE TABLE IF NOT EXISTS host_link_attempts(request TEXT PRIMARY KEY,connection TEXT NOT NULL,generation INTEGER NOT NULL,command_generation INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS host_link_payloads(request TEXT PRIMARY KEY,ciphertext TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS host_link_observations(request TEXT NOT NULL,stage TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(request,stage));
+  `;
+export function hostLinkSchema(sql: SqlStorage) {
+  sql.exec(hostLinkSql);
 }
 type Session = {
   host: string;
@@ -133,12 +137,12 @@ export function hostLinkOperation(
       .one().n;
   if (op === "link_publish") {
     if (actor.role !== "owner") fail("forbidden");
-    const id = linkUuid(p.request_id),
+    const id = text(p.request_id),
       r = c.reference(id),
       b = operationBinding(r.binding);
     if (r.request_id !== id || r.owner !== actor.id) fail("forbidden");
     const host = text(r.host),
-      thread = text(r.thread_id);
+      thread = text(r.thread_id, 2048);
     allowed(actor, host, b);
     linkFrame({ request_id: id, host, thread_id: thread, binding: b, sequence: 1 });
     const old = sql.exec<Row>("SELECT * FROM host_link_refs WHERE request=?", id).toArray()[0];

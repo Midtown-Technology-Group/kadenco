@@ -135,3 +135,64 @@ effects, including process revival. A DO epoch or signed assertion alone cannot
 stop a legacy process with still-valid native access. Rollback must preserve new
 receipts and fencing state, not revive an earlier generation or recreate a lost
 attempt journal. No live HA, desktop independence or successful cutover is claimed.
+
+## Follow-up: authenticated execution candidate (source only)
+
+The matrix above records the first metadata-only slice. This follow-up adds a
+fixture-qualified execution path; it does not qualify a replacement relay.
+
+- Worker `link_*` routes reuse actual bearer authentication, persisted current
+  policy, activation/epoch checks and SQL transactions. `HOST_CONNECTORS=enabled`
+  is required; no running configuration enables it. Single-host executor identity
+  is mandatory. Connection liveness does not authorize an operation.
+- Owner reservation retains the existing budgets, bindings and digest. The owner
+  publishes an immutable AES-GCM encrypted signed envelope; the Worker never
+  receives its encryption/signing keys. Associated data binds original
+  host/thread/request/digest. No production key was provisioned or transmitted.
+- `createHostLocalConnector` is exported in the existing edge bundle for an
+  existing host lifecycle's cycle hook. It has no timer or listener. Its bounded
+  drain uses the durable inbox, existing sidecar services and encrypted attempt
+  journal. It is not wired into the running singleton production bootstrap.
+- Claim/begin fence connection and command generations. A host/thread with an
+  uncertain attempt refuses another request ID. Registered hosts and published
+  commands cannot bypass this through legacy claim/begin; legacy receipt writes
+  cannot settle connector commands. Current originator authorization is checked
+  at begin, independently of executor liveness.
+- Accepted observations are bounded and immutable, distinct from terminal
+  receipts. Terminal settlement requires fresh matching native message/run
+  projection evidence. It is host-reported observation, not independent proof
+  of provider consumption or successful substantive work. Missing proof holds
+  the lane; no automatic timeout releases uncertainty. Cancelled/rejected/no-op
+  and operations without exact message/run completion evidence currently remain
+  held for explicit future typed reconciliation, rather than being guessed safe.
+- The exact legacy recovery inventory and complete connector inventory are
+  supported versions. Partial/unknown inventories fail closed. Signed archive
+  bytes are verified before upgrade. Restore stays quiesced, advances epoch and
+  connector generations, expires sessions, and preserves UUIDs, tombstones,
+  payloads and attempt identity. Old binaries that do not recognize these tables
+  are not a qualified rollback target.
+
+The combined local fixture now runs two host connections against the real
+Worker/DO, fetches encrypted operations into encrypted host inboxes, invokes the
+existing native command adapter with exact mock native arguments, reconstructs
+SQLite journals after lost native responses, and loses a committed receipt
+response. Neither loss causes a second native dispatch. The source composition
+also suppresses settled inbox references on later cycles. Native transport is
+mocked throughout; this is not a live-provider or installed-host test.
+
+Remaining source coverage: integrate host-local observation/event cursors and
+outbox ownership, pending-question routing, owner/caller and collaboration ingress,
+and per-instance lifecycle packaging/attestation. The current singleton whole-fleet
+replica cannot be installed unchanged on every instance. Extend typed settlement
+for creation, answers, settings, follow-ups and definite non-submission outcomes;
+mechanical adapter availability alone does not qualify their lane release.
+
+Promotion gates: normal publication authority, exact-head secret/security scans,
+CI and actual review; approved mapping to existing host-scoped identities and
+configured per-host trust (availability unverified); reviewed per-instance startup
+composition; compatible current-state rollback; then explicit runtime installation
+and Worker update authorization. No new access, key, service or resource has been
+created. Live acceptance must include simultaneous installed instances, loss of
+one host with others unaffected, revived stale connector refusal, exact original
+host mapping, uncertain native/receipt recovery, catch-up and current-state rollback.
+The workerd pipe-abort diagnostic remains unresolved. Windows is not yet removable.

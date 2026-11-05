@@ -8,6 +8,7 @@ export default defineConfig({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
         bindings: {
+          HOST_CONNECTORS: "enabled",
           AUTH_POLICY: JSON.stringify({
             revision: 1,
             fleet: "test-fleet",
