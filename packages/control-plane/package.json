@@ -7,7 +7,7 @@
     "migration:preflight": "node --experimental-strip-types operator/preflight.mts",
     "staging:qualify": "node node_modules/cf/bin/cf build --mode staging && node node_modules/cf/bin/cf deploy --prebuilt --dry-run --mode staging",
     "deploy": "node operator/deny-deploy.mjs",
-    "test": "npm run build && vitest run && node --experimental-strip-types --test spec/edge.node.mts spec/replica.node.mts spec/bootstrap.node.mts spec/recovery.node.mts spec/migration-role.node.mts",
+    "test": "npm run build && vitest run && node --experimental-strip-types --test spec/edge.node.mts spec/replica.node.mts spec/bootstrap.node.mts spec/recovery.node.mts spec/migration-role.node.mts spec/host-links.node.mts",
     "test:parity": "node operator/parity.mjs",
     "operator:fixture": "node --experimental-strip-types operator/local.mts --fixture",
     "typecheck": "tsc --noEmit",
