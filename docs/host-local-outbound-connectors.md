@@ -92,6 +92,10 @@ no production snapshot was read or transferred.
    Do not instantiate the current fleet-wide `createEdgeRuntime` once per host:
    its singleton lease and whole-fleet replica would conflict. Partition cache,
    observation and mutation ownership explicitly, retaining uncertain attempts.
+   An unknown attempt must hold its original host/thread execution lane across
+   reconnect or failover. A new UUID/generation cannot escape that hold. Expiry
+   cannot retract an already-issued native permit; reconcile its possible effects
+   before admitting a successor on that lane.
 3. **Complete the receipt/event path.** Resolve each stable UUID to its exact
    native message ID and run ID, keeping submitted, accepted/queued, observed
    running, completed, refused and unknown distinct. Add host-local event cursors,
@@ -114,17 +118,17 @@ no production snapshot was read or transferred.
 
 ## Minimum acceptance before declaring Windows removable
 
-| Boundary          | Local evidence in this slice                                                              | Required promotion evidence                                                                                       |
-| ----------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Independent links | Two synthetic hosts coexist via real HTTP transport and Workers SQL                       | Simultaneous approved native instances, attested builds/routes, independent outbound links                        |
-| Host loss         | A partition/expiry leaves B renewing; A later reconstructs its inbox                      | Disconnect desktop/one host under approval; other hosts retain native reads, permitted writes and callbacks       |
-| Stale connector   | Expired/replaced generation and old UUID refused, tombstones persist                      | Revive exact old binary/process after partition; no stale native begin/effect or duplicate writer                 |
-| Scope isolation   | Cross-host cursor, broad identity, forged body fields and foreign replies refused         | Exact installed host/thread/principal/grant mapping, revocation/expiry/policy-change tests                        |
-| Unknown outcomes  | Lost open/page/ack and write rollback never invoke native APIs or rewrite unknown command | Lost native response before/after effect; original UUID resolves to exact message/run without replay              |
-| Catch-up          | Encrypted inbox/central SQL reconstruction, bounded pages and per-host backpressure       | Event/subscription cursors, all six standing subscriptions and passive inbox retain identity and continuity       |
-| Ownership         | No native execution is exposed; existing singleton execution path unchanged               | Per-host claims/begin plus native fencing prove no second writer during failover                                  |
-| Ingress           | Not integrated                                                                            | Owner/caller MCP, collaboration, pending input and callback signing work with desktop absent                      |
-| Rollback          | Source modules unregistered; can remain unused                                            | Restore compatible code against CURRENT receipts, journals, generations/cursors; never an obsolete state snapshot |
+| Boundary          | Local evidence in this slice                                                              | Required promotion evidence                                                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Independent links | Two synthetic hosts coexist via real HTTP transport and Workers SQL                       | Simultaneous approved native instances, attested builds/routes, independent outbound links                                            |
+| Host loss         | A partition/expiry leaves B renewing; A later reconstructs its inbox                      | Disconnect desktop/one host under approval; other hosts retain native reads, permitted writes and callbacks                           |
+| Stale connector   | Expired/replaced generation and old UUID refused, tombstones persist                      | Revived old process gets no new permits; reconcile already-permitted effects and keep uncertain lanes held without duplicate dispatch |
+| Scope isolation   | Cross-host cursor, broad identity, forged body fields and foreign replies refused         | Exact installed host/thread/principal/grant mapping, revocation/expiry/policy-change tests                                            |
+| Unknown outcomes  | Lost open/page/ack and write rollback never invoke native APIs or rewrite unknown command | Lost native response before/after effect; original UUID resolves to exact message/run without replay                                  |
+| Catch-up          | Encrypted inbox/central SQL reconstruction, bounded pages and per-host backpressure       | Event/subscription cursors, all six standing subscriptions and passive inbox retain identity and continuity                           |
+| Ownership         | No native execution is exposed; existing singleton execution path unchanged               | Per-host claims/begin plus native fencing prove no second writer during failover                                                      |
+| Ingress           | Not integrated                                                                            | Owner/caller MCP, collaboration, pending input and callback signing work with desktop absent                                          |
+| Rollback          | Source modules unregistered; can remain unused                                            | Restore compatible code against CURRENT receipts, journals, generations/cursors; never an obsolete state snapshot                     |
 
 Managed old-writer retirement must prove the old path cannot perform native
 effects, including process revival. A DO epoch or signed assertion alone cannot
