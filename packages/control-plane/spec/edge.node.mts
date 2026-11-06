@@ -65,6 +65,49 @@ test("central HTTP transport preserves refusals and never retries uncertain muta
     );
   }
 });
+test("central transport diagnostics retain fixed fields without secrets or outcome changes", async () => {
+  const rows: import("../src/transport.ts").CentralDiagnostic[] = [];
+  let calls = 0,
+    status = 200;
+  const transport = centralTransport({
+    origin: "https://fixture.invalid",
+    token: () => "SECRET",
+    diagnostic: (r) => {
+      rows.push(r);
+      throw Error("telemetry failed SECRET");
+    },
+    fetch: async () => {
+      calls++;
+      if (status === 0) throw Error("SECRET provider body");
+      return Response.json(
+        status === 200 ? { stored: true } : { reason: "forbidden", secret: "SECRET" },
+        { status, headers: { "x-ratelimit-remaining": "12" } },
+      );
+    },
+  });
+  assert.deepEqual(await transport("status", { secret: "SECRET" }), { stored: true });
+  status = 403;
+  assert.deepEqual(await transport("begin", {}), { reason: "forbidden", safe_to_resend: false });
+  status = 0;
+  await assert.rejects(transport("begin", {}), /central_transport_uncertain/);
+  assert.equal(calls, 3);
+  assert.deepEqual(
+    rows.map((r) => r.outcome),
+    ["ok", "refused", "uncertain"],
+  );
+  assert.equal(rows[0].rate_limit_remaining, 12);
+  assert.equal(rows[2].http_status, null);
+  assert.equal(new Set(rows.map((r) => r.correlation_id)).size, 3);
+  assert.equal(JSON.stringify(rows).includes("SECRET"), false);
+  assert.deepEqual(Object.keys(rows[0]).sort(), [
+    "correlation_id",
+    "duration_ms",
+    "http_status",
+    "operation",
+    "outcome",
+    "rate_limit_remaining",
+  ]);
+});
 
 test("central HTTP transport bounds streaming responses, cancels oversized bodies and does not accept malformed success", async () => {
   let cancelled = false;
@@ -91,6 +134,28 @@ test("central HTTP transport bounds streaming responses, cancels oversized bodie
     fetch: async () => Response.json([]),
   });
   await assert.rejects(bad("status", {}), /central_response_invalid/);
+});
+test("rejected async diagnostics cannot terminate a process or replace request outcomes", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const module = new URL("../src/transport.ts", import.meta.url).href;
+  const script = `import assert from 'node:assert/strict';import {centralTransport} from ${JSON.stringify(module)};
+    let calls=0;const call=centralTransport({origin:'https://fixture.invalid',token:()=> 'SECRET',diagnostic:async()=>{await Promise.resolve();throw Error('SECRET telemetry');},fetch:async()=>{calls++;if(calls===2)throw Error('SECRET provider');return Response.json({stored:true});}});
+    assert.deepEqual(await call('status',{}),{stored:true});await assert.rejects(call('begin',{}),/central_transport_uncertain/);
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,2);console.log('async-diagnostics-isolated');`;
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      "--unhandled-rejections=strict",
+      "--input-type=module",
+      "-e",
+      script,
+    ],
+    { encoding: "utf8", windowsHide: true, timeout: 10000 },
+  );
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout.trim(), "async-diagnostics-isolated");
+  assert.equal(child.stderr.includes("SECRET"), false);
 });
 
 test("real sidecar boots the central runtime, fences HTTP and never runs local delivery", async () => {

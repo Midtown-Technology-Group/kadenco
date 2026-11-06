@@ -417,7 +417,12 @@ test("MCP 2.0 authenticated discovery, tools and events through official SDK HTT
   assert.ok(d.result.supportedVersions.includes("2026-07-28"), discovery.body);
   assert.ok(d.result.capabilities.events, discovery.body);
   const list = await rpc("tools/list");
-  assert.equal(JSON.parse(list.body).result.tools.length, 4, list.body);
+  assert.equal(JSON.parse(list.body).result.tools.length, 5, list.body);
+  assert.equal(
+    JSON.parse(list.body).result.tools.find((t) => t.name === "get_event_delivery_history")
+      .annotations.readOnlyHint,
+    true,
+  );
   const events = await rpc("events/list");
   assert.equal(JSON.parse(events.body).result.events[0].name, "t3.task.finished", events.body);
   const result = await rpc("tools/call", { name: "list_sessions", arguments: {} });
@@ -463,7 +468,7 @@ test("MCP 2.0 authenticated discovery, tools and events through official SDK HTT
       requestInit: { headers: { Authorization: "Bearer " + f.token } },
     }),
   );
-  assert.equal((await client.listTools()).tools.length, 4);
+  assert.equal((await client.listTools()).tools.length, 5);
   const result2 = await client.callTool({
     name: "get_task_result",
     arguments: { session_id: "a", run_id: "run-1" },

@@ -1,6 +1,6 @@
 {
   "name": "kadenco",
-  "version": "0.1.0-alpha.14",
+  "version": "0.1.0-alpha.16",
   "private": true,
   "description": "Experimental MCP tools, durable events and receipts for T3 Code",
   "license": "AGPL-3.0-or-later",
@@ -39,7 +39,9 @@
     "test:browser": "node scripts/verify-collaboration-ui.mjs",
     "build": "node scripts/build.mjs",
     "typecheck": "tsrs -p tsconfig.json --noEmit --fast && tsc -p tsconfig.json --noEmit",
-    "release:check": "node scripts/release-check.mjs"
+    "release:check": "node scripts/release-check.mjs",
+    "secret-scan": "node scripts/secret-gate.mjs",
+    "pre-pr": "npm run secret-scan"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.3.1",
