@@ -3,6 +3,13 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## Unreleased
+
+- Bind edge leases to process instances so a standby sharing an executor cannot
+  steal a live generation. Preserve legacy leases during the schema upgrade and
+  retain generation fencing across process takeover and lost-claim responses.
+  This prepares HA; it does not install or activate a second production edge.
+
 ## 0.1.0-alpha.16
 
 - Return the public subscription identity in central delivery history while

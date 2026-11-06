@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,subscription TEXT NOT NULL
 CREATE INDEX IF NOT EXISTS outbox_due ON outbox(state,next,lease,id);
 CREATE INDEX IF NOT EXISTS audit_delivery_operations ON audit(subject,seq) WHERE action IN ('outbox_claim','outbox_begin','outbox_result','outbox_stop');
 `);
+  if (
+    !sql
+      .exec<{ name: string }>("PRAGMA table_info(edge_lease)")
+      .toArray()
+      .some((c) => c.name === "instance")
+  )
+    sql.exec("ALTER TABLE edge_lease ADD COLUMN instance TEXT");
 }
 /** Invoked only inside the parent's SQL transaction; network IO stays outside. */
 export function serviceOperation(
@@ -74,25 +81,51 @@ export function serviceOperation(
   };
   if (op === "edge_lease") {
     if (a.role !== "executor") bad("forbidden");
+    const instance = p.instance === undefined ? null : text(p.instance);
+    if (
+      instance !== null &&
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(instance)
+    )
+      bad("invalid_request");
     const old = sql
-      .exec<{ holder: string; generation: number; expires: number }>(
+      .exec<{ holder: string; generation: number; expires: number; instance: string | null }>(
         "SELECT * FROM edge_lease WHERE id=1",
       )
       .toArray()[0];
-    if (old && old.expires > now && old.holder !== a.id) bad("fenced");
+    if (old && old.expires > now && (old.holder !== a.id || old.instance !== instance))
+      bad("fenced");
     if (
       p.generation !== undefined &&
-      (!old || old.holder !== a.id || old.generation !== p.generation || old.expires <= now)
+      (!old ||
+        old.holder !== a.id ||
+        old.instance !== instance ||
+        old.generation !== p.generation ||
+        old.expires <= now)
     )
       bad("fenced");
-    const generation = p.generation === undefined ? (old?.generation ?? 0) + 1 : old!.generation;
+    // A lost claim response must not let the same live process fence itself on retry.
+    const generation =
+      p.generation === undefined
+        ? instance !== null &&
+          old?.instance === instance &&
+          old.holder === a.id &&
+          old.expires > now
+          ? old.generation
+          : (old?.generation ?? 0) + 1
+        : old!.generation;
     sql.exec(
-      "INSERT INTO edge_lease VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET holder=excluded.holder,generation=excluded.generation,expires=excluded.expires",
+      "INSERT INTO edge_lease(id,holder,generation,expires,instance) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET holder=excluded.holder,generation=excluded.generation,expires=excluded.expires,instance=excluded.instance",
       a.id,
       generation,
       now + 10000,
+      instance,
     );
-    return { holder: a.id, generation, expires: now + 10000 };
+    return {
+      holder: a.id,
+      generation,
+      expires: now + 10000,
+      ...(instance === null ? {} : { instance }),
+    };
   }
   if (op === "subscribe_central") {
     if (a.role !== "owner") bad("forbidden");
