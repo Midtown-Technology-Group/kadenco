@@ -3,6 +3,16 @@
 Entries describe source candidates. A heading alone does not mean a tag,
 GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
+## Unreleased
+
+- Prepare a best-effort completion goalkeeper inside the existing Commands
+  service: persisted source-run claims, stable request IDs, cooldown, fresh
+  preflight and exact receipt reconciliation. Unattended dispatch remains
+  disabled pending native stop-preservation and enforced entry interfaces.
+  Existing monitors, manual continuations and production are unchanged.
+- Install the existing SQLite busy timeout before WAL initialization so
+  simultaneous Store openers can wait rather than fail before atomic claims.
+
 ## 0.1.0-alpha.16
 
 - Return the public subscription identity in central delivery history while

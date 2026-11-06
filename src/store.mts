@@ -10,7 +10,7 @@ export class Store {
     if (!Buffer.isBuffer(key) || key.length !== 32) throw new Error("32_byte_state_key_required");
     this.key = key;
     this.db = new DatabaseSync(path);
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+    this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS records (kind TEXT, id TEXT, value TEXT NOT NULL, PRIMARY KEY(kind,id));
       CREATE TABLE IF NOT EXISTS audit (seq INTEGER PRIMARY KEY, at TEXT, action TEXT, subject TEXT, outcome TEXT);
       CREATE TABLE IF NOT EXISTS diagnostics (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, host TEXT NOT NULL, value TEXT NOT NULL);
