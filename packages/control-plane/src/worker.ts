@@ -6,8 +6,6 @@ import {
   authorizeBinding,
   nativeGrantScope,
   tightensNativeGrant,
-  type NativeGrantScope,
-  type OperationBinding,
 } from "./binding";
 import { recoveryPage, recoveryTables, assertRecoverySchema } from "./recovery";
 import { serviceSchema, serviceOperation, type ServicePrincipal } from "./services";
@@ -16,21 +14,10 @@ import { activationOperation, readRetirement, type RetirementEvidence } from "./
 import { decodePolicy } from "./policy-transport";
 import { frozenReactivation } from "./frozen-reactivation";
 import { migrationReauthorization } from "./migration-reauthorization";
+import { ownerEnrollment, type ControlPrincipal, type ControlPolicy } from "./owner-enrollment";
 import packageInfo from "../../../package.json" with { type: "json" };
-type Principal = {
-  id: string;
-  tokenSha256: string;
-  role: "owner" | "executor" | "migration";
-  hosts: string[];
-  scopes?: OperationBinding[];
-  nativeGrants?: NativeGrantScope[];
-  migrationAuthority?: boolean;
-  stateCustodian?: boolean;
-  maxPerDay?: number | null;
-  threadBudgets?: { thread: string; provider: string; maxPerDay: number; expiresAt: number }[];
-  expiresAt: number;
-};
-type Policy = { revision: number; fleet: string; principals: Principal[] };
+type Principal = ControlPrincipal;
+type Policy = ControlPolicy;
 type Env = Cloudflare.Env & { AUTH_POLICY?: string };
 const fail = (reason: string): never => {
   throw new Error(reason);
@@ -244,6 +231,22 @@ export class FleetState extends DurableObject<Env> {
   }
   apply(a: Principal, op: string, p: Record<string, unknown>, retirement?: RetirementEvidence) {
     this.authorized(a);
+    if (
+      [
+        "enroll_configured_owner",
+        "owner_enrollment_receipt",
+        "owner_enrollment_challenge",
+      ].includes(op)
+    ) {
+      return ownerEnrollment(
+        this.sql(),
+        a,
+        this.currentPolicy(),
+        policy(this.env.AUTH_POLICY),
+        op,
+        p,
+      );
+    }
     // A temporary migration credential is not a general administrative owner.
     // Default-deny also covers future operations added to this control plane.
     if (

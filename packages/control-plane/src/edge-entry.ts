@@ -12,6 +12,8 @@ export { captureRecovery, verifyRecovery } from "./recovery-archive.ts";
 export { prepareLegacyRecovery } from "./legacy-recovery.ts";
 export { prepareManagedRecovery } from "./managed-transfer.ts";
 export { encodePolicy, decodePolicy } from "./policy-transport.ts";
+export { prepareOwnerEnrollment } from "./prepare-owner-enrollment.ts";
+export { enrollmentPolicyDigest } from "./owner-enrollment.ts";
 export {
   verifyManagedRetirement,
   activateManagedSource,
