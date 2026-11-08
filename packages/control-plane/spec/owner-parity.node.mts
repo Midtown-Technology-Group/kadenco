@@ -13,6 +13,92 @@ import { prepareOwnerEnrollment } from "../src/prepare-owner-enrollment.ts";
 import { projectControlPolicy } from "../src/production-bootstrap.ts";
 import type { ControlPolicy } from "../src/owner-enrollment.ts";
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+test("offline preparation refuses grant and principal capacity overflow before returning a staged policy", async () => {
+  const f = nativeFixture();
+  try {
+    const sponsor = f.policy.principals[0]!;
+    sponsor.readHosts = Array.from({ length: 6 }, (_, i) => ({ host: i ? `host-${i}` : "host" }));
+    sponsor.commandHosts = sponsor.readHosts.map(({ host }) => ({
+      ...sponsor.commandHosts![0]!,
+      host,
+    }));
+    f.policy.fleetRead!.hosts = sponsor.readHosts.map(({ host }) => ({ name: host }));
+    f.policy.nativeDelivery!.hosts = sponsor.readHosts.map(({ host }) => ({
+      name: host,
+      command: "never-executed-fixture",
+    }));
+    const central: ControlPolicy = projectControlPolicy(f.policy, {
+      fleet: "fixture",
+      executor: "edge",
+      executorToken: "synthetic-executor-credential-at-least-32",
+      ownerTokens: new Map([["owner", "fixture-owner"]]),
+      observationOwner: "owner",
+      serviceExpiresAt: f.now + 300000,
+      key: f.key,
+      journalPath: "unused",
+      origin: "https://fixture.invalid",
+      epoch: 7,
+    });
+    const prepare = (policy = central, local = f.policy, id = "new-owner") =>
+      prepareOwnerEnrollment({
+        local,
+        central: policy,
+        sponsor: "owner",
+        principal: id,
+        tokenSha256: sha("synthetic-" + id),
+        executor: "edge",
+        expiresAt: f.now + 300000,
+        requestId: randomUUID(),
+      });
+    const first = prepare(),
+      second = prepare(first.central, first.local, "second");
+    assert.equal(second.central.principals.find((p) => p.id === "edge")!.nativeGrants!.length, 36);
+    const before = JSON.stringify(second);
+    assert.throws(
+      () => prepare(second.central, second.local, "third"),
+      /owner_enrollment_capacity_exceeded/,
+    );
+    assert.equal(JSON.stringify(second), before);
+    const filled = (count: number) => {
+      const p = structuredClone(central),
+        worker = p.principals.find((v) => v.id === "edge")!;
+      while (worker.nativeGrants!.length < count)
+        worker.nativeGrants!.push({
+          ...worker.nativeGrants![0]!,
+          grant: sha("extra-grant-" + worker.nativeGrants!.length),
+        });
+      return p;
+    };
+    assert.equal(
+      prepare(filled(28)).central.principals.find((p) => p.id === "edge")!.nativeGrants!.length,
+      40,
+    );
+    assert.throws(() => prepare(filled(29)), /owner_enrollment_capacity_exceeded/);
+    const nearlyFull = structuredClone(central);
+    while (nearlyFull.principals.length < 99)
+      nearlyFull.principals.push({
+        id: "extra-" + nearlyFull.principals.length,
+        role: "owner",
+        hosts: ["host"],
+        expiresAt: f.now + 300000,
+        tokenSha256: sha("extra-owner-" + nearlyFull.principals.length),
+      });
+    assert.equal(prepare(nearlyFull).central.principals.length, 100);
+    nearlyFull.principals.push({
+      id: "last",
+      role: "owner",
+      hosts: ["host"],
+      expiresAt: f.now + 300000,
+      tokenSha256: sha("last-owner"),
+    });
+    const fullBefore = JSON.stringify(nearlyFull);
+    assert.throws(() => prepare(nearlyFull), /owner_enrollment_capacity_exceeded/);
+    assert.equal(JSON.stringify(nearlyFull), fullBefore);
+    assert.equal(f.effects(), 0);
+  } finally {
+    await f.close();
+  }
+});
 test("offline parity preparation preserves six-host/all-project authority and never mutates its inputs", async () => {
   const f = nativeFixture();
   try {

@@ -15,6 +15,7 @@ import { decodePolicy } from "./policy-transport";
 import { frozenReactivation } from "./frozen-reactivation";
 import { migrationReauthorization } from "./migration-reauthorization";
 import { ownerEnrollment, type ControlPrincipal, type ControlPolicy } from "./owner-enrollment";
+import { MAX_CONTROL_PRINCIPALS, MAX_NATIVE_GRANTS_PER_PRINCIPAL } from "./policy-limits";
 import packageInfo from "../../../package.json" with { type: "json" };
 type Principal = ControlPrincipal;
 type Policy = ControlPolicy;
@@ -36,7 +37,8 @@ function policy(raw: string | undefined): Policy {
   const p = JSON.parse(decodePolicy(raw!)) as Policy;
   str(p.fleet);
   if (number(p.revision) < 1) fail("configuration_required");
-  if (!Array.isArray(p.principals) || p.principals.length > 100) fail("configuration_required");
+  if (!Array.isArray(p.principals) || p.principals.length > MAX_CONTROL_PRINCIPALS)
+    fail("configuration_required");
   const ids = new Set(),
     tokens = new Set();
   for (const a of p.principals) {
@@ -56,7 +58,10 @@ function policy(raw: string | undefined): Policy {
     if (a.scopes && (!Array.isArray(a.scopes) || a.scopes.length > 100))
       fail("configuration_required");
     a.scopes?.forEach(operationBinding);
-    if (a.nativeGrants && (!Array.isArray(a.nativeGrants) || a.nativeGrants.length > 40))
+    if (
+      a.nativeGrants &&
+      (!Array.isArray(a.nativeGrants) || a.nativeGrants.length > MAX_NATIVE_GRANTS_PER_PRINCIPAL)
+    )
       fail("configuration_required");
     a.nativeGrants?.forEach(nativeGrantScope);
     if (

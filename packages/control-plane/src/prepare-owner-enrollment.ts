@@ -2,6 +2,7 @@
 import { configSchema, type Policy } from "../../../dist/config.mjs";
 import { projectNativeGrant } from "./grant-projection.ts";
 import { enrollmentPolicyDigest, type ControlPolicy } from "./owner-enrollment.ts";
+import { MAX_CONTROL_PRINCIPALS, MAX_NATIVE_GRANTS_PER_PRINCIPAL } from "./policy-limits.ts";
 /** Offline preparation only. Takes a separately custodied credential HASH;
  * never creates credentials, writes policy, contacts hosts or dispatches work. */
 export function prepareOwnerEnrollment(input: {
@@ -39,6 +40,12 @@ export function prepareOwnerEnrollment(input: {
     central.principals.some((p) => p.id === principal || p.tokenSha256 === tokenSha256)
   )
     throw Error("owner_enrollment_preparation_forbidden");
+  if (
+    central.principals.length + 1 > MAX_CONTROL_PRINCIPALS ||
+    (worker.nativeGrants?.length ?? 0) + (owner.nativeGrants?.length ?? 0) >
+      MAX_NATIVE_GRANTS_PER_PRINCIPAL
+  )
+    throw Error("owner_enrollment_capacity_exceeded");
   local.principals.push({ ...structuredClone(source), id: principal, tokenSha256 });
   // Limits and modes are copied exactly, including any explicit uncapped budget.
   // Expiry is an additional central ceiling, never an extension of native grants.

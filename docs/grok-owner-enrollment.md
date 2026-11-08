@@ -11,6 +11,9 @@ accepts validated local policy, current central policy, sponsor/executor IDs,
 a separately custodied bearer **hash**, an expiry and one stable request UUID.
 It returns proposed local/central policies and the exact admission request.
 It performs no IO, creates no credential and never enables a service.
+Preparation refuses a successor exceeding the Worker's shared limits of 100
+principals or 40 native grants per principal, before returning a policy to stage.
+Capacity refusal never drops grants or raises those limits.
 
 The new local principal receives the sponsor's existing read/command/session and
 inbox capabilities, including its explicit budget and runtime-mode limits. It
