@@ -18,6 +18,7 @@ export type ControlPolicy = { revision: number; fleet: string; principals: Contr
 const fail = (reason: string): never => {
   throw Error(reason);
 };
+/** Stable, locale-independent object ordering shared by operator and Worker digests. */
 function canonical(value: unknown): string {
   if (value === undefined) return "undefined";
   if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
@@ -33,6 +34,7 @@ function canonical(value: unknown): string {
     );
   return JSON.stringify(value);
 }
+/** Bind an exact policy proposal; the digest itself grants no authority. */
 export const enrollmentPolicyDigest = (policy: ControlPolicy) =>
   createHash("sha256").update(canonical(policy)).digest("hex");
 const identity = (v: unknown) =>

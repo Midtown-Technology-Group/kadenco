@@ -32,6 +32,7 @@ function servicePrincipal(a: Principal): ServicePrincipal {
     a.role === "owner" ? "owner" : a.role === "executor" ? "executor" : fail("forbidden");
   return { ...a, role };
 }
+/** Decode bounded operator/durable policy and reject invalid identities or grant limits. */
 function policy(raw: string | undefined): Policy {
   if (!raw || raw.length > 65536) fail("configuration_required");
   const p = JSON.parse(decodePolicy(raw!)) as Policy;
@@ -234,6 +235,8 @@ export class FleetState extends DurableObject<Env> {
       Date.now(),
     );
   }
+  /** Apply one authenticated operation inside fetch's synchronous storage transaction.
+   * Recheck current authority before admission, receipts, or native reservations. */
   apply(a: Principal, op: string, p: Record<string, unknown>, retirement?: RetirementEvidence) {
     this.authorized(a);
     if (
