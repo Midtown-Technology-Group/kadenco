@@ -10,6 +10,16 @@ embedding API are described in [docs/t3-sidecar.md](docs/t3-sidecar.md).
 failures. These are JavaScript static checks, not a claim of complete TypeScript
 type safety. Keep the native Node test runner; `vp test` selects Vitest instead.
 
+The control-plane `npm test` runs Workers tests followed by `npm run test:node`.
+The Node integration lane admits one test file at a time: several files start
+independent workerd processes, and recovery also probes Windows through CIM.
+CPU-count-based file concurrency can exhaust their unchanged 10-second operation
+deadlines before the intended assertions run. Keep this lane separate from
+build/compiler/secret-scan jobs on the same workstation. This bounds fixture
+resource contention; it does not extend production deadlines or retry uncertain
+operations. See [the recovery validation record](docs/recovery-test-validation.md)
+for the retained failures and limits of the diagnosis.
+
 For UI changes, set `T3_TEST_BROWSER_PATH` to a local Chromium executable and run
 `npm exec -- vp run test:browser`. This uses synthetic identities and a recording
 native boundary, never real grants or tasks. Never use live fleet access to
