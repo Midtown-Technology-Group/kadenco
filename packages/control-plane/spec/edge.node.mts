@@ -258,7 +258,12 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
       if (op === "edge_lease") {
         generations.push((p as { generation?: number }).generation);
         if (denied) return { reason: "fenced" };
-        return { holder: "fixture-executor", generation: 9, expires: Date.now() + 10000 };
+        return {
+          holder: "fixture-executor",
+          instance: (p as { instance: string }).instance,
+          generation: 9,
+          expires: Date.now() + 10000,
+        };
       }
       if (op === "outbox_pending") return { ids: [], next: null };
       if (op === "replica_head") return { revision: 0 };

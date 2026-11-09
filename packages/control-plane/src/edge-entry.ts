@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 export { createEdgeRuntime, centralTransport, projectNativeGrant } from "./edge-runtime.ts";
+export { HostConnector, ConnectorInbox } from "./host-connector.ts";
+export { createHostLocalConnector } from "./host-local.ts";
+export { consumeHostReference, consumeHostOperation } from "./host-execution.ts";
+export { encryptHostPayload, hostPayloadIdentity } from "./host-payload.ts";
 export {
   createProductionRuntime,
   projectControlPolicy,

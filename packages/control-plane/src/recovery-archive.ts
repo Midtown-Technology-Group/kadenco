@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { createHash } from "node:crypto";
 import { seal, unseal } from "./authorization.ts";
-import { recoveryTables, type RecoveryRow } from "./recovery.ts";
+import { recoveryInventory, type RecoveryRow } from "./recovery.ts";
 export type RecoveryHeader = {
   epoch: number;
   watermark: number;
@@ -78,7 +78,10 @@ export function verifyRecovery(
       .digest("hex") !== root.digest
   )
     throw Error("recovery_digest_mismatch");
-  for (const table of recoveryTables)
+  const inventory = recoveryInventory(root.header.counts);
+  if (rows.some((r) => !(inventory as readonly string[]).includes(r.table)))
+    throw Error("schema_mismatch");
+  for (const table of inventory)
     if (rows.filter((r) => r.table === table).length !== root.header.counts[table])
       throw Error("incomplete_recovery");
   return { header: root.header, rows, activation_permitted: false };

@@ -14,6 +14,7 @@ import { openStoreReplica } from "./store-replica.ts";
 import { checkpointNativeEffects } from "./effect-checkpoint.ts";
 import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { randomUUID } from "node:crypto";
 export { projectNativeGrant } from "./grant-projection.ts";
 export { centralTransport } from "./transport.ts";
 
@@ -53,6 +54,7 @@ export async function createEdgeRuntime(
     throw Error("invalid_edge_identity");
   ports = Object.freeze({ ...ports, key: Buffer.from(ports.key) });
   let generation: number | undefined;
+  const instance = randomUUID();
   let closed = false;
   let renewal: Promise<void> | undefined;
   const leaseErrors = new WeakSet<object>();
@@ -61,6 +63,7 @@ export async function createEdgeRuntime(
     return (renewal ??= (async () => {
       const lease = await ports.executorCall("edge_lease", {
         epoch: ports.epoch,
+        instance,
         ...(generation === undefined ? {} : { generation }),
       });
       if (lease.reason !== undefined) {
@@ -69,6 +72,7 @@ export async function createEdgeRuntime(
       }
       if (
         lease.holder !== ports.executor ||
+        lease.instance !== instance ||
         !Number.isSafeInteger(lease.generation) ||
         Number(lease.generation) < 1 ||
         !Number.isSafeInteger(lease.expires) ||

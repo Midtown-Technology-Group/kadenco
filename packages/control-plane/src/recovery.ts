@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-export const recoveryTables = [
+export const legacyRecoveryTables = [
   "recovery_freezes",
   "auth_policy",
   "revoked",
@@ -22,6 +22,27 @@ export const recoveryTables = [
   "activation_receipts",
   "migration_reauthorizations",
 ] as const;
+export const recoveryTables = [
+  ...legacyRecoveryTables,
+  "host_links",
+  "host_link_sessions",
+  "host_link_refs",
+  "host_link_attempts",
+  "host_link_payloads",
+  "host_link_observations",
+] as const;
+/** Inventory is the version discriminator for archives produced before version tags.
+ * Reject partial upgrades and unknown tables; never rewrite authenticated bytes. */
+export function recoveryInventory(counts: Record<string, number>) {
+  const names = Object.keys(counts);
+  for (const tables of [recoveryTables, legacyRecoveryTables])
+    if (
+      names.length === tables.length &&
+      tables.every((t) => Number.isSafeInteger(counts[t]) && counts[t] >= 0)
+    )
+      return tables;
+  throw Error("schema_mismatch");
+}
 export type RecoveryRow = {
   table: (typeof recoveryTables)[number];
   key: number;
@@ -82,6 +103,21 @@ function restoreRows(
   rows: RecoveryRow[],
   expected: { epoch: number; counts: Record<string, number> },
 ) {
+  const inventory = recoveryInventory(expected.counts);
+  if (inventory === legacyRecoveryTables) {
+    expected = {
+      ...expected,
+      counts: {
+        ...expected.counts,
+        host_links: 0,
+        host_link_sessions: 0,
+        host_link_refs: 0,
+        host_link_attempts: 0,
+        host_link_payloads: 0,
+        host_link_observations: 0,
+      },
+    };
+  }
   assertRecoverySchema(sql);
   if (
     sql.exec<{ mode: string; epoch: number }>("SELECT mode,epoch FROM control WHERE id=1").one()
@@ -156,6 +192,11 @@ function restoreRows(
       values.holder = null;
       values.expires = 0;
       values.generation = Number(values.generation) + 1;
+    }
+    if (row.table === "host_links") {
+      values.expires = 0;
+      values.generation = Number(values.generation) + 1;
+      values.sent = 0;
     }
     const columns = Object.keys(values);
     sql.exec(

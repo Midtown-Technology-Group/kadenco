@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { createHash } from "node:crypto";
-import { recoveryTables, restoreInert, type RecoveryRow } from "./recovery.ts";
+import { recoveryTables, recoveryInventory, restoreInert, type RecoveryRow } from "./recovery.ts";
 import type { RecoveryHeader } from "./recovery-archive.ts";
 
 export const recoveryIngressSchema = `
@@ -83,12 +83,7 @@ export function recoveryIngress(
       fail("invalid_request");
     if (!h.counts || typeof h.counts !== "object" || Array.isArray(h.counts))
       fail("invalid_request");
-    if (
-      Object.keys(h.counts).length !== recoveryTables.length ||
-      recoveryTables.some((t) => !(t in h.counts))
-    )
-      fail("schema_mismatch");
-    const rows = recoveryTables.reduce((n, t) => n + integer(h.counts[t]), 0);
+    const rows = recoveryInventory(h.counts).reduce((n, t) => n + integer(h.counts[t]), 0);
     if (rows > 100000 || h.counts.recovery_imports !== 0 || h.counts.recovery_chunks !== 0)
       fail("invalid_request");
     integer(h.epoch, Number.MAX_SAFE_INTEGER - 1);

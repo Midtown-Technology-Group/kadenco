@@ -978,6 +978,73 @@ describe("central observation, outbox and shared budgets", () => {
       await call("edge_lease", { epoch: 7, generation: lease.generation + 1 }, "synthetic-agent"),
     ).toEqual({ reason: "fenced" });
   });
+  it("fences concurrent instances of one executor and preserves generation on lost-claim retry", async () => {
+    await reset();
+    const one = "11111111-1111-4111-8111-111111111111";
+    const two = "22222222-2222-4222-8222-222222222222";
+    const first = await call("edge_lease", { epoch: 7, instance: one }, "synthetic-agent");
+    expect(first.instance).toBe(one);
+    expect(
+      (await call("edge_lease", { epoch: 7, instance: one }, "synthetic-agent")).generation,
+    ).toBe(first.generation);
+    expect(await call("edge_lease", { epoch: 7, instance: two }, "synthetic-agent")).toEqual({
+      reason: "fenced",
+    });
+    expect(await call("edge_lease", { epoch: 7 }, "synthetic-agent")).toEqual({ reason: "fenced" });
+    expect(
+      await call(
+        "edge_lease",
+        { epoch: 7, instance: two, generation: first.generation },
+        "synthetic-agent",
+      ),
+    ).toEqual({ reason: "fenced" });
+    await abortAllDurableObjects();
+    expect(await call("edge_lease", { epoch: 7, instance: two }, "synthetic-agent")).toEqual({
+      reason: "fenced",
+    });
+    await runInDurableObject(stub(), (_o, s) => {
+      s.storage.sql.exec("UPDATE edge_lease SET expires=0 WHERE id=1");
+    });
+    const next = await call("edge_lease", { epoch: 7, instance: two }, "synthetic-agent");
+    expect(next.generation).toBe(first.generation + 1);
+    expect(
+      await call(
+        "edge_lease",
+        { epoch: 7, instance: one, generation: first.generation },
+        "synthetic-agent",
+      ),
+    ).toEqual({ reason: "fenced" });
+    expect(
+      await call("replica_head", { epoch: 7, generation: first.generation }, "synthetic-agent"),
+    ).toEqual({ reason: "fenced" });
+    expect(
+      await call("edge_lease", { epoch: 7, instance: "not-an-instance" }, "synthetic-agent"),
+    ).toEqual({ reason: "invalid_request" });
+  });
+  it("adds instance fencing to a persisted legacy lease without dropping its generation", async () => {
+    await reset();
+    await runInDurableObject(stub(), (_o, s) => {
+      s.storage.sql.exec("DROP TABLE edge_lease");
+      s.storage.sql.exec(
+        "CREATE TABLE edge_lease(id INTEGER PRIMARY KEY CHECK(id=1),holder TEXT,generation INTEGER,expires INTEGER)",
+      );
+      s.storage.sql.exec("INSERT INTO edge_lease VALUES(1,'agent',41,?)", Date.now() + 60000);
+    });
+    await abortAllDurableObjects();
+    const instance = "11111111-1111-4111-8111-111111111111";
+    expect(await call("edge_lease", { epoch: 7, instance }, "synthetic-agent")).toEqual({
+      reason: "fenced",
+    });
+    expect(
+      (await call("edge_lease", { epoch: 7, generation: 41 }, "synthetic-agent")).generation,
+    ).toBe(41);
+    await runInDurableObject(stub(), (_o, s) => {
+      s.storage.sql.exec("UPDATE edge_lease SET expires=0 WHERE id=1");
+    });
+    expect((await call("edge_lease", { epoch: 7, instance }, "synthetic-agent")).generation).toBe(
+      42,
+    );
+  });
 });
 
 describe("central per-thread provider caps", () => {

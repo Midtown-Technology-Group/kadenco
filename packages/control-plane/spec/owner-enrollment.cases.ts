@@ -121,6 +121,25 @@ describe("authenticated operator owner enrollment", () => {
         .reason,
     ).toBe("idempotency_conflict");
   });
+  it("enrolled owners cannot impersonate the host connector executor", async () => {
+    expect((await call("enroll_configured_owner", input())).body.committed).toBe(true);
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE control SET mode='active',epoch=7 WHERE id=1");
+    });
+    const connection = crypto.randomUUID();
+    const open = { epoch: 7, host: "local", connection };
+    expect((await call("link_open", open, next(), "synthetic-grok")).body.reason).toBe("forbidden");
+    expect((await call("link_open", open, next(), "synthetic-executor")).body).toMatchObject({
+      host: "local",
+      connection,
+      generation: 1,
+    });
+    expect(
+      (await call("link_page", { ...open, generation: 1, after: 0 }, next(), "synthetic-grok")).body
+        .reason,
+    ).toBe("forbidden");
+    expect((await stored()).commands).toBe(0);
+  });
   it("requires operator configuration and rejects caller policy, fake role, executor and unadmitted credential", async () => {
     for (const [body, configured, token] of [
       [input(), old, "synthetic-owner"],

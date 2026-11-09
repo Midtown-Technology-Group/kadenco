@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { coreSchema } from "./core-schema";
+import { hostLinkOperation, type HostLinkContext } from "./host-links";
 import { DurableObject } from "cloudflare:workers";
 import {
   operationBinding,
@@ -19,7 +20,7 @@ import { MAX_CONTROL_PRINCIPALS, MAX_NATIVE_GRANTS_PER_PRINCIPAL } from "./polic
 import packageInfo from "../../../package.json" with { type: "json" };
 type Principal = ControlPrincipal;
 type Policy = ControlPolicy;
-type Env = Cloudflare.Env & { AUTH_POLICY?: string };
+type Env = Cloudflare.Env & { AUTH_POLICY?: string; HOST_CONNECTORS?: string };
 const fail = (reason: string): never => {
   throw new Error(reason);
 };
@@ -235,9 +236,15 @@ export class FleetState extends DurableObject<Env> {
       Date.now(),
     );
   }
-  /** Apply one authenticated operation inside fetch's synchronous storage transaction.
-   * Recheck current authority before admission, receipts, or native reservations. */
-  apply(a: Principal, op: string, p: Record<string, unknown>, retirement?: RetirementEvidence) {
+  /** Apply inside the synchronous storage transaction. Connector execution keeps
+   * its separate linked permit; owner enrollment never supplies that permit. */
+  apply(
+    a: Principal,
+    op: string,
+    p: Record<string, unknown>,
+    retirement?: RetirementEvidence,
+    linked = false,
+  ): unknown {
     this.authorized(a);
     if (
       [
@@ -511,6 +518,238 @@ export class FleetState extends DurableObject<Env> {
     if (state.mode !== "active" && !(state.mode === "quiesced" && op === "record_receipt"))
       fail("not_active");
     if (number(p.epoch) !== state.epoch) fail("fenced");
+    if (op.startsWith("link_")) {
+      if (this.env.HOST_CONNECTORS !== "enabled") fail("forbidden");
+      const context: HostLinkContext = {
+        sql: this.sql(),
+        now: Date.now(),
+        actorId: a.id,
+        principal: (id) =>
+          servicePrincipal(
+            this.currentPolicy().principals.find((v) => v.id === id) ?? fail("forbidden"),
+          ),
+        authorize: (actor, host) => this.authorized(actor, host),
+        reference: (id) => {
+          const r = this.row(id);
+          return {
+            request_id: id,
+            host: r.host,
+            thread_id: r.thread,
+            owner: r.originator ?? fail("forbidden"),
+            binding: operationBinding(r.binding ? JSON.parse(r.binding) : null),
+          };
+        },
+      };
+      const { epoch: _epoch, ...body } = p;
+      if (op === "link_payload") {
+        keys(body, ["host", "connection", "generation", "request_id"]);
+        const session = hostLinkOperation(context, "link_status", {
+          host: body.host,
+          connection: body.connection,
+        }) as { active: boolean; generation: number };
+        if (!session.active || session.generation !== number(body.generation)) fail("fenced");
+        const r = this.row(str(body.request_id));
+        if (r.host !== body.host) fail("forbidden");
+        this.originAuthorized(r);
+        authorizeBinding(
+          operationBinding(JSON.parse(r.binding!)),
+          a.scopes,
+          Date.now(),
+          this.nativeScope(a, r.host, r.kind),
+        );
+        const payload =
+          this.sql()
+            .exec<{ ciphertext: string }>(
+              "SELECT ciphertext FROM host_link_payloads WHERE request=?",
+              r.id,
+            )
+            .toArray()[0] ?? fail("not_found");
+        return {
+          ...payload,
+          digest: r.digest,
+          host: r.host,
+          thread_id: r.thread,
+          request_id: r.id,
+        };
+      }
+      if (["link_claim", "link_begin", "link_record_receipt", "link_observe"].includes(op)) {
+        keys(body, [
+          "host",
+          "connection",
+          "generation",
+          "request_id",
+          ...(op === "link_claim" ? [] : ["command_generation"]),
+          ...(["link_record_receipt", "link_observe"].includes(op) ? ["receipt"] : []),
+        ]);
+        const session = hostLinkOperation(context, "link_status", {
+          host: body.host,
+          connection: body.connection,
+        }) as { active: boolean; generation: number };
+        if (!session.active || session.generation !== number(body.generation)) fail("fenced");
+        const id = str(body.request_id),
+          r = this.row(id);
+        if (
+          r.host !== body.host ||
+          !this.sql().exec("SELECT request FROM host_link_refs WHERE request=?", id).toArray()
+            .length
+        )
+          fail("forbidden");
+        authorizeBinding(
+          operationBinding(r.binding ? JSON.parse(r.binding) : null),
+          a.scopes,
+          Date.now(),
+          this.nativeScope(a, r.host, r.kind),
+        );
+        if (op === "link_claim") {
+          if (
+            this.sql()
+              .exec(
+                "SELECT id FROM commands WHERE host=? AND thread=? AND id<>? AND (state='uncertain' OR (state='claimed' AND lease_until>?)) LIMIT 1",
+                r.host,
+                r.thread,
+                id,
+                Date.now(),
+              )
+              .toArray().length
+          )
+            return { claimed: false, state: "thread_held" };
+          const result = this.apply(
+            a,
+            "claim",
+            { epoch: p.epoch, request_id: id, lease_ms: 10000 },
+            undefined,
+            true,
+          ) as { claimed: boolean; generation: number };
+          if (result.claimed)
+            this.sql().exec(
+              "INSERT INTO host_link_attempts VALUES(?,?,?,?) ON CONFLICT(request) DO UPDATE SET connection=excluded.connection,generation=excluded.generation,command_generation=excluded.command_generation",
+              id,
+              String(body.connection),
+              session.generation,
+              result.generation,
+            );
+          return result;
+        }
+        const attempt = this.sql()
+          .exec<{ connection: string; generation: number; command_generation: number }>(
+            "SELECT * FROM host_link_attempts WHERE request=?",
+            id,
+          )
+          .toArray()[0];
+        if (!attempt || attempt.command_generation !== number(body.command_generation))
+          fail("fenced");
+        if (
+          op === "link_begin" &&
+          (attempt.connection !== body.connection || attempt.generation !== session.generation)
+        )
+          fail("fenced");
+        // Receipt-only reconciliation may use a new connection, never a new execution permit.
+        if (op === "link_record_receipt" || op === "link_observe") {
+          const receipt = body.receipt as Record<string, unknown>;
+          if (
+            !receipt ||
+            receipt.request_id !== id ||
+            receipt.host !== r.host ||
+            receipt.thread_id !== r.thread ||
+            receipt.safe_to_resend !== false
+          )
+            fail("invalid_request");
+          if (
+            r.executor !== a.id ||
+            r.generation !== attempt.command_generation ||
+            !["uncertain", "receipted"].includes(r.state)
+          )
+            fail("fenced");
+          const encoded = JSON.stringify(receipt);
+          if (encoded.length > 16384) fail("invalid_request");
+          const prior = this.sql()
+            .exec<{ value: string }>("SELECT value FROM host_link_observations WHERE request=?", id)
+            .toArray();
+          for (const row of prior) {
+            const known = JSON.parse(row.value);
+            if (known.message_id && receipt.message_id !== known.message_id)
+              fail("immutable_outcome");
+          }
+          if (op === "link_observe") {
+            if (receipt.native_submitted !== true || receipt.completed === true)
+              fail("invalid_request");
+            const stage = ["queued", "running"].includes(String(receipt.run_status))
+              ? String(receipt.run_status)
+              : "accepted";
+            // Bounded immutable stage observations, never interpreted as completion.
+            const old = this.sql()
+              .exec<{ value: string }>(
+                "SELECT value FROM host_link_observations WHERE request=? AND stage=?",
+                id,
+                stage,
+              )
+              .toArray()[0];
+            if (old && old.value !== encoded) fail("immutable_outcome");
+            this.sql().exec(
+              "INSERT OR IGNORE INTO host_link_observations VALUES(?,?,?)",
+              id,
+              stage,
+              encoded,
+            );
+            this.audit(a, op, id);
+            return { observation_recorded: true, native_execution_verified: false };
+          }
+          // Accepted/queued/running are observations, not terminal execution proof.
+          if (
+            receipt.completed !== true ||
+            receipt.run_status !== "completed" ||
+            receipt.terminal !== true ||
+            receipt.run_status_fresh !== true ||
+            receipt.message_observation_fresh !== true ||
+            typeof receipt.message_id !== "string" ||
+            !receipt.message_id ||
+            typeof receipt.run_id !== "string" ||
+            !receipt.run_id
+          )
+            fail("invalid_request");
+          const observation = receipt.native_message_observation as Record<string, unknown>;
+          if (
+            !observation ||
+            observation.message_id !== receipt.message_id ||
+            observation.run_id !== receipt.run_id ||
+            observation.run_status !== "completed"
+          )
+            fail("invalid_request");
+        }
+        return this.apply(
+          a,
+          op === "link_begin" ? "begin" : "record_receipt",
+          {
+            epoch: p.epoch,
+            request_id: id,
+            generation: attempt.command_generation,
+            ...(op === "link_record_receipt" ? { receipt: body.receipt } : {}),
+          },
+          undefined,
+          true,
+        );
+      }
+      if (op === "link_publish") {
+        keys(body, ["request_id", "ciphertext"]);
+        const r = this.row(str(body.request_id));
+        if (r.state !== "pending") fail("fenced");
+        const ciphertext = str(body.ciphertext, 32768);
+        const old = this.sql()
+          .exec<{ ciphertext: string }>(
+            "SELECT ciphertext FROM host_link_payloads WHERE request=?",
+            r.id,
+          )
+          .toArray()[0];
+        if (old && old.ciphertext !== ciphertext) fail("idempotency_conflict");
+        const result = hostLinkOperation(context, op, { request_id: body.request_id });
+        this.sql().exec("INSERT OR IGNORE INTO host_link_payloads VALUES(?,?)", r.id, ciphertext);
+        this.audit(a, op, r.id);
+        return result;
+      }
+      const result = hostLinkOperation(context, op, body);
+      this.audit(a, op, String(body.request_id ?? body.host));
+      return result;
+    }
     const service = serviceOperation(
       {
         sql: this.sql(),
@@ -728,6 +967,13 @@ export class FleetState extends DurableObject<Env> {
       this.nativeScope(a, r.host, r.kind),
     );
     if (op === "claim" || op === "begin") {
+      if (
+        !linked &&
+        (this.sql().exec("SELECT host FROM host_links WHERE host=?", r.host).toArray().length ||
+          this.sql().exec("SELECT request FROM host_link_refs WHERE request=?", id).toArray()
+            .length)
+      )
+        fail("fenced");
       if (this.originAuthorized(r).maxPerDay === undefined) fail("forbidden");
     }
     if (op === "claim") {
@@ -754,6 +1000,11 @@ export class FleetState extends DurableObject<Env> {
       return { may_attempt: true, request_id: id, generation: r.generation };
     }
     if (op === "record_receipt") {
+      if (
+        !linked &&
+        this.sql().exec("SELECT request FROM host_link_refs WHERE request=?", id).toArray().length
+      )
+        fail("fenced");
       keys(p, ["epoch", "request_id", "generation", "receipt"]);
       const receipt = JSON.stringify(p.receipt);
       if (!receipt || receipt.length > 16384) fail("invalid_request");
@@ -827,6 +1078,9 @@ export class FleetState extends DurableObject<Env> {
         "invalid_signature",
         "activation_expired",
         "activation_state_changed",
+        "host_backpressure",
+        "connector_history_full",
+        "cursor_mismatch",
       ];
       if (!allowed.includes(reason)) {
         console.error("control-plane unexpected error", typeof e);

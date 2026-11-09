@@ -551,6 +551,11 @@ test("real workerd central store recovers lost commit response, fresh edge hydra
         principals: [{ id: "owner", tokenSha256: hash("fixture-mcp-owner"), sessions: [] }],
       }),
     );
+    // This is a different process instance from the legacy fixture owner above.
+    // Preserve the real lease boundary rather than stealing its live generation.
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, Number(lease.expires) - Date.now() + 10)),
+    );
     const sidecar = await startSidecar({
       configPath,
       stateKey: key,

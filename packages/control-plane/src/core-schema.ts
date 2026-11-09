@@ -2,7 +2,9 @@
 import { recoveryIngressSchema } from "./recovery-ingress.ts";
 import { activationSchema } from "./activation.ts";
 import { migrationReauthorizationSchema } from "./migration-reauthorization.ts";
+import { hostLinkSql } from "./host-links.ts";
 export const coreSchema =
+  hostLinkSql +
   `
     CREATE TABLE IF NOT EXISTS recovery_freezes(id TEXT PRIMARY KEY,owner TEXT NOT NULL,epoch INTEGER NOT NULL,watermark INTEGER NOT NULL,counts TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS auth_policy(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);
