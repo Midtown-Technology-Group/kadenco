@@ -196,3 +196,23 @@ created. Live acceptance must include simultaneous installed instances, loss of
 one host with others unaffected, revived stale connector refusal, exact original
 host mapping, uncertain native/receipt recovery, catch-up and current-state rollback.
 The workerd pipe-abort diagnostic remains unresolved. Windows is not yet removable.
+
+## Main integration after owner enrollment
+
+The connector candidate incorporates main through Grok enrollment PR48
+(`b361a0e3c2ef3b812327e706430a113f08158f70`). The combined Worker reuses
+the shared owner policy types and capacity limits while retaining its explicit
+host-connector feature gate and linked execution permit. The Node test lane
+retains both sets of tests with bounded file concurrency.
+
+A combined Worker regression admits a synthetic owner, denies that owner's
+attempt to open or read the executor's host connection, and verifies that the
+existing single-host executor can still open it. Owner parity grants no
+connector identity, native permit or extra writer. This remains local source
+qualification; no running principal or credential has changed.
+
+The native pipe-abort was reduced separately to cancellation of an unread
+streamed request in a standalone Worker containing no Kadenco code. That
+identifies a local transport trigger, not its harmlessness or the historical
+stall cause. Preserve the authentication and body bounds; do not drain
+unauthenticated bodies just to silence the diagnostic.
