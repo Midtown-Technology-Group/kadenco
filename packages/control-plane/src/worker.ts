@@ -6,8 +6,6 @@ import {
   authorizeBinding,
   nativeGrantScope,
   tightensNativeGrant,
-  type NativeGrantScope,
-  type OperationBinding,
 } from "./binding";
 import { recoveryPage, recoveryTables, assertRecoverySchema } from "./recovery";
 import { serviceSchema, serviceOperation, type ServicePrincipal } from "./services";
@@ -16,21 +14,11 @@ import { activationOperation, readRetirement, type RetirementEvidence } from "./
 import { decodePolicy } from "./policy-transport";
 import { frozenReactivation } from "./frozen-reactivation";
 import { migrationReauthorization } from "./migration-reauthorization";
+import { ownerEnrollment, type ControlPrincipal, type ControlPolicy } from "./owner-enrollment";
+import { MAX_CONTROL_PRINCIPALS, MAX_NATIVE_GRANTS_PER_PRINCIPAL } from "./policy-limits";
 import packageInfo from "../../../package.json" with { type: "json" };
-type Principal = {
-  id: string;
-  tokenSha256: string;
-  role: "owner" | "executor" | "migration";
-  hosts: string[];
-  scopes?: OperationBinding[];
-  nativeGrants?: NativeGrantScope[];
-  migrationAuthority?: boolean;
-  stateCustodian?: boolean;
-  maxPerDay?: number | null;
-  threadBudgets?: { thread: string; provider: string; maxPerDay: number; expiresAt: number }[];
-  expiresAt: number;
-};
-type Policy = { revision: number; fleet: string; principals: Principal[] };
+type Principal = ControlPrincipal;
+type Policy = ControlPolicy;
 type Env = Cloudflare.Env & { AUTH_POLICY?: string };
 const fail = (reason: string): never => {
   throw new Error(reason);
@@ -44,12 +32,14 @@ function servicePrincipal(a: Principal): ServicePrincipal {
     a.role === "owner" ? "owner" : a.role === "executor" ? "executor" : fail("forbidden");
   return { ...a, role };
 }
+/** Decode bounded operator/durable policy and reject invalid identities or grant limits. */
 function policy(raw: string | undefined): Policy {
   if (!raw || raw.length > 65536) fail("configuration_required");
   const p = JSON.parse(decodePolicy(raw!)) as Policy;
   str(p.fleet);
   if (number(p.revision) < 1) fail("configuration_required");
-  if (!Array.isArray(p.principals) || p.principals.length > 100) fail("configuration_required");
+  if (!Array.isArray(p.principals) || p.principals.length > MAX_CONTROL_PRINCIPALS)
+    fail("configuration_required");
   const ids = new Set(),
     tokens = new Set();
   for (const a of p.principals) {
@@ -69,7 +59,10 @@ function policy(raw: string | undefined): Policy {
     if (a.scopes && (!Array.isArray(a.scopes) || a.scopes.length > 100))
       fail("configuration_required");
     a.scopes?.forEach(operationBinding);
-    if (a.nativeGrants && (!Array.isArray(a.nativeGrants) || a.nativeGrants.length > 40))
+    if (
+      a.nativeGrants &&
+      (!Array.isArray(a.nativeGrants) || a.nativeGrants.length > MAX_NATIVE_GRANTS_PER_PRINCIPAL)
+    )
       fail("configuration_required");
     a.nativeGrants?.forEach(nativeGrantScope);
     if (
@@ -242,8 +235,26 @@ export class FleetState extends DurableObject<Env> {
       Date.now(),
     );
   }
+  /** Apply one authenticated operation inside fetch's synchronous storage transaction.
+   * Recheck current authority before admission, receipts, or native reservations. */
   apply(a: Principal, op: string, p: Record<string, unknown>, retirement?: RetirementEvidence) {
     this.authorized(a);
+    if (
+      [
+        "enroll_configured_owner",
+        "owner_enrollment_receipt",
+        "owner_enrollment_challenge",
+      ].includes(op)
+    ) {
+      return ownerEnrollment(
+        this.sql(),
+        a,
+        this.currentPolicy(),
+        policy(this.env.AUTH_POLICY),
+        op,
+        p,
+      );
+    }
     // A temporary migration credential is not a general administrative owner.
     // Default-deny also covers future operations added to this control plane.
     if (

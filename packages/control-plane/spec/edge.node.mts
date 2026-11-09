@@ -65,6 +65,58 @@ test("central HTTP transport preserves refusals and never retries uncertain muta
     );
   }
 });
+test("central transport deadline before headers or during body remains uncertain without retry", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const phase of ["headers", "body"]) {
+    let calls = 0;
+    let aborted = false;
+    const rows: import("../src/transport.ts").CentralDiagnostic[] = [];
+    const transport = centralTransport({
+      origin: "https://fixture.invalid",
+      token: () => "synthetic-never-transmitted",
+      timeoutMs: 10000,
+      diagnostic: (row) => rows.push(row),
+      fetch: async (_url, init) => {
+        calls++;
+        const signal = init!.signal!;
+        if (phase === "headers")
+          return new Promise<Response>((_resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              aborted = true;
+              reject(Error("synthetic transport stall"));
+            });
+          });
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              signal.addEventListener("abort", () => {
+                aborted = true;
+                controller.error(Error("synthetic body stall"));
+              });
+            },
+          }),
+        );
+      },
+    });
+    const pending = transport("begin", { request_id: "original-stable-identity" });
+    // Let fetch resolve and enter the body reader before advancing fake time.
+    await Promise.resolve();
+    await Promise.resolve();
+    const rejected = assert.rejects(pending, /^Error: central_transport_uncertain$/);
+    t.mock.timers.tick(9999);
+    assert.equal(aborted, false);
+    t.mock.timers.tick(1);
+    await rejected;
+    assert.equal(aborted, true);
+    assert.equal(calls, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].operation, "begin");
+    assert.equal(rows[0].outcome, "uncertain");
+    assert.equal(rows[0].http_status, phase === "headers" ? null : 200);
+    assert.equal(JSON.stringify(rows).includes("synthetic"), false);
+  }
+});
+
 test("central transport diagnostics retain fixed fields without secrets or outcome changes", async () => {
   const rows: import("../src/transport.ts").CentralDiagnostic[] = [];
   let calls = 0,

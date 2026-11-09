@@ -15,6 +15,7 @@ export const coreSchema =
     CREATE INDEX IF NOT EXISTS budget_host_day ON budget_reservations(owner,host,day);
     CREATE INDEX IF NOT EXISTS budget_thread_day ON budget_reservations(owner,host,thread,day);
     CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT NOT NULL,action TEXT NOT NULL,subject TEXT NOT NULL,at INTEGER NOT NULL);
+    CREATE UNIQUE INDEX IF NOT EXISTS owner_enrollment_request ON audit(json_extract(subject,'$.request_id')) WHERE action='enroll_configured_owner';
   ` +
   recoveryIngressSchema +
   activationSchema +
