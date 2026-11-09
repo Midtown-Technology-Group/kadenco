@@ -115,6 +115,56 @@ function fixture(t) {
   };
 }
 
+test("goalkeeper preparation uses the existing owner grant and exact native projection without dispatch", async (t) => {
+  const f = fixture(t),
+    target = { host: "local", thread_id: "t", source_run_id: "r" };
+  const c = await f.commands.prepareGoalkeeper("eddie", target);
+  assert.equal(c.state, "prepared");
+  assert.equal(c.unattended_dispatch_enabled, false);
+  assert.equal((await f.commands.goalkeeper.dispatch("eddie", target)).state, "refused");
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.store.all("subscription").length, 0);
+  f.projection.runs[0].status = "running";
+  await assert.rejects(
+    f.commands.prepareGoalkeeper("eddie", target),
+    /goalkeeper_source_changed_or_busy/,
+  );
+  f.grant.expiresAt = 0;
+  await assert.rejects(f.commands.prepareGoalkeeper("eddie", target), /forbidden/);
+});
+test("test-only goalkeeper dispatch adapter reuses Commands.continue and its stable native request", async (t) => {
+  const f = fixture(t),
+    target = { host: "local", thread_id: "t", source_run_id: "r" };
+  f.projection.runtimeRequests = [];
+  const c = await f.commands.prepareGoalkeeper("eddie", target);
+  const ports = f.commands.goalkeeper.ports;
+  ports.preservesStopThroughSubmission = true;
+  ports.enforcesContinuationEntry = true;
+  ports.checkpoint = async () => {};
+  ports.read = async () => ({
+    host: "local",
+    thread_id: "t",
+    latest_run_id: "r",
+    latest_status: "completed",
+    active: false,
+    queued: null,
+    pending_request: false,
+    pending_question: false,
+    stopped: false,
+    snoozed: false,
+    unavailable: false,
+    authorized: true,
+    authorization_revision: "test-only-task-grant",
+    work_remaining: true,
+  });
+  assert.equal((await f.commands.goalkeeper.dispatch("eddie", target)).state, "accepted_queued");
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.writes[0].dispatchMode.type, "queue_after_active");
+  assert.ok(f.writes[0].text.includes(c.request_id));
+  assert.equal(f.store.get("command", c.request_id).sourceRunId, "r");
+  await f.commands.goalkeeper.dispatch("eddie", target);
+  assert.equal(f.writes.length, 1);
+});
 test("busy and idle preflight never advertises atomic steering or dispatches a probe", async (t) => {
   const f = fixture(t);
   for (const status of ["running", "waiting", "completed"]) {
