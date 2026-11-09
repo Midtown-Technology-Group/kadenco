@@ -216,17 +216,37 @@ test("two real Worker host links deliver exact mock native operations, restart a
           },
           services,
         });
-        assert.deepEqual(await local.cycle(), { state: "cycle_complete", examined: 1, settled: 0 });
+        assert.deepEqual(await local.cycle(), {
+          state: "cycle_complete",
+          examined: 1,
+          settled: 0,
+          failed: 0,
+        });
         const frame = inbox.read(request_id)!;
         assert.equal(frame.request_id, request_id);
         assert.equal(executions, 1);
         journal.close();
         journal = new SqliteJournal(path, key);
-        assert.deepEqual(await local.cycle(), { state: "cycle_complete", examined: 1, settled: 0 });
+        assert.deepEqual(await local.cycle(), {
+          state: "cycle_complete",
+          examined: 1,
+          settled: 0,
+          failed: 0,
+        });
         assert.equal(executions, 1);
         assert.equal(reads, 1);
-        assert.deepEqual(await local.cycle(), { state: "cycle_complete", examined: 1, settled: 1 });
-        assert.deepEqual(await local.cycle(), { state: "cycle_complete", examined: 0, settled: 0 });
+        assert.deepEqual(await local.cycle(), {
+          state: "cycle_complete",
+          examined: 1,
+          settled: 1,
+          failed: 0,
+        });
+        assert.deepEqual(await local.cycle(), {
+          state: "cycle_complete",
+          examined: 0,
+          settled: 0,
+          failed: 0,
+        });
         assert.equal(executions, 1);
         await assert.rejects(
           consumeHostReference({ host: host === "a" ? "b" : "a", frame } as Parameters<
@@ -243,5 +263,142 @@ test("two real Worker host links deliver exact mock native operations, restart a
   } finally {
     for (const r of resources) r.close();
     await mf.dispose();
+  }
+});
+
+test("a failing frame rotates without starving another thread or replaying its native effect", async () => {
+  const key = randomBytes(32),
+    payloadKey = randomBytes(32),
+    store = new Store(":memory:", key);
+  const dir = mkdtempSync(join(tmpdir(), "host-drain-")),
+    journal = new SqliteJournal(join(dir, "journal.db"), key);
+  const bad = randomUUID(),
+    good = randomUUID();
+  const e: Envelope = {
+    request_id: good,
+    host: "a",
+    thread_id: "good",
+    fleet: "fixture",
+    principal: "owner",
+    project: "project",
+    provider: "codex",
+    run: "source",
+    grant: "grant",
+    revision: 1,
+    expires: 4102444700000,
+    kind: "continue",
+    payload: { text: "approved fixture" },
+  };
+  const grant: Grant = { ...e, revoked: false, kinds: ["continue"] };
+  const digest = validateOperation(e, grant, Date.now());
+  const ciphertext = encryptHostPayload(
+    seal(e, key),
+    payloadKey,
+    hostPayloadIdentity("a", "good", good, digest),
+  );
+  const binding = {
+    project: e.project,
+    provider: e.provider,
+    run: e.run,
+    grant: e.grant,
+    revision: 1,
+    expires: e.expires,
+  };
+  let executions = 0,
+    attempted = false,
+    corrupt = false,
+    hostRevoked = false;
+  const receipt = {
+    request_id: good,
+    host: "a",
+    thread_id: "good",
+    native_submitted: true,
+    safe_to_resend: false,
+    completed: false,
+    message_id: "exact",
+  };
+  const local = createHostLocalConnector({
+    host: "a",
+    store,
+    epoch: 7,
+    key,
+    payloadKey,
+    journal,
+    now: Date.now,
+    grant: async () => grant,
+    services: {
+      continue: async () => {
+        executions++;
+        return receipt;
+      },
+      receipt: async () => receipt,
+      creation: {
+        create: async () => {
+          throw Error("unexpected_fixture_create");
+        },
+      },
+      settings: {
+        standard: async () => {
+          throw Error("unexpected_fixture_settings");
+        },
+      },
+    } as SidecarServices,
+    call: async (op, p) => {
+      const b = p as Record<string, unknown>,
+        session = { host: "a", connection: b.connection, generation: 1, active: true };
+      if (["link_open", "link_renew", "link_status"].includes(op))
+        return hostRevoked ? { reason: "forbidden" } : session;
+      if (op === "link_page")
+        return {
+          ...session,
+          items: b.after
+            ? []
+            : [
+                { host: "a", thread_id: "bad", request_id: bad, binding, sequence: 1 },
+                { host: "a", thread_id: "good", request_id: good, binding, sequence: 2 },
+              ],
+          next: 2,
+          more: false,
+        };
+      if (op === "link_ack") return { host: "a", acknowledged: 2 };
+      if (op === "link_payload")
+        return b.request_id === bad
+          ? corrupt
+            ? { request_id: bad, host: "a", thread_id: "bad", digest, ciphertext: "corrupt" }
+            : { reason: "forbidden" }
+          : { request_id: good, host: "a", thread_id: "good", digest, ciphertext };
+      if (op === "link_claim")
+        return attempted
+          ? { claimed: false, state: "uncertain" }
+          : { claimed: true, generation: 1, host: "a", thread: "good", kind: "continue", digest };
+      if (op === "link_begin") {
+        attempted = true;
+        return { may_attempt: true, request_id: good, generation: 1 };
+      }
+      if (op === "receipt") return { state: "uncertain", generation: 1 };
+      if (op === "link_observe") return { observation_recorded: true };
+      throw Error("unexpected_fixture_operation");
+    },
+  });
+  try {
+    assert.deepEqual(await local.cycle(), {
+      state: "cycle_complete",
+      examined: 2,
+      settled: 0,
+      failed: 1,
+    });
+    assert.equal(executions, 1);
+    assert.equal(store.get("connector_drain", "a").after, 2);
+    assert.equal(store.get("connector_settled", bad), undefined);
+    corrupt = true;
+    assert.equal((await local.cycle()).state, "cycle_complete");
+    assert.equal(executions, 1);
+    hostRevoked = true;
+    assert.equal((await local.cycle()).state, "held");
+    assert.equal(executions, 1);
+  } finally {
+    local.close();
+    journal.close();
+    store.close();
   }
 });

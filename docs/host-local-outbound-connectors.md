@@ -51,8 +51,10 @@ The protocol retains up to 256 pending references, 4,096 total references and
 256 historical connection IDs per host, refusing growth at the limits rather
 than deleting deduplication/fencing evidence. Pages contain at most 32 references,
 with an 8-KiB frame limit and a 48,000-byte item budget inside the existing 64-KiB
-HTTP limit. Host/thread IDs are exact strings capped at 200 characters;
-request/connection IDs must be UUIDv4. Unsupported historical identities are held,
+HTTP limit. Hosts are exact strings capped at 200 characters; thread IDs are
+capped at 2,048 characters. Request IDs have a 200-character protocol bound;
+Connection IDs must be UUIDv4; request IDs retain their original supported identity.
+Unsupported historical identities are held,
 never renamed or given a substitute UUID to evade these bounds. The prototype is
 not a history migration or replacement for the existing receipt lookup.
 Unbounded operation requires reviewed compaction; reaching a limit is visible
@@ -68,14 +70,23 @@ of full native scan or execution. Metadata pages can be fetched again after a
 lost response. They are not native command resubmissions. A persisted unknown
 command is never rewritten by this inbox. A journal bound to host A refuses B.
 
-There is **no execution function, autonomous loop, new service, production HTTP
-registration, new production schema creation or capability enable switch** in
-this slice. The tests install the schema only in synthetic SQLite/Workers fixtures.
-Adding these tables to the current production DO without updating its exact
-recovery inventory would correctly fail existing schema validation. Do not do it.
+The initial metadata slice has no autonomous loop or installed service. The
+follow-up below adds the disabled Worker routes and execution composition.
+`coreSchema` includes `hostLinkSql`, and every `FleetState` constructor runs it:
+deploying this source creates six connector tables even with `HOST_CONNECTORS`
+off. The recovery inventory includes them. This is a schema/rollback consequence
+of a future deployment, not evidence that any production schema changed here.
 The trusted lookup and authentication seam are fixture-tested, not a production
 ingress qualification. Existing migrated Cloudflare state is reused conceptually;
 no production snapshot was read or transferred.
+
+Startup retries only idempotent connectivity registration under the same UUID;
+retired UUIDs remain fenced. Pages retain unauthorized references centrally and
+return only a sequence plus fixed refusal reason, never their target or payload.
+The inbox durably records that refusal before acknowledging its cursor. Claim
+and begin still enforce current authority. Per-frame payload failures rotate
+past the failed reference without settling it; host/lease/transport failures
+stop the pass. Neither case authorizes native replay.
 
 ## Remaining source integration sequence
 

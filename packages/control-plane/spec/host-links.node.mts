@@ -125,6 +125,81 @@ function fixture(path = ":memory:") {
   };
 }
 
+test("startup recovers an unsent open and a live predecessor without reviving a retired UUID", async () => {
+  const f = fixture(),
+    store = new Store(":memory:", randomBytes(32));
+  let offline = true;
+  const call = async (op: string, p: object) => {
+    if (op === "link_open" && offline) {
+      offline = false;
+      throw Error("offline_before_send");
+    }
+    try {
+      return f.call("a", op, p as Record<string, unknown>);
+    } catch (e) {
+      return { reason: (e as Error).message };
+    }
+  };
+  try {
+    const first = new HostConnector("a", randomUUID(), new ConnectorInbox(store, "a"), call);
+    assert.equal((await first.tick()).state, "reconcile");
+    assert.equal((await first.tick()).state, "page_committed");
+    const next = new HostConnector("a", randomUUID(), new ConnectorInbox(store, "a"), call);
+    assert.equal((await next.tick()).state, "reconcile");
+    f.now(11001);
+    assert.equal((await next.tick()).state, "page_committed");
+    assert.equal((await first.tick()).state, "held");
+    assert.equal((await first.tick()).state, "held");
+    assert.equal(f.db.prepare("SELECT count(*) n FROM host_link_sessions").get()!.n, 2);
+  } finally {
+    store.close();
+    f.db.close();
+  }
+});
+
+test("revoked reference yields a redacted durable refusal while another owner progresses", () => {
+  const f = fixture(),
+    store = new Store(":memory:", randomBytes(32));
+  try {
+    const connection = randomUUID();
+    f.call("a", "link_open", { host: "a", connection });
+    const old = f.publish();
+    f.actors.set("other", { ...f.actors.get("owner")!, id: "other" });
+    const id = randomUUID();
+    f.refs.set(id, {
+      request_id: id,
+      host: "a",
+      thread_id: "other-thread",
+      binding: f.binding,
+      owner: "other",
+    });
+    f.call("other", "link_publish", { request_id: id });
+    f.revoked.add("owner");
+    const page = f.call("a", "link_page", { host: "a", connection, generation: 1, after: 0 });
+    assert.deepEqual(page.refused, [{ sequence: old.sequence, reason: "forbidden" }]);
+    assert.equal((page.items as Reference[])[0].request_id, id);
+    assert.equal(JSON.stringify(page).includes(old.id), false);
+    const inbox = new ConnectorInbox(store, "a");
+    inbox.accept(page.items as unknown[], Number(page.next), page.refused as unknown[]);
+    assert.equal(inbox.read(old.id), undefined);
+    assert.equal(inbox.read(id)!.thread_id, "other-thread");
+    assert.equal(store.all("connector_refusal").length, 1);
+    f.call("a", "link_ack", { host: "a", connection, generation: 1, after: page.next });
+    assert.equal(f.db.prepare("SELECT count(*) n FROM host_link_refs").get()!.n, 2);
+    assert.throws(
+      () =>
+        inbox.accept([], Number(page.next) + 1, [
+          { sequence: Number(page.next) + 1, reason: "forbidden", thread_id: "leak" },
+        ]),
+      /invalid_connector_page/,
+    );
+    assert.equal(inbox.cursor(), page.next);
+  } finally {
+    store.close();
+    f.db.close();
+  }
+});
+
 test("two host sessions coexist, renew independently, fence stale processes and keep original target", () => {
   const f = fixture(),
     ca = randomUUID(),
@@ -212,11 +287,15 @@ test("bounded exact-host replay and immutable UUID references revalidate current
       /cursor_mismatch/,
     );
     f.revoked.add("owner");
-    assert.throws(() => f.call("a", "link_page", { ...base, after: 0 }), /forbidden/);
+    assert.deepEqual(f.call("a", "link_page", { ...base, after: 0 }).refused, [
+      { sequence: first.sequence, reason: "forbidden" },
+    ]);
     assert.throws(() => f.call("owner", "link_publish", { request_id: first.id }), /forbidden/);
     f.revoked.clear();
     f.actors.get("a")!.scopes = [{ ...f.binding, project: "wrong" }];
-    assert.throws(() => f.call("a", "link_page", { ...base, after: 0 }), /forbidden/);
+    assert.deepEqual(f.call("a", "link_page", { ...base, after: 0 }).refused, [
+      { sequence: first.sequence, reason: "forbidden" },
+    ]);
     f.actors.get("a")!.scopes = [f.binding];
     f.actors.get("a")!.expiresAt = 1000;
     assert.throws(() => f.call("a", "link_status", { host: "a" }), /forbidden/);

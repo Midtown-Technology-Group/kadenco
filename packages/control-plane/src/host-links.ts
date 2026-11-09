@@ -19,6 +19,7 @@ export type Reference = {
   binding: OperationBinding;
 };
 export type LinkFrame = Omit<Reference, "owner"> & { sequence: number };
+export type LinkRefusal = { sequence: number; reason: "forbidden" };
 export type HostLinkContext = {
   sql: SqlStorage;
   now: number;
@@ -181,10 +182,21 @@ export function hostLinkOperation(
   allowed(actor, host);
   const old = session(host);
   const connection = linkUuid(p.connection);
-  if (op === "link_status")
-    return old && old.connection === connection && old.principal === actor.id
-      ? { ...old, active: old.expires > now }
-      : { host, active: false };
+  if (op === "link_status") {
+    if (old && old.connection === connection && old.principal === actor.id)
+      return { ...old, active: old.expires > now };
+    if (
+      sql
+        .exec(
+          "SELECT connection FROM host_link_sessions WHERE host=? AND connection=?",
+          host,
+          connection,
+        )
+        .toArray().length
+    )
+      fail("fenced");
+    return { host, active: false };
+  }
   if (op === "link_open") {
     if (old?.expires > now) {
       if (old.principal !== actor.id || old.connection !== connection) fail("fenced");
@@ -259,14 +271,29 @@ export function hostLinkOperation(
     )
     .toArray();
   const items: LinkFrame[] = [];
+  const refused: LinkRefusal[] = [];
+  let next = after;
   let bytes = 256;
   for (const r of rows) {
-    if (items.length >= hostLinkLimits.page) break;
+    if (items.length + refused.length >= hostLinkLimits.page) break;
     const b = operationBinding(JSON.parse(r.binding));
-    const origin = c.principal(r.owner);
-    if (origin.role !== "owner") fail("forbidden");
-    allowed(origin, host, b);
-    allowed(actor, host, b);
+    try {
+      const origin = c.principal(r.owner);
+      if (origin.role !== "owner") fail("forbidden");
+      allowed(origin, host, b);
+      allowed(actor, host, b);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "forbidden") throw error;
+      // Retain the reference centrally. Reveal no owner, target or binding to
+      // a receiver lacking current authority; the sequence alone permits ack.
+      const refusal: LinkRefusal = { sequence: r.sequence, reason: "forbidden" };
+      const size = new TextEncoder().encode(JSON.stringify(refusal)).length;
+      if (bytes + size > hostLinkLimits.pageBytes) break;
+      bytes += size;
+      refused.push(refusal);
+      next = r.sequence;
+      continue;
+    }
     const frame = linkFrame({
       sequence: r.sequence,
       host,
@@ -278,15 +305,16 @@ export function hostLinkOperation(
     if (bytes + size > hostLinkLimits.pageBytes) break;
     bytes += size;
     items.push(frame);
+    next = r.sequence;
   }
-  const next = items.at(-1)?.sequence ?? after;
   sql.exec("UPDATE host_links SET sent=MAX(sent,?) WHERE host=?", next, host);
   return {
     host,
     connection,
     generation: old.generation,
     items,
+    ...(refused.length ? { refused } : {}),
     next,
-    more: rows.length > items.length,
+    more: rows.length > items.length + refused.length,
   };
 }

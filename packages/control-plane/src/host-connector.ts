@@ -24,17 +24,43 @@ export class ConnectorInbox {
   cursor(): number {
     return this.store.get("connector_host", "identity").cursor;
   }
-  accept(items: unknown[], next: number) {
+  accept(items: unknown[], next: number, refused: unknown[] = []) {
     if (
-      items.length > hostLinkLimits.page ||
+      items.length + refused.length > hostLinkLimits.page ||
       !Number.isSafeInteger(next) ||
-      Buffer.byteLength(JSON.stringify(items)) > hostLinkLimits.pageBytes
+      Buffer.byteLength(JSON.stringify({ items, refused })) > hostLinkLimits.pageBytes
     )
       throw Error("invalid_connector_page");
     const frames = items.map(linkFrame);
+    const refusals = refused.map((value) => {
+      const r = value as { sequence: number; reason: string };
+      if (
+        !r ||
+        Object.keys(r).some((k) => !["sequence", "reason"].includes(k)) ||
+        !Number.isSafeInteger(r.sequence) ||
+        r.sequence < 1 ||
+        r.reason !== "forbidden"
+      )
+        throw Error("invalid_connector_page");
+      return r;
+    });
+    const entries = [...frames, ...refusals].sort((a, b) => a.sequence - b.sequence);
     this.store.transaction(() => {
       let cursor = this.cursor();
-      for (const frame of frames) {
+      for (const frame of entries) {
+        if (!("host" in frame)) {
+          if (frame.sequence <= cursor) throw Error("cursor_mismatch");
+          const count = this.store.db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM records WHERE kind IN ('connector_reference','connector_refusal')",
+            )
+            .get();
+          if (!count || Number(count.n) >= hostLinkLimits.history)
+            throw Error("local_backpressure");
+          this.store.insert("connector_refusal", String(frame.sequence), frame);
+          cursor = frame.sequence;
+          continue;
+        }
         if (frame.host !== this.host || frame.sequence <= cursor)
           throw Error("host_identity_mismatch");
         const old = this.store.get("connector_reference", frame.request_id);
@@ -42,7 +68,9 @@ export class ConnectorInbox {
           throw Error("immutable_reference");
         if (!old) {
           const count = this.store.db
-            .prepare("SELECT COUNT(*) AS n FROM records WHERE kind='connector_reference'")
+            .prepare(
+              "SELECT COUNT(*) AS n FROM records WHERE kind IN ('connector_reference','connector_refusal')",
+            )
             .get();
           if (
             !count ||
@@ -108,14 +136,22 @@ export class HostConnector {
         if (this.opening) {
           const status = await this.call("link_status", base);
           if (status.reason !== undefined) throw Error(String(status.reason));
+          if (
+            status.host !== this.host ||
+            (status.connection !== undefined && status.connection !== this.connection)
+          )
+            throw Error("connector_identity_mismatch");
           if (status.connection === this.connection && status.active === false)
             throw Error("fenced");
-          if (status.active !== true || status.connection !== this.connection)
-            return { state: "reconcile" };
-          this.generation = Number(checked(status).generation);
-        } else {
-          this.opening = true; // Open only once, including a lost response.
-          this.generation = Number(checked(await this.call("link_open", base)).generation);
+          if (status.active === true) this.generation = Number(checked(status).generation);
+        }
+        if (this.generation === undefined) {
+          this.opening = true;
+          // Connectivity registration is idempotent under this exact UUID.
+          // This never retries a native command or revives a retired session.
+          const opened = await this.call("link_open", base);
+          if (opened.reason === "fenced") return { state: "reconcile" };
+          this.generation = Number(checked(opened).generation);
         }
       }
       checked(await this.call("link_renew", { ...base, generation: this.generation }));
@@ -131,10 +167,11 @@ export class HostConnector {
         !Array.isArray(page.items) ||
         typeof page.next !== "number" ||
         typeof page.more !== "boolean" ||
-        (!page.items.length && page.more)
+        (page.refused !== undefined && !Array.isArray(page.refused)) ||
+        (!page.items.length && !(page.refused as unknown[] | undefined)?.length && page.more)
       )
         throw Error("connector_identity_mismatch");
-      this.inbox.accept(page.items, page.next);
+      this.inbox.accept(page.items, page.next, page.refused as unknown[] | undefined);
       // Ack only after durable local commit. A lost ack is never a native resend.
       const ack = await this.call("link_ack", {
         ...base,

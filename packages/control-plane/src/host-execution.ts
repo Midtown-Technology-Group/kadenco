@@ -21,6 +21,7 @@ export async function consumeHostReference(
     generation: input.generation,
     request_id: input.frame.request_id,
   });
+  if (result.reason !== undefined) throw Error(String(result.reason));
   if (
     result.request_id !== input.frame.request_id ||
     result.host !== input.host ||
