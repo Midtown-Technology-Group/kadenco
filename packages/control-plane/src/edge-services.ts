@@ -144,13 +144,13 @@ export async function observeExisting(
     if (d.status !== "pending") continue;
     const s = bridge.store.get("subscription", d.subId);
     if (!subscriptionActive(s, bridge.now())) continue;
-    if (ports.host !== undefined && eventTarget(bridge, s, d.event).host !== ports.host) continue;
     await refresh();
     try {
+      const { host, thread } = eventTarget(bridge, s, d.event);
+      if (ports.host !== undefined && host !== ports.host) continue;
       // Existing filtering/pending-question/native authorization is rechecked again at
       // callback time; observations are evidence, never permission to execute a task.
       const binding = ports.binding(s, d.event);
-      const { host, thread } = eventTarget(bridge, s, d.event);
       const centralSubscription = JSON.stringify([s.id, host, thread]);
       const request = {
         epoch: ports.epoch,

@@ -1466,14 +1466,14 @@ test("centralization quarantines one delivery but fences stop the entire pass", 
     const bridge = {
       now: Date.now,
       async observe() {},
-      fleetEvents: { async observe() {} },
+      fleetEvents: { async observe() {}, async observeHost() {} },
       store: {
         all: () => [...state.values()],
         get: (_kind: string, id: string) => subscriptions.get(id),
         put: (_kind: string, id: string, v: Record<string, unknown>) => state.set(id, v),
       },
     } as any;
-    return { bridge, state };
+    return { bridge, state, subscriptions };
   };
   const ports = {
     epoch: 7,
@@ -1501,6 +1501,27 @@ test("centralization quarantines one delivery but fences stop the entire pass", 
     ["stored", "quarantined", "stored"],
   );
   assert.equal(f.state.get("bad")?.status, "centralization_quarantined");
+  const badTarget = setup();
+  badTarget.bridge.fleetEvents.observeHost = async () => {};
+  const invalid = badTarget.state.get("bad")!;
+  invalid.event = { name: "t3.thread.activity", data: { host: "foreign", thread_id: "thread" } };
+  assert.deepEqual(
+    (await observeExisting(badTarget.bridge, { ...ports, host: "local" })).map((r) => r.state),
+    ["stored", "quarantined", "stored"],
+  );
+  assert.equal(badTarget.state.get("bad")?.status, "centralization_quarantined");
+  const foreign = setup();
+  foreign.bridge.fleetEvents.observeHost = async () => {};
+  foreign.subscriptions.get("bad")!.host = "foreign";
+  foreign.state.get("bad")!.event = {
+    name: "t3.thread.activity",
+    data: { host: "foreign", thread_id: "thread" },
+  };
+  assert.deepEqual(
+    (await observeExisting(foreign.bridge, { ...ports, host: "local" })).map((r) => r.state),
+    ["stored", "stored"],
+  );
+  assert.equal(foreign.state.get("bad")?.status, "pending");
   const fenced = setup();
   await assert.rejects(
     observeExisting(fenced.bridge, {
