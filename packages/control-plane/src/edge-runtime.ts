@@ -41,7 +41,7 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
 export async function createEdgeRuntime(
   bridge: Bridge,
   ports: EdgeRuntimePorts,
-): Promise<SidecarRuntime> {
+): Promise<Extract<SidecarRuntime, { mcp: unknown }>> {
   if (
     !Number.isSafeInteger(ports.epoch) ||
     ports.epoch < 1 ||

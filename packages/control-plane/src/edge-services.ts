@@ -109,6 +109,8 @@ export async function observeExisting(
     ownerCall: (op: string, p: object) => Promise<Record<string, unknown>>;
     executorCall: (op: string, p: object) => Promise<Record<string, unknown>>;
     binding: (subscription: Record<string, unknown>, event?: unknown) => OperationBinding;
+    host?: string;
+    ownerFor?: (owner: string, op: string, p: object) => Promise<Record<string, unknown>>;
   },
 ) {
   const refresh = async () => {
@@ -116,8 +118,9 @@ export async function observeExisting(
     if (result && result.reason !== undefined) throw Error(String(result.reason));
   };
   await refresh();
-  await bridge.observe();
-  await bridge.fleetEvents.observe();
+  await bridge.observe(ports.host);
+  if (ports.host === undefined) await bridge.fleetEvents.observe();
+  else await bridge.fleetEvents.observeHost(ports.host);
   const passFailures = new Set([
     "fenced",
     "not_active",
@@ -132,7 +135,8 @@ export async function observeExisting(
     if (passFailures.has(String(result.reason))) throw Error(String(result.reason));
     return result;
   };
-  const ownerCall = async (op: string, p: object) => checked(await ports.ownerCall(op, p));
+  const ownerCall = async (op: string, p: object, owner?: string) =>
+    checked(await (ports.ownerFor ? ports.ownerFor(owner!, op, p) : ports.ownerCall(op, p)));
   const executorCall = async (op: string, p: object) => checked(await ports.executorCall(op, p));
   const results: { id: string; state: string }[] = [];
   for (const d of bridge.store.all("delivery")) {
@@ -140,6 +144,7 @@ export async function observeExisting(
     if (d.status !== "pending") continue;
     const s = bridge.store.get("subscription", d.subId);
     if (!subscriptionActive(s, bridge.now())) continue;
+    if (ports.host !== undefined && eventTarget(bridge, s, d.event).host !== ports.host) continue;
     await refresh();
     try {
       // Existing filtering/pending-question/native authorization is rechecked again at
@@ -159,17 +164,25 @@ export async function observeExisting(
         callback_reference: s.id,
         ...(s.leaseExpires !== undefined ? { lease_expires: s.leaseExpires } : {}),
       };
-      let subscribed = await ownerCall("subscribe_central", request);
+      let subscribed = await ownerCall("subscribe_central", request, s.owner);
       if (subscribed.reason === "idempotency_conflict") {
-        const prior = await ownerCall("subscription_snapshot", {
-          epoch: ports.epoch,
-          id: centralSubscription,
-        });
+        const prior = await ownerCall(
+          "subscription_snapshot",
+          {
+            epoch: ports.epoch,
+            id: centralSubscription,
+          },
+          s.owner,
+        );
         if (prior.active !== true) throw Error("subscription_sync_denied");
-        subscribed = await ownerCall("subscribe_central", {
-          ...request,
-          expected_expires: prior.expires,
-        });
+        subscribed = await ownerCall(
+          "subscribe_central",
+          {
+            ...request,
+            expected_expires: prior.expires,
+          },
+          s.owner,
+        );
       }
       if (subscribed.stored !== true) throw Error("subscription_sync_failed");
       const cursor = await executorCall("observation_cursor", {
@@ -242,12 +255,21 @@ export async function reconcileCallbackReceipts(
     epoch: number;
     call: (op: string, p: object) => Promise<Record<string, unknown>>;
     refreshLease: () => Promise<void>;
+    host?: string;
   },
   after = "",
 ) {
   const rows = bridge.store
     .all("delivery")
-    .filter((d) => d.id > after && d.status === "centralized" && typeof d.central_id === "string")
+    .filter(
+      (d) =>
+        d.id > after &&
+        d.status === "centralized" &&
+        typeof d.central_id === "string" &&
+        (ports.host === undefined ||
+          eventTarget(bridge, bridge.store.get("subscription", d.subId), d.event).host ===
+            ports.host),
+    )
     .slice(0, 100);
   for (const d of rows) {
     await ports.refreshLease();
@@ -256,14 +278,16 @@ export async function reconcileCallbackReceipts(
     if (
       receipt.id !== d.central_id ||
       receipt.agent_completed !== false ||
-      !["pending", "claimed", "sending", "acknowledged", "stopped"].includes(String(receipt.state))
+      !["pending", "claimed", "sending", "acknowledged", "stopped", "revoked"].includes(
+        String(receipt.state),
+      )
     )
       throw Error("central_receipt_invalid");
-    if (!["acknowledged", "stopped"].includes(String(receipt.state))) continue;
+    if (!["acknowledged", "stopped", "revoked"].includes(String(receipt.state))) continue;
     if (
       !Number.isSafeInteger(receipt.attempts) ||
       Number(receipt.attempts) < 1 ||
-      (!(receipt.state === "stopped" && receipt.http_status === null) &&
+      (!(["stopped", "revoked"].includes(String(receipt.state)) && receipt.http_status === null) &&
         (!Number.isSafeInteger(receipt.http_status) ||
           Number(receipt.http_status) < 0 ||
           Number(receipt.http_status) > 599)) ||

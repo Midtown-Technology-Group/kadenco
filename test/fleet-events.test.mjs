@@ -511,3 +511,21 @@ test("observer replacement reconciles outage without replaying retained task com
     1,
   );
 });
+
+test("host-local observation scans only its original host without changing subscription identity", async (t) => {
+  const f = fixture(t);
+  const subscribed = await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observeHost("a");
+  assert.ok(f.calls.length > 0);
+  assert.ok(f.calls.every((p) => p.host === "a"));
+  await f.bridge.fleetEvents.observeHost("b");
+  assert.ok(f.calls.some((p) => p.host === "b"));
+  const first = f.store.all("delivery").map((d) => d.id);
+  await f.bridge.fleetEvents.observeHost("a");
+  assert.deepEqual(
+    f.store.all("delivery").map((d) => d.id),
+    first,
+  );
+  assert.equal(f.store.all("subscription").length, 1);
+  assert.ok(subscribed);
+});
