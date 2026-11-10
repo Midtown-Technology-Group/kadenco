@@ -1852,14 +1852,13 @@ test("central callback receipts repair local views without sending, regressions 
   assert.deepEqual(rows.get("001"), stable);
   rows.clear();
   rows.set("one", { id: "one", status: "centralized", central_id: "central" });
-  await assert.rejects(
+  await assert.doesNotReject(
     reconcileCallbackReceipts(bridge, {
       ...ports,
       async call() {
         return { reason: "forbidden" };
       },
     }),
-    /forbidden/,
   );
   assert.equal(rows.get("one").status, "centralized");
   await assert.rejects(
@@ -1874,4 +1873,84 @@ test("central callback receipts repair local views without sending, regressions 
   mode = "stopped";
   await reconcileCallbackReceipts(bridge, ports);
   assert.equal(rows.get("one").status, "stopped");
+});
+
+test("host receipt recovery retains revoked targets, skips resolved foreign hosts and continues past scoped refusals", async () => {
+  const { reconcileCallbackReceipts } = await import("../src/edge-services.ts");
+  const { Store } = await import("../../../dist/store.mjs");
+  const store = new Store(":memory:", randomBytes(32));
+  const calls: string[] = [];
+  let allowed = false;
+  const bridge = {
+    store,
+    grant() {
+      throw Error("forbidden");
+    },
+  } as any;
+  try {
+    for (const [id, host, name] of [
+      ["a", "local", "t3.task.finished"],
+      ["b", "local", "t3.thread.activity"],
+      ["c", "foreign", "t3.thread.activity"],
+    ]) {
+      store.put("subscription", id, {
+        id,
+        owner: "owner",
+        host,
+        threadId: "thread",
+        sessionId: "revoked-session",
+        name,
+      });
+      store.put("delivery", id, {
+        id,
+        subId: id,
+        status: "centralized",
+        central_id: "central-" + id,
+        event: { name, data: { host, thread_id: "thread", session_id: "revoked-session" } },
+      });
+    }
+    const ports = {
+      epoch: 7,
+      host: "local",
+      async refreshLease() {},
+      async call(op: string, p: any) {
+        assert.equal(op, "outbox_receipt");
+        calls.push(p.id);
+        if (p.id === "central-a" && !allowed) return { reason: "forbidden" };
+        return {
+          id: p.id,
+          state: "acknowledged",
+          attempts: 1,
+          http_status: 204,
+          delivery_acknowledged: true,
+          agent_completed: false,
+        };
+      },
+    };
+    await reconcileCallbackReceipts(bridge, ports);
+    assert.deepEqual(calls, ["central-a", "central-b"]);
+    assert.equal(store.get("delivery", "a")?.status, "centralized");
+    assert.equal(store.get("delivery", "b")?.status, "acknowledged");
+    assert.equal(store.get("delivery", "c")?.status, "centralized");
+    allowed = true;
+    calls.length = 0;
+    await reconcileCallbackReceipts(bridge, ports);
+    assert.deepEqual(calls, ["central-a"]);
+    assert.equal(store.get("delivery", "a")?.status, "acknowledged");
+    store.put("delivery", "a", { ...store.get("delivery", "a"), status: "centralized" });
+    for (const reason of ["fenced", "central_transport_uncertain"]) {
+      await assert.rejects(
+        reconcileCallbackReceipts(bridge, {
+          ...ports,
+          async call() {
+            return { reason };
+          },
+        }),
+        new RegExp(reason),
+      );
+      assert.equal(store.get("delivery", "a")?.status, "centralized");
+    }
+  } finally {
+    store.close();
+  }
 });

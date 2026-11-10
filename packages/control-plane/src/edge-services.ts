@@ -267,13 +267,30 @@ export async function reconcileCallbackReceipts(
         d.status === "centralized" &&
         typeof d.central_id === "string" &&
         (ports.host === undefined ||
-          eventTarget(bridge, bridge.store.get("subscription", d.subId), d.event).host ===
-            ports.host),
+          (() => {
+            try {
+              return (
+                eventTarget(bridge, bridge.store.get("subscription", d.subId), d.event).host ===
+                ports.host
+              );
+            } catch {
+              // A revoked local grant must not erase a committed central receipt.
+              // This is read-only recovery; the central authenticated host scope
+              // still authorizes the exact original ID, without guessing a target.
+              return true;
+            }
+          })()),
     )
     .slice(0, 100);
   for (const d of rows) {
     await ports.refreshLease();
     const receipt = await ports.call("outbox_receipt", { epoch: ports.epoch, id: d.central_id });
+    if (["forbidden", "not_found"].includes(String(receipt.reason))) {
+      // Retain the original centralized identity for a later authorized read.
+      // One revoked row must not starve unrelated receipts or cause a resend.
+      bridge.store.audit?.("delivery.receipt", d.id, "held");
+      continue;
+    }
     if (receipt.reason) throw Error(String(receipt.reason));
     if (
       receipt.id !== d.central_id ||
