@@ -85,7 +85,15 @@ export function createHostLocalRuntime(
       operation,
       payload: body,
     });
-    if (result.reason !== undefined) throw Error(String(result.reason));
+    if (
+      result.reason !== undefined &&
+      !(
+        operation === "outbox_receipt" &&
+        result.receipt_refused === true &&
+        ["forbidden", "not_found"].includes(String(result.reason))
+      )
+    )
+      throw Error(String(result.reason));
     return result;
   };
   const post = existingCallback(

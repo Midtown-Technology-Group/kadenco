@@ -571,13 +571,27 @@ export class FleetState extends DurableObject<Env> {
           Object.hasOwn(body.payload, "epoch")
         )
           fail("invalid_request");
-        return this.apply(
-          a,
-          operation,
-          { ...(body.payload as object), epoch: p.epoch },
-          undefined,
-          true,
-        );
+        try {
+          return this.apply(
+            a,
+            operation,
+            { ...(body.payload as object), epoch: p.epoch },
+            undefined,
+            true,
+          );
+        } catch (error) {
+          // Session, principal, feature and epoch checks above remain fatal.
+          // Only an exact receipt read may return a row-scoped refusal.
+          if (
+            operation === "outbox_receipt" &&
+            error instanceof Error &&
+            ["forbidden", "not_found"].includes(error.message)
+          ) {
+            this.authorized(a, str(body.host));
+            return { reason: error.message, receipt_refused: true };
+          }
+          throw error;
+        }
       }
       if (op === "link_payload") {
         keys(body, ["host", "connection", "generation", "request_id"]);

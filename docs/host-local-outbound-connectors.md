@@ -247,6 +247,12 @@ response before a central result is committed can cause a retry with the same
 event ID. This is separate from native command uncertainty and never authorizes
 native replay. A pending-input refusal is terminal `revoked`, not task completion.
 
+Receipt reads distinguish row refusals from host-wide failures. After current
+host-session and actor authorization checks, the Worker marks an exact receipt's
+`forbidden` or `not_found` response as `receipt_refused`. The host runtime holds
+that original centralized row and continues to later receipts without resending.
+Unmarked refusals, fencing and transport uncertainty still stop the cycle.
+
 `startHostLocalSidecar` is the explicit disabled-by-default operator embedding
 entry. It reuses the existing sidecar timer, shutdown and diagnostics without
 opening an MCP or collaboration listener. It validates original-host-only policy

@@ -195,6 +195,7 @@ test("actual Worker fences observation and callbacks by original host/process, i
         let posts = 0,
           checkpoints = 0,
           loseResult = host === "c";
+        let receiptFailure: string | undefined;
         const bridge = {
           store,
           now: Date.now,
@@ -243,6 +244,10 @@ test("actual Worker fences observation and callbacks by original host/process, i
             return call(owner, op, p);
           },
           async call(op: string, p: any) {
+            if (op === "link_service" && p.operation === "outbox_receipt" && receiptFailure) {
+              if (receiptFailure === "central_transport_uncertain") throw Error(receiptFailure);
+              return { reason: receiptFailure };
+            }
             const result = await call(host, op, p);
             if (op === "link_service" && p.operation === "outbox_result" && loseResult) {
               loseResult = false;
@@ -255,16 +260,69 @@ test("actual Worker fences observation and callbacks by original host/process, i
           () => createHostLocalRuntime(bridge, { ...input, enabled: false }),
           /host_runtime_disabled/,
         );
-        return { runtime: createHostLocalRuntime(bridge, input), store, posts: () => posts };
+        return {
+          runtime: createHostLocalRuntime(bridge, input),
+          store,
+          posts: () => posts,
+          failReceipt: (reason: string | undefined) => {
+            receiptFailure = reason;
+          },
+        };
       });
       await assert.rejects(runtimes[0].runtime.cycle(), /fixture lost result response/);
       assert.equal(runtimes[0].posts(), 1);
       assert.equal((await runtimes[1].runtime.cycle()).state, "cycle_complete");
       assert.equal(runtimes[1].posts(), 0);
       assert.equal(runtimes[1].store.get("delivery", "d")?.status, "revoked");
+      const pending = runtimes[0].store.get("delivery", "c")!;
+      runtimes[0].store.put("delivery", "a-missing", {
+        ...pending,
+        id: "a-missing",
+        central_id: "missing-receipt",
+      });
+      await call("owner", "subscribe_central", {
+        id: "held-c",
+        external_id: "held-c",
+        host: "c",
+        thread_id: "held-thread-c",
+        binding,
+        expires: null,
+        name: "t3.thread.activity",
+        callback_reference: "held-c",
+      });
+      const held = await call("c", "link_service", {
+        host: "c",
+        connection: runtimes[0].runtime.connection,
+        generation: 1,
+        operation: "observe_central",
+        payload: {
+          subscription_id: "held-c",
+          expected_cursor: 0,
+          cursor: 1,
+          run: "source",
+          kind: "completed",
+          native_request_id: "held-native-c",
+          event: { eventId: "held-event-c", name: "t3.thread.activity", data: {} },
+        },
+      });
+      assert.equal(held.stored, true);
+      assert.equal((await call("owner", "unsubscribe_central", { id: "held-c" })).revoked, true);
+      runtimes[0].store.put("delivery", "b-forbidden", {
+        ...pending,
+        id: "b-forbidden",
+        central_id: held.id,
+      });
       await runtimes[0].runtime.cycle();
       assert.equal(runtimes[0].posts(), 1); // Receipt recovery, never resend an acknowledged callback.
       assert.equal(runtimes[0].store.get("delivery", "c")?.status, "acknowledged");
+      for (const id of ["a-missing", "b-forbidden"])
+        assert.equal(runtimes[0].store.get("delivery", id)?.status, "centralized");
+      for (const reason of ["forbidden", "not_found", "fenced", "central_transport_uncertain"]) {
+        runtimes[0].failReceipt(reason);
+        await assert.rejects(runtimes[0].runtime.cycle(), { message: reason });
+        assert.equal(runtimes[0].posts(), 1);
+      }
+      runtimes[0].failReceipt(undefined);
       for (const r of runtimes) {
         r.runtime.close();
         assert.equal((await r.runtime.cycle()).state, "closed");
