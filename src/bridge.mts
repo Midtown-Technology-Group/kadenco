@@ -344,9 +344,10 @@ export class Bridge {
     this.store.audit("subscription.stop", id, "inactive");
     return {};
   }
-  async observe() {
+  async observe(host = undefined) {
     const sessions: RelaySession[] = [...this.policy().sessions, ...this.lanes.sessions()];
     for (const session of sessions) {
+      if (host !== undefined && session.host !== host) continue;
       if (
         !this.policy().principals.some((p) => {
           try {

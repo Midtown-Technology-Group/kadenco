@@ -20,12 +20,11 @@ import type { Server } from "node:http";
 
 /** Trusted embedding boundary. A runtime owns both HTTP admission and the only
  * observation/delivery loop; it cannot accidentally run alongside local delivery. */
-export interface SidecarRuntime {
-  mcp: Server;
+export type SidecarRuntime = {
   collaboration?: Server & { stopStreams?: () => void };
   cycle(): Promise<void>;
   close(): Promise<void>;
-}
+} & ({ mcp: Server; outboundOnly?: false } | { mcp?: never; outboundOnly: true });
 
 export interface SidecarOptions {
   configPath?: string;
@@ -149,10 +148,14 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
     if (runtime && config.collaboration?.enabled && !runtime.collaboration)
       throw Error("runtime_collaboration_required");
     server = runtime ? runtime.mcp : httpServer(bridge);
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(config.port ?? 41880, "127.0.0.1", resolve);
-    });
+    if (!server && runtime?.outboundOnly !== true) throw Error("runtime_listener_required");
+    if (server) {
+      const listener = server;
+      await new Promise<void>((resolve, reject) => {
+        listener.once("error", reject);
+        listener.listen(config.port ?? 41880, "127.0.0.1", resolve);
+      });
+    }
     collaboration = config.collaboration?.enabled
       ? runtime
         ? runtime.collaboration
@@ -193,7 +196,7 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
         );
     }
     inFlight = cycle();
-    return { address: () => server.address() as AddressInfo | null, shutdown };
+    return { address: () => (server?.address() as AddressInfo | null) ?? null, shutdown };
   } catch (error) {
     try {
       await shutdown();

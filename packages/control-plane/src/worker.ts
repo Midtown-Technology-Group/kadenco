@@ -541,6 +541,58 @@ export class FleetState extends DurableObject<Env> {
         },
       };
       const { epoch: _epoch, ...body } = p;
+      if (op === "link_service") {
+        keys(body, ["host", "connection", "generation", "operation", "payload"]);
+        const session = hostLinkOperation(context, "link_status", {
+          host: body.host,
+          connection: body.connection,
+        }) as { active: boolean; generation: number };
+        if (session.active !== true || session.generation !== number(body.generation))
+          fail("fenced");
+        const operation = str(body.operation);
+        if (
+          ![
+            "observation_cursor",
+            "observe_central",
+            "outbox_pending",
+            "outbox_claim",
+            "outbox_begin",
+            "outbox_result",
+            "outbox_stop",
+            "outbox_receipt",
+            "outbox_history",
+          ].includes(operation)
+        )
+          fail("forbidden");
+        if (
+          !body.payload ||
+          typeof body.payload !== "object" ||
+          Array.isArray(body.payload) ||
+          Object.hasOwn(body.payload, "epoch")
+        )
+          fail("invalid_request");
+        try {
+          return this.apply(
+            a,
+            operation,
+            { ...(body.payload as object), epoch: p.epoch },
+            undefined,
+            true,
+          );
+        } catch (error) {
+          // Session, principal, feature and epoch checks above remain fatal.
+          // Only an exact receipt read may return a row-scoped refusal.
+          if (
+            operation === "outbox_receipt" &&
+            error instanceof Error &&
+            ["forbidden", "not_found"].includes(error.message)
+          ) {
+            this.authorized(a, str(body.host));
+            return { reason: error.message, receipt_refused: true };
+          }
+          throw error;
+        }
+      }
       if (op === "link_payload") {
         keys(body, ["host", "connection", "generation", "request_id"]);
         const session = hostLinkOperation(context, "link_status", {
@@ -760,6 +812,9 @@ export class FleetState extends DurableObject<Env> {
           ),
         authorize: (actor, host) => this.authorized(actor, host),
         now: Date.now(),
+        connectorHost: linked ? a.hosts[0] : undefined,
+        connected: (host) =>
+          this.sql().exec("SELECT host FROM host_links WHERE host=?", host).toArray().length > 0,
       },
       op,
       p,

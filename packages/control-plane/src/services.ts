@@ -21,6 +21,8 @@ type Context = {
   principal: (id: string) => ServicePrincipal;
   authorize: (a: ServicePrincipal, host: string) => void;
   now: number;
+  connectorHost?: string;
+  connected?: (host: string) => boolean;
 };
 const bad = (reason: string): never => {
   throw Error(reason);
@@ -68,6 +70,7 @@ export function serviceOperation(
       }>("SELECT * FROM subscriptions WHERE id=?", id)
       .toArray()[0] ?? bad("not_found");
   const authorized = (s: ReturnType<typeof sub>) => {
+    if (a.role === "executor" && c.connected?.(s.host) && c.connectorHost !== s.host) bad("fenced");
     const owner = c.principal(s.owner);
     c.authorize(owner, s.host);
     c.authorize(a, s.host);
@@ -387,7 +390,7 @@ export function serviceOperation(
         });
         ids.push(row.id);
       } catch (e) {
-        if ((e as Error).message !== "forbidden") throw e;
+        if (!["forbidden", "fenced"].includes((e as Error).message)) throw e;
       }
     }
     return { ids, next: rows.length > 100 ? rows[99].id : null };

@@ -2,6 +2,8 @@
 export { createEdgeRuntime, centralTransport, projectNativeGrant } from "./edge-runtime.ts";
 export { HostConnector, ConnectorInbox } from "./host-connector.ts";
 export { createHostLocalConnector } from "./host-local.ts";
+export { createHostLocalRuntime } from "./host-observation.ts";
+export { startHostLocalSidecar, hostLocalPolicyGuard } from "./host-startup.ts";
 export { consumeHostReference, consumeHostOperation } from "./host-execution.ts";
 export { encryptHostPayload, hostPayloadIdentity } from "./host-payload.ts";
 export {

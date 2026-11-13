@@ -227,3 +227,49 @@ streamed request in a standalone Worker containing no Kadenco code. That
 identifies a local transport trigger, not its harmlessness or the historical
 stall cause. Preserve the authentication and body bounds; do not drain
 unauthenticated bodies just to silence the diagnostic.
+
+## Host-local observation and outbound startup
+
+`createHostLocalRuntime` combines the existing command connector with host-filtered
+session/fleet observation and the existing signed callback outbox. It uses one
+original host identity and one process connection, with no singleton fleet lease.
+`link_service` checks that authenticated single-host executor's live connection
+and generation in the same Worker transaction as each observation/outbox action.
+It forwards only the listed observation/outbox operations. Once registered, a host
+cannot use legacy executor observation or callback routes to bypass the fence,
+including after connection expiry. Owner subscription administration is unchanged.
+
+The runtime calls the actual subscription owner transport, retains event IDs and
+callback signing identity, rechecks native pending input and current scope, and
+checkpoints before posting. A committed callback result whose response is lost is
+reconciled from its original receipt. Webhooks remain at-least-once: losing an HTTP
+response before a central result is committed can cause a retry with the same
+event ID. This is separate from native command uncertainty and never authorizes
+native replay. A pending-input refusal is terminal `revoked`, not task completion.
+
+Receipt reads distinguish row refusals from host-wide failures. After current
+host-session and actor authorization checks, the Worker marks an exact receipt's
+`forbidden` or `not_found` response as `receipt_refused`. The host runtime holds
+that original centralized row and continues to later receipts without resending.
+Unmarked refusals, fencing and transport uncertainty still stop the cycle.
+
+`startHostLocalSidecar` is the explicit disabled-by-default operator embedding
+entry. It reuses the existing sidecar timer, shutdown and diagnostics without
+opening an MCP or collaboration listener. It validates original-host-only policy
+on every reload and rejects SSH/foreign native routes and the global helper. It
+requires a distinct cache directory, existing host-local backend, authenticated
+transports, current grant resolver, encrypted journal and durable checkpoint from
+the trusted embedding. It does not discover credentials, provision grants or
+copy the singleton whole-fleet replica onto another host. Checkpoint provisioning
+and the per-host subscription/signing-state handoff must be reviewed before any
+runtime promotion; an arbitrary no-op checkpoint is not qualified durability.
+
+Local synthetic tests exercise the actual Worker transaction, two independent
+host observation/callback paths, legacy bypass refusal, wrong host/generation,
+closed-question refusal, existing webhook signatures and lost result response
+reconciliation. The existing sidecar test holds its configured port occupied and
+proves outbound-only startup still runs the one lifecycle without local delivery.
+These are source/fixture checks, not installed-host or live-provider qualification.
+No running configuration, Worker binding, identity, callback secret or service is
+changed. Windows retirement still requires owner ingress, per-host state handoff,
+compatible recovery/rollback and the live acceptance matrix above.

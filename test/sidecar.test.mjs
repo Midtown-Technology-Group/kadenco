@@ -233,3 +233,40 @@ test("startup keeps the root error and separate cleanup failure, and releases it
     f.cleanup();
   }
 });
+
+test("explicit outbound runtime uses the existing lifecycle without opening a listener or local delivery", async () => {
+  const f = await fixture(); // Keep its port occupied: outbound startup must not bind it.
+  let cycles = 0,
+    closes = 0,
+    localEffects = 0;
+  let sidecar;
+  try {
+    sidecar = await startSidecar({
+      ...f.options,
+      runtimeFactory(bridge) {
+        bridge.observe = bridge.deliver = async () => {
+          localEffects++;
+        };
+        return {
+          outboundOnly: true,
+          async cycle() {
+            cycles++;
+          },
+          async close() {
+            closes++;
+          },
+        };
+      },
+    });
+    assert.equal(sidecar.address(), null);
+    assert.equal(cycles, 1);
+    assert.equal(localEffects, 0);
+    await sidecar.shutdown();
+    assert.equal(closes, 1);
+    assert.deepEqual(f.counts(), { created: 1, closed: 1 });
+  } finally {
+    await sidecar?.shutdown();
+    await new Promise((r) => f.listener.close(r));
+    f.cleanup();
+  }
+});

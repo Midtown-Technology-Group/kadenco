@@ -387,11 +387,17 @@ export class FleetEvents {
     })();
     return this.observation;
   }
-  private async observePass() {
+  /** An instance-local lifecycle observes only its original configured host. */
+  async observeHost(host: string) {
+    if (typeof host !== "string" || !host.length) throw Error("identity_mismatch");
+    await this.observePass(host);
+  }
+  private async observePass(onlyHost?: string) {
     for (const sub of this.active()) {
       let hosts;
       try {
         hosts = this.hosts(sub.owner);
+        if (onlyHost !== undefined) hosts = hosts.filter((host) => host === onlyHost);
       } catch {
         continue;
       }
