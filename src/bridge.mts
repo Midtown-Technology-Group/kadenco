@@ -457,8 +457,8 @@ export class Bridge {
     }
   }
   async deliver() {
-    for (const d of this.store.all("delivery")) {
-      if (d.status !== "pending" || d.nextAt > this.now()) continue;
+    for (const d of this.store.select("delivery", "pending", (d) => d.status === "pending")) {
+      if (d.nextAt > this.now()) continue;
       const s = this.store.get("subscription", d.subId);
       let authorized = subscriptionActive(s, this.now());
       try {
