@@ -10,6 +10,7 @@ import { Store } from "../dist/store.mjs";
 import { Bridge } from "../dist/bridge.mjs";
 import { httpServer } from "../dist/server.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { listenLoopback } from "./support/listen.mjs";
 
 function fixture(t) {
   const store = new Store(":memory:", randomBytes(32));
@@ -310,7 +311,7 @@ test("MCP discovery advertises two-way thread subscriptions before any session e
   f.policy.principals[0].tokenSha256 = createHash("sha256").update(token).digest("hex");
   f.policy.principals[0].commandHosts = [{ host: "remote" }];
   const server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const client = new Client(
     { name: "test", version: "1" },

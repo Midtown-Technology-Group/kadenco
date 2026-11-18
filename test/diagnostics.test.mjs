@@ -14,6 +14,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { T3FleetTransport } from "../dist/fleet-transport-read.mjs";
 import { httpServer } from "../dist/server.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { listenLoopback } from "./support/listen.mjs";
 
 test("concurrent origins stay isolated and errors/metadata cannot leak secrets", async () => {
   const rows = [];
@@ -190,7 +191,7 @@ test("MCP diagnostic reads require current host grant, paginate and never refres
   for (const host of ["a", "b", "a"])
     store.diagnostic(diagnosticRecord(host, "credential", Date.now()));
   const server = httpServer(bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   const c = new Client(
     { name: "test", version: "1" },
     { versionNegotiation: { mode: { pin: "2026-07-28" } } },

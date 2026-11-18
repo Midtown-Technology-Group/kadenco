@@ -6,6 +6,7 @@ import { FleetReader } from "../dist/fleet-read.mjs";
 import { configSchema } from "../dist/config.mjs";
 import { httpServer } from "../dist/server.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { listenLoopback } from "./support/listen.mjs";
 
 function fixture() {
   const policy = {
@@ -289,7 +290,7 @@ test("official MCP client discovers and uses only narrow fleet read tools, rejec
     store: { audit: () => {} },
     sessions: () => [],
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenLoopback(server);
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const client = new Client(
     { name: "fleet-read-test", version: "1" },

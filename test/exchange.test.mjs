@@ -16,6 +16,7 @@ import { FleetReader } from "../dist/fleet-read.mjs";
 import { httpServer } from "../dist/server.mjs";
 import { configSchema } from "../dist/config.mjs";
 import { Exchanges } from "../dist/exchange.mjs";
+import { listenLoopback } from "./support/listen.mjs";
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "eddie-exchange-")),
@@ -503,7 +504,7 @@ test("config forbids mixed caller authority, duplicate credentials, and uninvent
 test("official SDK exposes caller tools only and refuses role crossover or extra routing arguments", async (t) => {
   const f = fixture(t),
     server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const connect = async (owner) => {
     const c = new Client(
@@ -579,7 +580,7 @@ test("official SDK exposes caller tools only and refuses role crossover or extra
 test("native stdio caller proxy uses official SDK and exposes only the bound request/reply tools", async (t) => {
   const f = fixture(t),
     server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const client = new Client(
     { name: "native-caller-test", version: "1" },
@@ -619,7 +620,7 @@ test("native stdio caller proxy uses official SDK and exposes only the bound req
 test("one-call CLI handles receipts, rejects privileged bearer and arbitrary endpoints without exposing credentials", async (t) => {
   const f = fixture(t),
     server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const path = join(f.dir, "question.json");
   writeFileSync(path, JSON.stringify(f.input));
@@ -684,7 +685,7 @@ test("binding mutation during read and late per-request revocation within a list
 test("MCP 2.0 event discovery and subscriptions expose only the exact authorized inbox schema", async (t) => {
   const f = fixture(t),
     server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const rpc = async (owner, method, params = {}) => {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
@@ -748,7 +749,7 @@ test("caller rejects even same-origin redirects before forwarding its credential
       res.end();
     }
   });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const path = join(f.dir, "question.json");
   writeFileSync(path, JSON.stringify(f.input));
@@ -962,7 +963,7 @@ test("wake reconciliation works without event data across duplicate and reordere
 test("CLI preserves request ID after accepted ask loses its transport response and does not resend", async (t) => {
   const f = fixture(t),
     backend = httpServer(f.bridge);
-  await new Promise((r) => backend.listen(0, "127.0.0.1", r));
+  await listenLoopback(backend);
   let attempts = 0;
   const proxy = createServer(async (req, res) => {
     let body = "";
@@ -987,7 +988,7 @@ test("CLI preserves request ID after accepted ask loses its transport response a
     res.writeHead(response.status, { "content-type": response.headers.get("content-type") });
     res.end(result);
   });
-  await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
+  await listenLoopback(proxy);
   t.after(async () => {
     await new Promise((r) => proxy.close(r));
     await new Promise((r) => backend.close(r));

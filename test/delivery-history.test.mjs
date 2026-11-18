@@ -9,6 +9,7 @@ import { Store } from "../dist/store.mjs";
 import { deliveryHistory, relayDiagnostics } from "../dist/delivery-history.mjs";
 import { httpServer } from "../dist/server.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { listenLoopback } from "./support/listen.mjs";
 const event_id = "evt_" + "a".repeat(64),
   subscription_id = "owned",
   id = subscription_id + ":" + event_id;
@@ -235,7 +236,7 @@ test("MCP exposes read-only history and scoped request diagnostics through the e
   b.deliveryHistory = async () => ({});
   b.relayDiagnosticAccess = async () => {};
   const server = httpServer(b);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   const client = new Client(
     { name: "fixture", version: "1" },
     { versionNegotiation: { mode: { pin: "2026-07-28" } } },
