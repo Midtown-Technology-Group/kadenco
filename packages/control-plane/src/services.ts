@@ -358,11 +358,20 @@ export function serviceOperation(
         agent_completed: false,
       };
     }
+    // When the terminal outcome happened (indexed by audit_delivery_operations).
+    const result = sql
+      .exec<{ at: number }>(
+        "SELECT at FROM audit WHERE subject=? AND action IN ('outbox_result','outbox_stop') ORDER BY seq DESC LIMIT 1",
+        id,
+      )
+      .toArray()[0];
     return {
       id,
       state: r.state,
       attempts: r.attempts,
       http_status: r.http_status,
+      result_at:
+        ["acknowledged", "stopped", "revoked"].includes(r.state) && result ? result.at : null,
       delivery_acknowledged: r.state === "acknowledged",
       agent_completed: false,
     };

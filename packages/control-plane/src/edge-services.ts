@@ -314,8 +314,9 @@ export async function reconcileCallbackReceipts(
     )
       throw Error("central_receipt_invalid");
     await ports.refreshLease();
-    // State and its /status evidence commit together: a crash between them
-    // would otherwise leave a reconciled delivery with no receipt evidence.
+    // Re-check and update in one transaction. The central result time travels
+    // with the replicated record, so /status evidence survives a replica rebuild
+    // and reflects when the outcome happened, not when it was reconciled.
     bridge.store.transaction(() => {
       const current = bridge.store.get("delivery", d.id);
       if (current?.status !== "centralized" || current.central_id !== d.central_id) return;
@@ -324,13 +325,8 @@ export async function reconcileCallbackReceipts(
         status: receipt.state,
         attempts: receipt.attempts,
         httpStatus: receipt.http_status,
+        centralResultAt: Number.isSafeInteger(receipt.result_at) ? receipt.result_at : null,
       });
-      // Separate action: local `webhook.delivery` history keeps its own format.
-      bridge.store.audit(
-        "webhook.delivery.central",
-        d.id,
-        `${receipt.state}:${receipt.http_status ?? 0}`,
-      );
     });
   }
   return rows.length === 100 ? (rows.at(-1)!.id as string) : undefined;

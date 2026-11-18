@@ -94,13 +94,13 @@ export class Store {
       )
       .all(id, after, since, limit + 1);
   }
-  /** Newest-first local and centrally reconciled webhook outcomes for exactly
-   * these delivery IDs since `since`; ownership filtering precedes the limit. */
+  /** Newest-first local webhook attempt outcomes for exactly these delivery IDs
+   * since `since`; ownership filtering precedes the limit. */
   recentDeliveryOutcomes(ids: string[], since: string, limit = 5000) {
     if (!ids.length) return [];
     return this.db
       .prepare(
-        "SELECT seq,subject,at,outcome FROM audit WHERE action IN ('webhook.delivery','webhook.delivery.central') AND at>=? AND subject IN (SELECT value FROM json_each(?)) ORDER BY seq DESC LIMIT ?",
+        "SELECT seq,subject,at,outcome FROM audit WHERE action='webhook.delivery' AND at>=? AND subject IN (SELECT value FROM json_each(?)) ORDER BY seq DESC LIMIT ?",
       )
       .all(since, JSON.stringify(ids), limit) as {
       seq: number;
