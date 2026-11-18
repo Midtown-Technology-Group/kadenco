@@ -5,6 +5,18 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.24
+
+- Defer routine fleet coverage updates to the 60 s heartbeat (#73). After
+  alpha.23, hosts that fail every pass (rising failure count) and hosts that
+  page through a large inventory (advancing cursor) still rewrote their coverage
+  record every ~12 s cycle, so requests still queued behind a central push.
+  The latest pass is now kept in memory, used by the fleet loop and status, and
+  written only on a material change (state, reason or read outcome; scanning
+  starting or stopping; failures starting or recovering; first completion or
+  success) or on the heartbeat. After a restart, paging resumes from the last
+  persisted cursor; observation is idempotent.
+
 ## 0.1.0-alpha.23
 
 - Stop pushing unchanged fleet coverage to central every cycle (#73). Each

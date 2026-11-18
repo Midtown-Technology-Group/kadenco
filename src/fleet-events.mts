@@ -8,18 +8,23 @@ import { isDeepStrictEqual } from "node:util";
 
 // A pass that changes nothing material rewrites the coverage record at most
 // this often. Every record write is replicated to central before the next HTTP
-// response, so rewriting each host's timestamps every ~12 s cycle made requests
-// queue behind a central push every cycle. Coverage turns stale only after
-// 300 s (status below), so a 60 s heartbeat keeps it accurate.
+// response, so rewriting each host's record every ~12 s cycle (timestamps, a
+// paging cursor, a climbing failure count) made requests queue behind a central
+// push every cycle. Coverage turns stale only after 300 s (status below), so a
+// 60 s heartbeat keeps it accurate; between heartbeats the latest pass is kept
+// in memory and read by the fleet loop and status. After a restart, paging
+// resumes from the last persisted cursor (observation is idempotent).
 const COVERAGE_HEARTBEAT_MS = 60000;
-const COVERAGE_MATERIAL = [
-  "state",
-  "reason",
-  "cursor",
-  "currentRead",
-  "consecutiveFailures",
-  "lastFailureAt",
-] as const;
+/** Changes that are written (and replicated) at once, not on the heartbeat. */
+const coverageMaterial = (a, b) =>
+  a.state === b.state &&
+  isDeepStrictEqual(a.reason, b.reason) &&
+  a.currentRead === b.currentRead &&
+  !!a.cursor === !!b.cursor &&
+  !!a.lastCompleteAt === !!b.lastCompleteAt &&
+  !!a.lastSuccessfulReadAt === !!b.lastSuccessfulReadAt &&
+  (a.consecutiveFailures ?? 0) > 0 === (b.consecutiveFailures ?? 0) > 0 &&
+  !!a.lastFailureAt === !!b.lastFailureAt;
 
 const hash = (x) => createHash("sha256").update(JSON.stringify(x)).digest("hex");
 const fail = () => Object.assign(Error("forbidden"), { reason: "forbidden" });
@@ -31,22 +36,12 @@ export class FleetEvents {
   constructor(public bridge: Bridge) {}
   private observation: Promise<void> | undefined;
   private catchUp = false;
-  // Timestamps from passes whose write was skipped (see COVERAGE_HEARTBEAT_MS).
-  // In memory only: merged into the next written record and its coverage event,
-  // and overlaid in status, so reported ages stay exact between heartbeats.
-  private unwritten = new Map<
-    string,
-    { at: string; lastCompleteAt?: string; lastSuccessfulReadAt?: string }
-  >();
-  /** The stored coverage record with any newer unwritten pass timestamps. */
+  // The latest coverage of passes whose write was deferred to the heartbeat
+  // (see COVERAGE_HEARTBEAT_MS). In memory only; always newer than the store.
+  private unwritten = new Map<string, Record<string, any>>();
+  /** Current coverage: the latest deferred pass, else the stored record. */
   private scan(id: string) {
-    const record = this.bridge.store.get("fleet_scan", id),
-      newer = this.unwritten.get(id);
-    if (!record || !newer) return record;
-    const merged = { ...record };
-    for (const k of ["at", "lastCompleteAt", "lastSuccessfulReadAt"] as const)
-      if (newer[k] && (!merged[k] || newer[k] > merged[k])) merged[k] = newer[k];
-    return merged;
+    return this.unwritten.get(id) ?? this.bridge.store.get("fleet_scan", id);
   }
   // Monitoring is read authority (#55): a principal sees events for hosts and
   // projects in its current read scope, independent of any command grant.
@@ -190,28 +185,18 @@ export class FleetEvents {
       id = hash([sub.id, host]),
       at = new Date(b.now()).toISOString();
     const next = { ...previous, ...extra, id, subId: sub.id, host, state, at };
-    // Nothing material changed and the stored timestamps are recent: skip the
-    // write (and its central replication). Changes are written at once.
+    // Nothing material changed since the stored record and it is recent: keep
+    // this pass in memory instead of writing (and replicating) it.
+    const stored = b.store.get("fleet_scan", id);
     if (
-      previous &&
-      COVERAGE_MATERIAL.every((k) => isDeepStrictEqual(previous[k], next[k])) &&
-      !!previous.lastCompleteAt === !!next.lastCompleteAt &&
-      !!previous.lastSuccessfulReadAt === !!next.lastSuccessfulReadAt &&
-      b.now() - Date.parse(previous.at) < COVERAGE_HEARTBEAT_MS
+      stored &&
+      coverageMaterial(stored, next) &&
+      b.now() - Date.parse(stored.at) < COVERAGE_HEARTBEAT_MS
     ) {
-      this.unwritten.set(id, {
-        at: next.at,
-        lastCompleteAt: next.lastCompleteAt,
-        lastSuccessfulReadAt: next.lastSuccessfulReadAt,
-      });
+      this.unwritten.set(id, next);
       return;
     }
-    // A write (for example a failure right after skipped successful passes)
-    // keeps the newest successful timestamps, not the last persisted ones.
-    const newer = this.unwritten.get(id);
     this.unwritten.delete(id);
-    for (const k of ["lastCompleteAt", "lastSuccessfulReadAt"] as const)
-      if (newer?.[k] && (!next[k] || newer[k] > next[k])) next[k] = newer[k];
     b.store.transaction(() => {
       if (previous?.state !== state || previous?.reason !== next.reason) {
         next.revision = (previous?.revision ?? 0) + 1;
@@ -337,7 +322,7 @@ export class FleetEvents {
   async host(sub, host) {
     const b = this.bridge,
       id = hash([sub.id, host]),
-      previous = b.store.get("fleet_scan", id);
+      previous = this.scan(id);
     try {
       this.grant(sub.owner, host);
       const page = await b.fleetReads.inventory(sub.owner, {
@@ -465,6 +450,12 @@ export class FleetEvents {
     await this.observePass(host);
   }
   private async observePass(onlyHost?: string) {
+    // A visited key is written at least every heartbeat, so a deferred pass
+    // older than two heartbeats belongs to a subscription or host no longer
+    // observed (expired, unsubscribed, out of scope): drop it.
+    const now = this.bridge.now();
+    for (const [id, pass] of this.unwritten)
+      if (!(now - Date.parse(pass.at) < 2 * COVERAGE_HEARTBEAT_MS)) this.unwritten.delete(id);
     for (const sub of this.active()) {
       let hosts;
       try {
