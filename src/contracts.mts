@@ -22,6 +22,8 @@ export interface Backend {
     message?: string,
     requestId?: string,
     runId?: string,
+    /** Synchronous last check immediately before the native send; throws to refuse. */
+    beforeSend?: () => void,
   ): Promise<NativeRecord>;
   close(): void | Promise<unknown>;
 }

@@ -93,6 +93,9 @@ export class Commands {
   declare now: () => number;
   declare creation: Creation;
   declare settings: ThreadSettings;
+  /** Synchronous last check before a native mutation that bypasses `session`
+   * (settings configure). Throws to refuse; set by runtimes that can lose authority. */
+  declare effectGuard?: () => void;
 
   constructor({ policy, store, reader, session = nativeSession, now = Date.now }) {
     Object.assign(this, { policy, store, reader, session, now });

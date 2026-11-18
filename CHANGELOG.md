@@ -5,6 +5,19 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+- Recover the central edge from lease loss without operator action (#57). A
+  startup claim fenced by a predecessor's unexpired lease is retried with the
+  same instance for up to 30 s instead of failing into the supervisor restart
+  loop. Lease renewals use a 4 s deadline, well under the 10 s lease, so one
+  slow request cannot consume the lease. A running edge whose generation is
+  irrecoverably lost now exits with code 75 for a prompt restart, instead of
+  serving 503 until a health probe kills it. Fencing and no-replay are unchanged.
+- Latch irrecoverable lease loss in the shared renewal path: no further central
+  calls (including the shutdown flush), and a synchronous effect guard refuses
+  native dispatch and webhook POSTs at their send points. Signals and lease loss
+  share one bounded exit (75 wins, key always zeroed). Edges now require the
+  Worker to advertise `edge_lease_instance` before any claim, so deploy the
+  Worker first: an older Worker would let a new claim displace a live edge.
 - Add authenticated, read-only `GET /status`: build identity, runtime mode, edge
   lease state (held / renewal_failing / lost with the last failure reason), the
   last verified ask-Eddie and event-delivery round trips with freshness and the

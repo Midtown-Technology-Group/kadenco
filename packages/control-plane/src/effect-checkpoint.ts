@@ -3,15 +3,31 @@ import type { Bridge } from "../../../dist/bridge.mjs";
 /** Persist the original service's already-reserved command immediately before
  * its native transport call. Preserve original authorizeDispatch and callback
  * options; this hook adds no native operation or authority. */
-export function checkpointNativeEffects(bridge: Bridge, checkpoint: () => Promise<void>) {
+export function checkpointNativeEffects(
+  bridge: Bridge,
+  checkpoint: () => Promise<void>,
+  guard: () => void = () => {},
+) {
   const commands = bridge.commands,
     session = commands?.session,
-    backend = bridge.backend;
+    backend = bridge.backend,
+    previousGuard = commands?.effectGuard;
+  // Settings mutations use their own MCP client; they check this immediately
+  // before `configure`.
+  if (commands) commands.effectGuard = guard;
   if (commands && session)
     commands.session = (route, fn, options) =>
       session.call(
         commands,
-        route,
+        // `authorizeDispatch` runs synchronously immediately before the native
+        // socket send; the guard refuses it once the lease is lost.
+        {
+          ...route,
+          authorizeDispatch: () => {
+            guard();
+            route.authorizeDispatch?.();
+          },
+        },
         (call: (base: string, tag: string, payload: unknown) => Promise<unknown>) =>
           fn(async (base: string, tag: string, payload: unknown) => {
             if (tag === "orchestration.dispatchCommand") await checkpoint();
@@ -25,12 +41,16 @@ export function checkpointNativeEffects(bridge: Bridge, checkpoint: () => Promis
       if (property === "followup")
         return async (...args: Parameters<typeof backend.followup>) => {
           await checkpoint();
-          return target.followup(...args);
+          guard();
+          // The backend re-checks immediately before its native send, after its
+          // own connect/read steps.
+          return target.followup(args[0], args[1], args[2], args[3], guard);
         };
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
   return () => {
+    if (commands) commands.effectGuard = previousGuard;
     if (commands && session) commands.session = session;
     bridge.backend = backend;
   };

@@ -299,6 +299,9 @@ export class FleetState extends DurableObject<Env> {
       return {
         ...state,
         release_version: packageInfo.version,
+        // Edges refuse to claim against a Worker without instance-bound leases:
+        // an older Worker would let a new claim replace a live predecessor.
+        capabilities: ["edge_lease_instance"],
         commands: this.sql().exec<{ n: number }>("SELECT COUNT(*) n FROM commands").one().n,
       };
     }

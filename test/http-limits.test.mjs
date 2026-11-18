@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { boundedResponseText, fetchWithReadDeadline } from "../dist/http-limits.mjs";
 import { httpServer } from "../dist/server.mjs";
-import { resolveCallback, postWebhook } from "../dist/webhook.mjs";
+import { resolveCallback, postWebhook, sendWhenSecure } from "../dist/webhook.mjs";
 import { createServer } from "node:http";
 import { T3FleetTransport } from "../dist/fleet-transport-read.mjs";
 import { listenLoopback } from "./support/listen.mjs";
@@ -154,4 +154,66 @@ test("native HTTP redirects cannot leave the exact configured origin", async (t)
   });
   await assert.rejects(transport.connect("local"));
   assert.equal(leaked, 0);
+});
+
+test("webhook effect guard runs after DNS and before any request is sent", async () => {
+  const calls = [];
+  await assert.rejects(
+    postWebhook(
+      "https://callbacks.example.com/hook",
+      {},
+      "{}",
+      ["callbacks.example.com"],
+      async () => {
+        calls.push("dns");
+        return [{ address: "93.184.216.34", family: 4 }];
+      },
+      () => {
+        calls.push("guard");
+        throw Error("edge_lease_unavailable");
+      },
+    ),
+    /edge_lease_unavailable/,
+  );
+  assert.deepEqual(calls, ["dns", "guard"]);
+});
+
+test("the webhook body is queued only after TLS connects and the guard passes again", async () => {
+  const { EventEmitter } = await import("node:events");
+  const run = (allowed) => {
+    const socket = Object.assign(new EventEmitter(), { encrypted: true, connecting: true });
+    const req = Object.assign(new EventEmitter(), {
+      ended: undefined,
+      destroyed: undefined,
+      end(body) {
+        this.ended = body;
+      },
+      destroy(error) {
+        this.destroyed = error;
+      },
+    });
+    let refused;
+    sendWhenSecure(
+      req,
+      "signed-body",
+      () => {
+        if (!allowed()) throw Error("edge_lease_unavailable");
+      },
+      (e) => (refused = e),
+    );
+    req.emit("socket", socket);
+    return { req, socket, refused: () => refused };
+  };
+  let ok = true;
+  const sent = run(() => ok);
+  assert.equal(sent.req.ended, undefined, "nothing queued before TLS is up");
+  sent.socket.emit("secureConnect");
+  assert.equal(sent.req.ended, "signed-body");
+  // Lease lost during the handshake: nothing is ever queued.
+  const lost = run(() => ok);
+  ok = false;
+  lost.socket.emit("secureConnect");
+  assert.equal(lost.req.ended, undefined);
+  assert.match(String(lost.req.destroyed), /edge_lease_unavailable/);
+  assert.match(String(lost.refused()), /edge_lease_unavailable/);
 });

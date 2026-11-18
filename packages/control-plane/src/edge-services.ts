@@ -130,6 +130,9 @@ export async function observeExisting(
     "central_transport_uncertain",
     "central_response_too_large",
     "central_response_invalid",
+    // This edge lost (or closed) its lease mid-pass: the row is fine, retry later.
+    "edge_lease_unavailable",
+    "edge_runtime_closed",
   ]);
   const checked = (result: Record<string, unknown>) => {
     if (passFailures.has(String(result.reason))) throw Error(String(result.reason));

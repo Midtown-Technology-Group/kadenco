@@ -44,6 +44,9 @@ export class Bridge {
   /** Set by a runtime composition (for example the central edge) to report its
    * mode and lease evidence through the read-only /status endpoint. */
   declare runtimeStatus?: () => import("./status.mjs").RuntimeStatus;
+  /** Synchronous last check before an external effect is sent (webhook POST,
+   * native dispatch). Throws to refuse; set by runtimes that can lose authority. */
+  declare effectGuard?: () => void;
 
   constructor({
     store,

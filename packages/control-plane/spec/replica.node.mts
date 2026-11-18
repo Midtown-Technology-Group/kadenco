@@ -365,7 +365,11 @@ test("native effect checkpoint retains exact routes, final authorization and pen
         fn: (call: (base: string, tag: string, p: unknown) => Promise<unknown>) => Promise<unknown>,
         options: unknown,
       ) => {
-        assert.equal(r, route);
+        // The route is passed through field-for-field; only authorizeDispatch is
+        // wrapped so the lease effect guard runs at the native send point first.
+        assert.deepEqual(Object.keys(r).sort(), Object.keys(route).sort());
+        for (const k of Object.keys(route) as (keyof typeof route)[])
+          if (k !== "authorizeDispatch") assert.equal(r[k], route[k]);
         assert.equal(options, "preserved-options");
         return fn(async (_base, tag, p) => {
           if (tag === "orchestration.dispatchCommand") {
