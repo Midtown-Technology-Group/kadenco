@@ -141,7 +141,11 @@ export async function deliveryHistory(bridge: Bridge, owner: string, input: unkn
         project = sub.projectId ?? d.event.data?.project_id;
       if (typeof host !== "string" || !bridge.fleetReads) throw denied();
       const { grant } = bridge.fleetReads.grant(owner, host, project);
-      if (grant.projectIds && typeof project !== "string") throw denied();
+      // Host-level coverage events carry no project; any read scope on the host
+      // (the same scope that received them) may read their history.
+      const hostLevel =
+        sub.name === "t3.fleet.activity" && d.event.data?.kind === "coverage_changed";
+      if (grant.projectIds && typeof project !== "string" && !hostLevel) throw denied();
       if (sub.name === "t3.fleet.activity")
         bridge.fleetEvents.grant(owner, host, project, d.event.data?.provider_instance_id);
     }

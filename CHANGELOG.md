@@ -5,6 +5,15 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+- Fleet monitoring now requires only the principal's current read scope
+  (`readHosts`, with project limits): `t3.fleet.activity` discovery and
+  subscription, `get_fleet_event_status`, pending-question observation and
+  delivery, and event history (host-level `coverage_changed` history is readable
+  by any reader of that host; thread events keep the project check). It no
+  longer disappears when a command grant expires. Commands, answers and
+  continuations keep their own expiring host/provider grant, checked
+  immediately before any effect; monitoring never authorizes execution
+  (#55, owner-approved).
 - Recover the central edge from lease loss without operator action (#57). A
   startup claim fenced by a predecessor's unexpired lease is retried with the
   same instance for up to 30 s instead of failing into the supervisor restart
@@ -25,7 +34,6 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
   reachable while the edge lease is lost. `npm run status` checks an installed
   runtime and exits non-zero unless every journey has fresh evidence. Startup
   logs the real package version instead of a hard-coded one.
-
 - Bind edge leases to process instances so a standby sharing an executor cannot
   steal a live generation. Preserve legacy leases during the schema upgrade and
   retain generation fencing across process takeover and lost-claim responses.

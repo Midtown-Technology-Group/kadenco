@@ -1788,3 +1788,39 @@ test("an acknowledged delivery cannot be re-acknowledged as a different run", as
   assert.equal(f.store.get("command", f.p.request_id).ackAt, first.ackAt);
   assert.equal(f.writes.length, 1);
 });
+
+test("read-scoped question reads (monitoring) work after the command grant expires (#55)", async (t) => {
+  const f = fixture(t);
+  f.projection.runtimeRequests = [
+    {
+      id: "q1",
+      nodeId: "node",
+      kind: "user_input",
+      status: "pending",
+      responseCapability: { type: "live" },
+    },
+  ];
+  f.grant.expiresAt = 0;
+  await assert.rejects(
+    f.commands.requests("eddie", { host: "local", thread_id: "t" }),
+    /forbidden/,
+  );
+  const page = await f.commands.requests(
+    "eddie",
+    { host: "local", thread_id: "t" },
+    { readScoped: true },
+  );
+  assert.deepEqual(
+    page.requests.map((r) => r.native_request_id),
+    ["q1"],
+  );
+  assert.equal(f.writes.length, 0);
+  // Read scope is still required.
+  f.commands.reader.grant = () => {
+    throw new Error("forbidden");
+  };
+  await assert.rejects(
+    f.commands.requests("eddie", { host: "local", thread_id: "t" }, { readScoped: true }),
+    /forbidden/,
+  );
+});

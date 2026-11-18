@@ -284,6 +284,13 @@ export class Commands {
       ),
     );
   }
+  /** Native read route authorized by read scope only (monitoring, #55). */
+  readRoute(owner, host) {
+    const route = this.policy().nativeDelivery?.hosts.find((x) => x.name === host);
+    if (!route) throw fail("forbidden");
+    this.reader.grant(owner, host);
+    return { route };
+  }
   validateProjection(owner, p, projection) {
     if (projection.thread?.id !== p.thread_id || !projection.thread.projectId)
       throw fail("identity_mismatch");
@@ -602,9 +609,11 @@ export class Commands {
   answer(owner, p) {
     return this.submit(owner, answerArgs.parse(p), "answer");
   }
-  async requests(owner, input, { forLane = false } = {}) {
+  async requests(owner, input, { forLane = false, readScoped = false } = {}) {
     const p = pendingArgs.parse(input),
-      { route } = this.grant(owner, p.host);
+      // readScoped: fleet monitoring reads pending questions under read scope
+      // only. Answers and continuations still require the command grant.
+      { route } = readScoped ? this.readRoute(owner, p.host) : this.grant(owner, p.host);
     return this.reader.withHost(owner, p.host, undefined, (client) =>
       this.session(
         {
@@ -616,8 +625,16 @@ export class Commands {
           const projection = await call(client.base, "orchestration.getThreadProjection", {
             threadId: p.thread_id,
           });
-          const { grant, projectId } = this.validateProjection(owner, p, projection);
-          if (forLane) {
+          let grant, projectId;
+          if (readScoped) {
+            if (projection.thread?.id !== p.thread_id || !projection.thread.projectId)
+              throw fail("identity_mismatch");
+            projectId = projection.thread.projectId;
+            this.reader.grant(owner, p.host, projectId);
+            if (projection.thread.archivedAt || projection.thread.deletedAt)
+              throw fail("thread_unavailable");
+          } else ({ grant, projectId } = this.validateProjection(owner, p, projection));
+          if (forLane && !readScoped) {
             const latest = (projection.runs ?? []).reduce(
               (a, r) => (!a || Number(r.ordinal) > Number(a.ordinal) ? r : a),
               null,

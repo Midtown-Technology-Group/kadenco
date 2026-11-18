@@ -15,36 +15,51 @@ export class FleetEvents {
   constructor(public bridge: Bridge) {}
   private observation: Promise<void> | undefined;
   private catchUp = false;
+  // Monitoring is read authority (#55): a principal sees events for hosts and
+  // projects in its current read scope, independent of any command grant.
+  // Commands keep their own grant check immediately before any effect, so
+  // monitoring still never authorizes execution.
   hosts(owner = undefined) {
     const b = this.bridge,
       p = b.policy().principals.find((p) => p.id === owner && p.enabled !== false);
-    if (!p || !b.fleetReads || !b.commands || p.eddieCaller || p.eddieHostCaller) throw fail();
+    if (!p || !b.fleetReads || p.eddieCaller || p.eddieHostCaller) throw fail();
     return (p.readHosts ?? [])
       .map((g) => g.host)
       .filter((host) => {
         try {
-          b.commands.grant(owner, host);
+          b.fleetReads.grant(owner, host);
           return true;
         } catch {
           return false;
         }
       });
   }
-  grant(owner, host, projectId = undefined, provider = undefined) {
+  // `provider` is accepted for call-site compatibility; read scope does not
+  // depend on the provider (command grants do, and are checked separately).
+  grant(owner, host, projectId = undefined, _provider = undefined) {
     const b = this.bridge,
       p = b.policy().principals.find((p) => p.id === owner && p.enabled !== false);
     if (
       !p ||
       !b.fleetReads ||
-      !b.commands ||
       p.eddieCaller ||
       p.eddieHostCaller ||
       !p.readHosts?.some((g) => g.host === host)
     )
       throw fail();
-    const { grant } = this.bridge.commands.grant(owner, host, projectId);
-    if (provider !== undefined && !grant.providerInstanceIds.includes(provider)) throw fail();
-    return grant;
+    try {
+      return b.fleetReads.grant(owner, host, projectId).grant;
+    } catch {
+      throw fail();
+    }
+  }
+  private commandGrantExpiry(owner, host) {
+    try {
+      const expires = this.bridge.commands?.grant(owner, host).grant.expiresAt;
+      return Number.isFinite(expires) ? new Date(expires).toISOString() : null;
+    } catch {
+      return null;
+    }
   }
   active(owner = undefined) {
     return this.bridge.store
@@ -122,16 +137,15 @@ export class FleetEvents {
             last_complete_age_ms: record?.lastCompleteAt
               ? Math.max(0, b.now() - Date.parse(record.lastCompleteAt))
               : null,
-            monitoring_requires_live_command_grant: true,
-            command_grant_expires_at: Number.isFinite(b.commands.grant(owner, host).grant.expiresAt)
-              ? new Date(b.commands.grant(owner, host).grant.expiresAt).toISOString()
-              : null,
+            monitoring_requires_live_command_grant: false,
+            // Informational: when the separate permission to act expires.
+            command_grant_expires_at: this.commandGrantExpiry(owner, host),
           };
         }),
       })),
       excluded_hosts: readable
         .filter((g) => !hosts.includes(g.host))
-        .map((g) => ({ host: g.host, reason: "live_command_scope_unavailable" })),
+        .map((g) => ({ host: g.host, reason: "read_scope_unavailable" })),
       execution_authority_changed: false,
       delivery_acknowledgement_is_agent_execution: false,
       consistency:
@@ -228,12 +242,14 @@ export class FleetEvents {
       );
     }
     let cursor;
-    if (data.thread.pendingRequestCount > 0)
+    // Pending questions are read under read scope (#55); without a native read
+    // route (no command broker configured) they are simply not observed.
+    if (data.thread.pendingRequestCount > 0 && b.commands)
       do {
         const page = await b.commands.requests(
           sub.owner,
           { host, thread_id: t.threadId, ...(cursor ? { after_request_id: cursor } : {}) },
-          { forLane: true },
+          { readScoped: true },
         );
         if (page.project_id !== t.projectId)
           throw Object.assign(Error("identity_mismatch"), { reason: "identity_mismatch" });
@@ -424,10 +440,12 @@ export class FleetEvents {
         throw fail();
       this.grant(sub.owner, d.host, d.project_id, d.provider_instance_id);
       if (d.kind === "input_requested") {
+        if (!b.commands)
+          throw Object.assign(Error("source_unavailable"), { reason: "source_unavailable" });
         const page = await b.commands.requests(
           sub.owner,
           { host: d.host, thread_id: d.thread_id, native_request_id: d.native_request_id },
-          { forLane: true },
+          { readScoped: true },
         );
         if (
           page.project_id !== d.project_id ||

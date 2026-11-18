@@ -310,6 +310,12 @@ test("MCP discovery advertises two-way thread subscriptions before any session e
   f.policy.principals[0].sessions = [];
   f.policy.principals[0].tokenSha256 = createHash("sha256").update(token).digest("hex");
   f.policy.principals[0].commandHosts = [{ host: "remote" }];
+  // Aggregate monitoring is advertised from read scope (#55).
+  f.policy.principals[0].readHosts = [{ host: "remote" }];
+  f.bridge.fleetReads.grant = (owner, host) => {
+    if (owner !== "eddie" || host !== "remote") throw Error("forbidden");
+    return { grant: { host } };
+  };
   const server = httpServer(f.bridge);
   await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
