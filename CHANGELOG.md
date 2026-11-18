@@ -5,6 +5,19 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.21
+
+- Fix multi-second edge response times (#73). Every HTTP request, `/healthz`
+  included, first joined the in-flight lease renewal: a central round trip of up
+  to the 8 s lease-call deadline, and the 2.5 s heartbeat keeps one in flight
+  most of the time. A transient renewal failure also answered 503
+  `edge_lease_unavailable` while the lease was still valid, which the
+  supervisor counts toward a restart. A held lease that the synchronous fence
+  accepts, with more than a quarter of its TTL left (at most 10 s), now admits
+  requests at once; only near expiry does a request wait for a renewal.
+  Mutations still renew through the coordinator and every effect still passes
+  the send-point guard.
+
 ## 0.1.0-alpha.20
 
 - Fix edge event-loop stalls of 1-6 s every worker cycle (#73). Each cycle

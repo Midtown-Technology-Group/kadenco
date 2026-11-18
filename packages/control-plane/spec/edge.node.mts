@@ -2350,9 +2350,12 @@ test("a late successful renewal after expiry releases nothing: waiters and effec
     });
     assert.equal(f.lease().state, "held");
     hold = true;
+    // Near expiry (2 s left of 10 s, inside the admission margin) a request
+    // waits for the renewal instead of being admitted on the held lease.
+    clock += 8000;
     const waiting = fetch(`http://127.0.0.1:${f.port}/healthz`);
     while (!release) await new Promise((r) => setTimeout(r, 10));
-    clock += 11000; // the prior lease expires while the renewal is in flight
+    clock += 3000; // the prior lease expires while the renewal is in flight
     assert.throws(() => f.effectGuard()(), /edge_lease_unavailable/, "expiry checked at admission");
     release(); // central answers late with a perfectly valid grant
     assert.equal((await waiting).status, 503, "the waiting caller is not released");
@@ -2447,7 +2450,11 @@ test("a transient Worker forwarding fault is not lease loss", async () => {
     assert.notEqual(f.lease().state, "lost");
     assert.equal(f.lost(), 0, "not terminal");
     assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 200);
-    assert.equal(f.lease().state, "held");
+    // Requests no longer renew; the 2.5 s heartbeat restores the held state.
+    for (let i = 0; f.lease().state !== "held"; i++) {
+      assert.ok(i < 300, "a later heartbeat renewal succeeds");
+      await new Promise((r) => setTimeout(r, 20));
+    }
     assert.equal(f.lease().generation, generation, "same generation kept");
   } finally {
     await sidecar?.shutdown();
@@ -2489,5 +2496,67 @@ test("the edge uses the TTL the Worker reports, capped by its own bound; none me
       await s2?.shutdown().catch(() => {});
       g.cleanup();
     }
+  }
+});
+
+test("a held lease admits requests without waiting for an in-flight renewal", async () => {
+  // Renewals after the first never answer (a stalled central round trip).
+  // Requests must not join them while the lease is comfortably valid.
+  const stalled: (() => void)[] = [];
+  let stall = false;
+  const f = await leaseFixture((_n, p) =>
+    !stall
+      ? { ...granted(p), ttl_ms: 120000 }
+      : (new Promise((resolve) =>
+          stalled.push(() => resolve({ ...granted(p), ttl_ms: 120000 })),
+        ) as never),
+  );
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start({ monotonicNow: () => 0 });
+    stall = true;
+    // Let the 2.5 s heartbeat start a renewal that stalls.
+    await new Promise((r) => setTimeout(r, 2800));
+    assert.ok(stalled.length >= 1, "a renewal is in flight");
+    for (let i = 0; i < 3; i++) {
+      const started = performance.now();
+      const res = await fetch(`http://127.0.0.1:${f.port}/healthz`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      assert.equal(res.status, 200);
+      assert.ok(performance.now() - started < 1000, "answered without a central round trip");
+    }
+  } finally {
+    // Release stalled renewals (and stop stalling new ones) so shutdown drains.
+    stall = false;
+    for (const release of stalled) release();
+    await sidecar?.shutdown().catch(() => {});
+    f.cleanup();
+  }
+});
+
+test("failed renewals do not refuse requests until the lease nears expiry", async () => {
+  // A transient transport failure (network drop) on every renewal after the first.
+  let mono = 0,
+    failing = false;
+  const f = await leaseFixture((_n, p) =>
+    failing ? { reason: "forwarding_failed" } : { ...granted(p), ttl_ms: 120000 },
+  );
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start({ monotonicNow: () => mono });
+    failing = true;
+    const health = () =>
+      fetch(`http://127.0.0.1:${f.port}/healthz`, { signal: AbortSignal.timeout(2000) });
+    mono = 60000; // a minute into a drop: still a valid lease
+    assert.equal((await health()).status, 200);
+    mono = 115000; // within 10 s of expiry: admission needs a renewal, which fails
+    const refused = await health();
+    assert.equal(refused.status, 503);
+    assert.equal(((await refused.json()) as { reason: string }).reason, "edge_lease_unavailable");
+    assert.notEqual(f.lease().state, "lost", "transport failures alone are not lease loss");
+  } finally {
+    await sidecar?.shutdown().catch(() => {});
+    f.cleanup();
   }
 });
