@@ -9,13 +9,14 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createServer as httpServer } from "node:http";
 import { startSidecar } from "../dist/sidecar.mjs";
+import { listenLoopback } from "./support/listen.mjs";
 
 async function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "kadenco-sidecar-"));
   const state = join(directory, "state");
   mkdirSync(state, { mode: 0o700 });
   const listener = createServer();
-  await new Promise((r) => listener.listen(0, "127.0.0.1", r));
+  await listenLoopback(listener);
   const port = listener.address().port;
   const configPath = join(directory, "policy.json");
   writeFileSync(

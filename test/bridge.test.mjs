@@ -11,6 +11,7 @@ import { Bridge, FOLLOWUP } from "../dist/bridge.mjs";
 import { callbackUrl, publicAddress, postWebhook } from "../dist/webhook.mjs";
 import { httpServer, principalFor } from "../dist/server.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { listenLoopback } from "./support/listen.mjs";
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "eddie-t3-")),
@@ -380,7 +381,7 @@ test("callback SSRF defenses reject private addresses, redirects by design, and 
 test("MCP 2.0 authenticated discovery, tools and events through official SDK HTTP", async (t) => {
   const f = fixture(t),
     server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const url = `http://127.0.0.1:${server.address().port}/mcp`;
   async function rpc(method, params = {}, auth = true) {

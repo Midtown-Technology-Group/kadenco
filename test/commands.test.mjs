@@ -9,6 +9,7 @@ import { configSchema } from "../dist/config.mjs";
 import { httpServer } from "../dist/server.mjs";
 import { Bridge } from "../dist/bridge.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { listenLoopback } from "./support/listen.mjs";
 function fixture(t) {
   let now = Date.now(),
     dispatchError,
@@ -897,7 +898,7 @@ test("official MCP client discovers authorized delivery tools and read-only prin
     commands: f.commands,
   };
   const server = httpServer(bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   const clients = [];
   t.after(async () => {
     await Promise.all(clients.map((c) => c.close()));

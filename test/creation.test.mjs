@@ -15,6 +15,7 @@ import { configSchema } from "../dist/config.mjs";
 import { httpServer } from "../dist/server.mjs";
 import { Exchanges } from "../dist/exchange.mjs";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { listenLoopback } from "./support/listen.mjs";
 
 function fixture(t) {
   let now = Date.now(),
@@ -666,7 +667,7 @@ test("official MCP discovery exposes creation only to command principals and doe
     commands: f.commands(),
   };
   const server = httpServer(bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   const clients = [];
   t.after(async () => {
     await Promise.all(clients.map((c) => c.close()));
@@ -745,7 +746,7 @@ test("existing exact-bound caller acknowledges creation through MCP; wrong threa
   };
   bridge.exchanges = new Exchanges(bridge);
   const server = httpServer(bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   const client = new Client(
     { name: "creation-ack", version: "1" },
     { versionNegotiation: { mode: { pin: "2026-07-28" } } },
@@ -796,7 +797,7 @@ test("deployed acceptance CLI preserves immutable request input, gates exact suc
       commands,
     },
     server = httpServer(bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const dir = mkdtempSync(join(tmpdir(), "eddie-acceptance-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -827,7 +828,7 @@ test("deployed acceptance CLI preserves immutable request input, gates exact suc
         for (const m of v.messages) if (m.role === "assistant") m.text = "EDDIE_T3_CREATE_OK";
   });
   const created = await run("create");
-  assert.equal(created.code, 0, created.stdout);
+  assert.equal(created.code, 0, created.stdout || created.stderr);
   assert.equal(JSON.parse(created.stdout).acceptance, "passed");
   assert.equal(f.writes.length, 2);
   assert.equal(readFileSync(proof, "utf8"), original);
