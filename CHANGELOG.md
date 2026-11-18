@@ -5,6 +5,18 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.22
+
+- Cut the remaining edge stalls (#73). Every policy read re-read the config
+  file, `JSON.parse`d it and ran the full schema validation (~1.5 ms on the
+  production config), and fleet observation reads policy several times per
+  thread per cycle, so a cycle spent seconds of CPU there. The parsed policy is
+  now reused while the file's identity (size, modification and change times,
+  inode, device) is unchanged; any edit or replacement is read on the next call
+  and an invalid file keeps failing. The trusted per-read validation hook still
+  runs every time and each caller still gets its own copy (~0.23 ms per read in
+  total).
+
 ## 0.1.0-alpha.21
 
 - Fix multi-second edge response times (#73). Every HTTP request, `/healthz`

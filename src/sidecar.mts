@@ -54,6 +54,30 @@ function projectionBackend(config: Policy): Backend {
 let environmentKey: Buffer | undefined;
 
 // Importing this module has no process, signal, model or network side effects.
+/**
+ * Live policy reader: every read reflects the file as it is now. Parsing and
+ * schema-validating it cost ~1.5 ms per read, and the fleet loop reads it
+ * several times per thread per cycle, so the parsed value is reused while the
+ * file's identity (size, modification and change times, inode, device) is
+ * unchanged; any edit or replacement re-parses on the next read, and an invalid
+ * file keeps failing. The trusted `validate` hook still runs on every read, and
+ * each caller gets its own copy, as before.
+ */
+export function livePolicy(configPath: string, validate?: (policy: Policy) => void) {
+  let parsed: { identity: string; value: Policy } | undefined;
+  return (): Policy => {
+    const s = statSync(configPath, { bigint: true });
+    const identity = [s.size, s.mtimeNs, s.ctimeNs, s.ino, s.dev].join(":");
+    if (parsed?.identity !== identity)
+      parsed = {
+        identity,
+        value: configSchema.parse(JSON.parse(readFileSync(configPath, "utf8"))),
+      };
+    const value = structuredClone(parsed.value);
+    validate?.(value);
+    return value;
+  };
+}
 export async function startSidecar(options: SidecarOptions = {}): Promise<Sidecar> {
   const configPath = options.configPath ?? process.env.EDDIE_T3_CONFIG;
   if (process.env.EDDIE_T3_STATE_KEY !== undefined)
@@ -63,12 +87,8 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
   if (!configPath || !key) throw Error("EDDIE_T3_CONFIG and EDDIE_T3_STATE_KEY required");
   if (key.length !== 32) throw Error("32_byte_state_key_required");
   const synchronous = new SynchronousTimings();
-  const policy = () =>
-    synchronous.measure("policy", () => {
-      const value = configSchema.parse(JSON.parse(readFileSync(configPath, "utf8")));
-      options.validatePolicy?.(value);
-      return value;
-    });
+  const read = livePolicy(configPath, options.validatePolicy);
+  const policy = () => synchronous.measure("policy", read);
   const config = policy();
   if (process.platform !== "win32" && statSync(config.stateDirectory).mode & 0o077)
     throw Error("state_directory_must_be_private");
