@@ -1129,6 +1129,11 @@ describe("real central outbox with existing edge service adapters", () => {
         get: (kind: string, id: string) => records.get(kind + ":" + id),
         all: (kind: string) =>
           [...records].filter(([key]) => key.startsWith(kind + ":")).map(([, v]) => v),
+        select: (kind: string, _name: string, predicate: (v: any) => boolean) =>
+          [...records]
+            .filter(([key]) => key.startsWith(kind + ":"))
+            .map(([, v]) => v)
+            .filter(predicate),
         put: (kind: string, id: string, v: unknown) => records.set(kind + ":" + id, v),
       },
       async observe() {},

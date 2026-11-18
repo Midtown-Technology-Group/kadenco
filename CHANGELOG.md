@@ -5,6 +5,17 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.20
+
+- Fix edge event-loop stalls of 1-6 s every worker cycle (#73). Each cycle
+  decrypted and parsed every delivery record (14k in production) to find the
+  few pending or centralized ones. `Store.select` now caches each record's
+  match verdict keyed by its ciphertext signature (fresh random nonce and GCM
+  tag on every write, by any writer), reads signatures from a new covering index
+  (`records_signature`) and decodes only matching rows. Only verdicts are
+  cached, never plaintext. On a 14k-record store a scan drops from ~200 ms to
+  ~25 ms. The index is additive; older releases simply maintain it.
+
 ## 0.1.0-alpha.19
 
 - Longer edge lease, so upstream network drops no longer restart the edge.

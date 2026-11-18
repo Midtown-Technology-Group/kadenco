@@ -142,9 +142,8 @@ export async function observeExisting(
     checked(await (ports.ownerFor ? ports.ownerFor(owner!, op, p) : ports.ownerCall(op, p)));
   const executorCall = async (op: string, p: object) => checked(await ports.executorCall(op, p));
   const results: { id: string; state: string }[] = [];
-  for (const d of bridge.store.all("delivery")) {
+  for (const d of bridge.store.select("delivery", "pending", (d) => d.status === "pending")) {
     if (results.length >= 100) break;
-    if (d.status !== "pending") continue;
     const s = bridge.store.get("subscription", d.subId);
     if (!subscriptionActive(s, bridge.now())) continue;
     await refresh();
@@ -263,12 +262,14 @@ export async function reconcileCallbackReceipts(
   after = "",
 ) {
   const rows = bridge.store
-    .all("delivery")
+    .select(
+      "delivery",
+      "centralized",
+      (d) => d.status === "centralized" && typeof d.central_id === "string",
+    )
     .filter(
       (d) =>
         d.id > after &&
-        d.status === "centralized" &&
-        typeof d.central_id === "string" &&
         (ports.host === undefined ||
           (() => {
             try {

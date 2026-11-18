@@ -1492,6 +1492,7 @@ test("centralization quarantines one delivery but fences stop the entire pass", 
       fleetEvents: { async observe() {}, async observeHost() {} },
       store: {
         all: () => [...state.values()],
+        select: (_k: string, _n: string, f: (v: any) => boolean) => [...state.values()].filter(f),
         get: (_kind: string, id: string) => subscriptions.get(id),
         put: (_kind: string, id: string, v: Record<string, unknown>) => state.set(id, v),
       },
@@ -1847,6 +1848,7 @@ test("central callback receipts repair local views without sending, regressions 
   const bridge = {
     store: {
       all: () => [...rows.values()],
+      select: (_k: string, _n: string, f: (v: any) => boolean) => [...rows.values()].filter(f),
       get: (_k: string, id: string) => rows.get(id),
       put: (_k: string, id: string, v: any) => rows.set(id, v),
       transaction: (fn: () => unknown) => {
