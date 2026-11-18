@@ -586,3 +586,65 @@ test("pending questions are observed and delivered under read scope after comman
   assert.equal(f.store.get("delivery", q[0].id).status, "acknowledged");
   assert.ok(f.requestOptions.length && f.requestOptions.every((o) => o.readScoped === true));
 });
+
+test("quiet passes do not rewrite coverage; a 60 s heartbeat and real changes do", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observe();
+  await f.bridge.deliver();
+  let writes = 0;
+  const put = f.store.put.bind(f.store);
+  f.store.put = (kind, id, value) => {
+    if (kind === "fleet_scan") writes++;
+    return put(kind, id, value);
+  };
+  const host = () =>
+    f.bridge.fleetEvents.status("eddie").subscriptions[0].hosts.find((h) => h.host === "a");
+  const before = host();
+  for (let i = 0; i < 4; i++) {
+    f.advance(12000);
+    await f.bridge.fleetEvents.observe();
+  }
+  assert.equal(writes, 0, "four quiet 12 s passes write nothing (no central push)");
+  assert.equal(host().state, before.state);
+  assert.equal(host().coverage_freshness, "recent");
+  f.advance(12001); // 60 s since the last write
+  await f.bridge.fleetEvents.observe();
+  assert.ok(writes >= 1, "the heartbeat refreshes coverage timestamps");
+  assert.ok(Date.parse(host().last_complete_at) > Date.parse(before.last_complete_at));
+  writes = 0;
+  f.advance(1000);
+  f.outage(true);
+  await f.bridge.fleetEvents.observe();
+  assert.ok(writes >= 1, "a material change is written at once");
+  assert.equal(host().state, "degraded");
+});
+
+test("a failure after skipped passes keeps the newest successful timestamps", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observe(); // complete scan persisted at t0
+  await f.bridge.deliver();
+  const host = () =>
+    f.bridge.fleetEvents.status("eddie").subscriptions[0].hosts.find((h) => h.host === "a");
+  const t0 = Date.parse(host().last_complete_at);
+  f.advance(48000);
+  await f.bridge.fleetEvents.observe(); // succeeds, write skipped (heartbeat not due)
+  const t48 = t0 + 48000;
+  assert.equal(Date.parse(host().last_complete_at), t48, "status overlays the unwritten pass");
+  f.advance(12000);
+  f.outage(true);
+  await f.bridge.fleetEvents.observe(); // failure: written at once
+  await f.bridge.deliver();
+  assert.equal(host().state, "degraded");
+  assert.equal(Date.parse(host().last_complete_at), t48, "the failure keeps the newer completion");
+  const event = f.posts
+    .filter((e) => e.data?.host === "a" && e.data.kind === "coverage_changed")
+    .at(-1);
+  assert.equal(event.data.state, "degraded");
+  assert.equal(Date.parse(event.data.last_complete_at), t48, "and so does its coverage event");
+  f.advance(301000 - 60000); // t0 + 301 s: 253 s since the last complete scan
+  assert.equal(host().coverage_freshness, "recent");
+  f.advance(48000); // t48 + 301 s
+  assert.equal(host().coverage_freshness, "stale");
+});

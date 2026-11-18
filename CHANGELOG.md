@@ -5,6 +5,18 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.23
+
+- Stop pushing unchanged fleet coverage to central every cycle (#73). Each
+  ~12 s pass rewrote every host's coverage record just to refresh its
+  timestamps, and every record write is replicated to central before the next
+  HTTP response, so requests (`/healthz` and MCP calls alike) regularly queued
+  behind a 1-8 s central push. A pass that changes nothing material now
+  refreshes the timestamps at most every 60 s (coverage turns stale only after
+  300 s). State, reason, cursor and failure changes are still written at once;
+  state and reason changes also emit a coverage event, as before. Timestamps
+  from skipped passes carry into the next write and into status.
+
 ## 0.1.0-alpha.22
 
 - Cut the remaining edge stalls (#73). Every policy read re-read the config
