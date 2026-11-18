@@ -24,6 +24,10 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
   observationBinding: Parameters<typeof observeExisting>[1]["binding"];
   observationOwnerCall: Parameters<typeof observeExisting>[1]["ownerCall"];
   leaseFailure?: (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => void;
+  /** Monotonic clock for lease expiry (default `performance.now`). */
+  monotonicNow?: () => number;
+  /** Protocol lease TTL granted by central (default 10 s). */
+  leaseTtlMs?: number;
   /** Lease-only transport. Its deadline must be well under the lease TTL so one
    * slow renewal cannot consume the whole lease; defaults to executorCall. */
   leaseCall?: EdgeRuntimePorts["executorCall"];
@@ -94,7 +98,13 @@ export async function createEdgeRuntime(
     stopStreamsRef?.();
     ports.leaseLost?.();
   };
-  const expired = () => leaseEvidence.expires !== null && now() >= leaseEvidence.expires;
+  // Expiry is judged on this process's monotonic clock: renewal request start
+  // plus the protocol TTL, so edge/central wall-clock skew cannot stretch (or
+  // spuriously shorten) the lease. Central's `expires` is kept for reporting.
+  const mono = ports.monotonicNow ?? (() => performance.now());
+  const leaseTtlMs = ports.leaseTtlMs ?? 10000;
+  let monoDeadline: number | null = null;
+  const expired = () => monoDeadline !== null && mono() >= monoDeadline;
   const leaseFailure = (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => {
     leaseEvidence.failure = { reason, at: now(), seq: ++evidenceSeq };
     if (reason !== "transport_uncertain") leaseEvidence.terminal = leaseEvidence.failure;
@@ -119,6 +129,7 @@ export async function createEdgeRuntime(
       return Promise.reject(error);
     }
     return (renewal ??= (async () => {
+      const requestedAt = mono();
       const lease = await (ports.leaseCall ?? ports.executorCall)("edge_lease", {
         epoch: ports.epoch,
         instance,
@@ -151,6 +162,7 @@ export async function createEdgeRuntime(
       leaseEvidence.renewedAt = now();
       leaseEvidence.renewedSeq = ++evidenceSeq;
       leaseEvidence.expires = Number(lease.expires);
+      monoDeadline = requestedAt + leaseTtlMs;
     })()
       .catch((error) => {
         if (error !== null && typeof error === "object") leaseErrors.add(error);
@@ -226,7 +238,7 @@ export async function createEdgeRuntime(
     const terminalLast = terminal !== null && terminal.seq > renewedSeq;
     const shown = terminalLast ? terminal : failure;
     // Expiry is loss even while a renewal is still pending with no failure yet.
-    const expired = expires !== null && now() >= expires;
+    const isExpired = expired();
     const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
     return {
       mode: "central_edge",
@@ -235,7 +247,7 @@ export async function createEdgeRuntime(
         // A fenced/refused generation is never reacquired by this process; a
         // transport failure is "renewal_failing" until the lease expiry passes.
         state:
-          closed || lossLatched || terminalLast || expired
+          closed || lossLatched || terminalLast || isExpired
             ? "lost"
             : failedLast
               ? "renewal_failing"
@@ -322,9 +334,10 @@ export async function createEdgeRuntime(
   const heartbeat = setInterval(() => {
     // A renewal still in flight past expiry is loss too (see latchLoss).
     if (expired()) latchLoss();
-    void refreshLease().catch(() => {
-      stopStreams();
-    });
+    // A transient failure must not stop collaboration permanently: latchLoss
+    // stops streams on real loss, and each streaming request re-checks the
+    // lease itself every second.
+    void refreshLease().catch(() => {});
   }, 2500);
   heartbeat.unref();
   let cycling = false;

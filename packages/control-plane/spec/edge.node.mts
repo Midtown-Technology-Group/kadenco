@@ -1560,13 +1560,23 @@ test("centralization quarantines one delivery but fences stop the entire pass", 
     "central_transport_uncertain",
     "forwarding_failed",
     "configuration_required",
+    // This edge's own fence: the row is healthy and must stay pending.
+    "edge_lease_unavailable",
+    "edge_runtime_closed",
   ]) {
     const unavailable = setup();
     await assert.rejects(
       observeExisting(unavailable.bridge, {
         ...ports,
         async ownerCall() {
-          if (reason === "central_transport_uncertain") throw Error(reason);
+          if (
+            [
+              "central_transport_uncertain",
+              "edge_lease_unavailable",
+              "edge_runtime_closed",
+            ].includes(reason)
+          )
+            throw Error(reason);
           return { reason };
         },
       }),
@@ -2186,7 +2196,8 @@ test("an expired lease reports lost even while its renewal is still pending", as
   });
   let sidecar: { shutdown(): Promise<void> } | undefined;
   try {
-    sidecar = await f.start();
+    // Expiry is judged locally: request start + the protocol TTL.
+    sidecar = await f.start({ leaseTtlMs: 1500 });
     assert.equal(f.lease().state, "held");
     hang = true;
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, expires - Date.now()) + 100));
@@ -2298,6 +2309,7 @@ test("a late successful renewal after expiry releases nothing: waiters and effec
   try {
     sidecar = await f.start({
       now: () => clock,
+      monotonicNow: () => clock,
       async leaseCall(_op, p) {
         if (!hold) return grant(p as Record<string, unknown>);
         return new Promise((resolve) => {
@@ -2315,6 +2327,51 @@ test("a late successful renewal after expiry releases nothing: waiters and effec
     assert.equal((await waiting).status, 503, "the waiting caller is not released");
     assert.equal(f.lease().state, "lost");
     assert.equal(f.lost(), 1);
+  } finally {
+    await sidecar?.shutdown().catch(() => {});
+    f.cleanup();
+  }
+});
+
+test("central diagnostic hooks pass the lease fence before any central call", async () => {
+  const { diagnosticHooks } = await import("../src/production-bootstrap.ts");
+  let calls = 0,
+    lost = false;
+  const hooks = diagnosticHooks(
+    {
+      effectGuard: () => {
+        if (lost) throw Error("edge_lease_unavailable");
+      },
+    },
+    async () => {
+      calls++;
+      return { mode: "active", epoch: 7, items: [] };
+    },
+    7,
+  );
+  await hooks.relayDiagnosticAccess("owner");
+  await hooks.deliveryHistory("owner", "id", 0, 10);
+  assert.equal(calls, 2);
+  lost = true; // an MCP request admitted before loss reaches the hook after it
+  await assert.rejects(hooks.relayDiagnosticAccess("owner"), /edge_lease_unavailable/);
+  await assert.rejects(hooks.deliveryHistory("owner", "id", 0, 10), /edge_lease_unavailable/);
+  assert.equal(calls, 2, "no central call after loss");
+});
+
+test("lease expiry uses the local monotonic clock, not central wall time", async () => {
+  let mono = 0;
+  const f = await leaseFixture((_n, p) => ({
+    // Central's clock is far behind ours: its wall-clock expiry is meaningless here.
+    ...granted(p),
+    expires: Date.now() + 3_600_000,
+  }));
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start({ monotonicNow: () => mono, leaseTtlMs: 10000 });
+    assert.equal(f.lease().state, "held");
+    mono += 10001; // no renewal for one TTL on our own clock
+    assert.equal(f.lease().state, "lost");
+    assert.throws(() => f.effectGuard()(), /edge_lease_unavailable/);
   } finally {
     await sidecar?.shutdown().catch(() => {});
     f.cleanup();
