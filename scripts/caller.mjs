@@ -37,14 +37,16 @@ try {
         capabilities: hostCapabilityArgs,
       }
     : null;
-  args = (schemas ?? {
-    ask: askArgs,
-    get: requestArgs,
-    ack_reply: acknowledgeArgs,
-    ack_delivery: ackCommandArgs,
-    conversation: conversationArgs,
-    capabilities: z.object({}).strict(),
-  })[mode].parse(JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, "")));
+  args = (
+    schemas ?? {
+      ask: askArgs,
+      get: requestArgs,
+      ack_reply: acknowledgeArgs,
+      ack_delivery: ackCommandArgs,
+      conversation: conversationArgs,
+      capabilities: z.object({}).strict(),
+    }
+  )[mode].parse(JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, "")));
   attempted = true;
   const result = await client.callTool({
     name: {
