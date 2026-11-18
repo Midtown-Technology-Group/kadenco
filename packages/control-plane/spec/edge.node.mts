@@ -2241,11 +2241,13 @@ test("an expired lease reports lost even while its renewal is still pending", as
 
 test("terminal loss latches: no further central calls, effects refused, no final flush", async () => {
   let deny = false,
+    mono = 0,
     afterLoss: string[] = [];
   const f = await leaseFixture((_n, p) => (deny ? { reason: "fenced" } : granted(p)));
   let sidecar: { shutdown(): Promise<void> } | undefined;
   try {
     sidecar = await f.start({
+      monotonicNow: () => mono,
       async executorCall(op, p) {
         if (deny) afterLoss.push(op);
         if (op === "edge_lease") return deny ? { reason: "fenced" } : granted(p as never);
@@ -2257,8 +2259,11 @@ test("terminal loss latches: no further central calls, effects refused, no final
         throw Error("unexpected_operation");
       },
     });
+    // 2 s left of a 10 s grant: inside the admission margin, so this request
+    // must renew before it is served. The fenced answer latches loss and the
+    // request is refused (as is any request once another path latched it).
+    mono = 8000;
     deny = true;
-    // Loss seen by an HTTP-triggered renewal (not the heartbeat) still latches.
     assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 503);
     assert.equal(f.lost(), 1);
     assert.equal(f.lease().state, "lost");

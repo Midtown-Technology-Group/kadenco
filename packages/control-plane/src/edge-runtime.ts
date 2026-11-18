@@ -350,6 +350,9 @@ export async function createEdgeRuntime(
       async () => {
         await admitLease();
         await replica.flush();
+        // Loss can latch while a request waits behind a replica write: recheck
+        // synchronously at dispatch so nothing is served after it.
+        fence();
       },
       undefined,
       (kind, owner, input, execute) =>
