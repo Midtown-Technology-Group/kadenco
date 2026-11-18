@@ -22,9 +22,34 @@ export type BootstrapConfig = {
   journalPath: string;
   fetch?: typeof fetch;
   leaseFailure?: import("./edge-runtime.ts").EdgeRuntimePorts["leaseFailure"];
+  leaseLost?: import("./edge-runtime.ts").EdgeRuntimePorts["leaseLost"];
   checkpointFailure?: import("./edge-runtime.ts").EdgeRuntimePorts["checkpointFailure"];
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+/** Read-only central diagnostics for MCP tools. They run long after bootstrap,
+ * so each call first passes the edge runtime's synchronous lease fence
+ * (`bridge.effectGuard`): an MCP request admitted before loss makes no central
+ * call after it. */
+export function diagnosticHooks(
+  bridge: Pick<Bridge, "effectGuard">,
+  ownerCall: (owner: string, op: string, body: object) => Promise<Record<string, unknown>>,
+  epoch: number,
+) {
+  return {
+    deliveryHistory: async (owner: string, id: string, after: number, limit: number) => {
+      bridge.effectGuard?.();
+      return ownerCall(owner, "outbox_history", { epoch, id, after_sequence: after, limit });
+    },
+    relayDiagnosticAccess: async (owner: string) => {
+      bridge.effectGuard?.();
+      const current = await ownerCall(owner, "status", {});
+      if (current.reason === "forbidden")
+        throw Object.assign(Error("forbidden"), { reason: "forbidden" });
+      if (current.mode !== "active" || current.epoch !== epoch)
+        throw Object.assign(Error("source_unavailable"), { reason: "source_unavailable" });
+    },
+  };
+}
 function ownedCredentials(policy: Policy, config: BootstrapConfig) {
   const owners = new Map(config.ownerTokens);
   if (
@@ -203,6 +228,15 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
     fetch: config.fetch,
     diagnostic: diagnostic(config.executor),
   });
+  // Lease renewals get a deadline well under the 10 s lease TTL; the heartbeat
+  // retries every 2.5 s, so a hung request no longer consumes the whole lease.
+  const leaseCall = centralTransport({
+    origin: config.origin,
+    token: () => config.executorToken,
+    fetch: config.fetch,
+    timeoutMs: 4000,
+    diagnostic: diagnostic(config.executor),
+  });
   const ownerCall = (owner: string, op: string, body: object) => {
     const token = owners.get(owner),
       p = bridge.policy().principals.find((p) => p.id === owner && p.enabled !== false);
@@ -213,15 +247,11 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
   const status = await executorCall("status", {});
   if (status.mode !== "active" || status.epoch !== config.epoch)
     throw Error("central_activation_required");
-  bridge.deliveryHistory = (owner, id, after, limit) =>
-    ownerCall(owner, "outbox_history", { epoch: config.epoch, id, after_sequence: after, limit });
-  bridge.relayDiagnosticAccess = async (owner) => {
-    const current = await ownerCall(owner, "status", {});
-    if (current.reason === "forbidden")
-      throw Object.assign(Error("forbidden"), { reason: "forbidden" });
-    if (current.mode !== "active" || current.epoch !== config.epoch)
-      throw Object.assign(Error("source_unavailable"), { reason: "source_unavailable" });
-  };
+  // Read-only, before any claim: never let this edge displace a live
+  // predecessor through a Worker that ignores process-instance leases.
+  if (!Array.isArray(status.capabilities) || !status.capabilities.includes("edge_lease_instance"))
+    throw Error("central_lease_capability_required");
+  Object.assign(bridge, diagnosticHooks(bridge, ownerCall, config.epoch));
   const resolvers = existingBindings(bridge, config);
   return createEdgeRuntime(bridge, {
     ...resolvers,
@@ -231,7 +261,9 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
     journalPath: config.journalPath,
     ownerCall,
     executorCall,
+    leaseCall,
     leaseFailure: config.leaseFailure,
+    leaseLost: config.leaseLost,
     centralStatus: status,
     checkpointFailure: config.checkpointFailure,
     observationOwnerCall: (op, p) => ownerCall(config.observationOwner, op, p),

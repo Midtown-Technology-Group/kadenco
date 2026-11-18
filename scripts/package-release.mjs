@@ -86,6 +86,10 @@ try {
     join(central, "operator/startup-failure.mjs"),
     join(stagedCentral, "operator/startup-failure.mjs"),
   );
+  cpSync(
+    join(central, "operator/exit-controller.mjs"),
+    join(stagedCentral, "operator/exit-controller.mjs"),
+  );
   for (const file of [
     "agent-client.mjs",
     "agent-tool.mjs",
@@ -115,6 +119,7 @@ try {
       "packages/control-plane/dist",
       "packages/control-plane/operator/run-edge.mjs",
       "packages/control-plane/operator/startup-failure.mjs",
+      "packages/control-plane/operator/exit-controller.mjs",
       "packages/control-plane/operator/startup-diagnostics.ps1",
       "scripts",
       "src",

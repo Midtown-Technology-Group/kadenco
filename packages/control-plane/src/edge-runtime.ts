@@ -24,6 +24,20 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
   observationBinding: Parameters<typeof observeExisting>[1]["binding"];
   observationOwnerCall: Parameters<typeof observeExisting>[1]["ownerCall"];
   leaseFailure?: (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => void;
+  /** Monotonic clock for lease expiry (default `performance.now`). */
+  monotonicNow?: () => number;
+  /** Protocol lease TTL granted by central (default 10 s). */
+  leaseTtlMs?: number;
+  /** Lease-only transport. Its deadline must be well under the lease TTL so one
+   * slow renewal cannot consume the whole lease; defaults to executorCall. */
+  leaseCall?: EdgeRuntimePorts["executorCall"];
+  /** Called once when this process's generation is irrecoverably lost (fenced,
+   * refused, invalid, or expired while renewals fail). The supervisor should
+   * shut down and restart the edge; this process never reacquires a generation. */
+  leaseLost?: () => void;
+  /** How long startup keeps retrying an effect-free first claim that is fenced
+   * by a predecessor's unexpired lease. Default 30 s (lease TTL is 10 s). */
+  startupClaimMs?: number;
   /** Central Worker/DO identity read by bootstrap before the runtime starts. */
   centralStatus?: { release_version?: unknown; epoch?: unknown };
   checkpointFailure?: (
@@ -72,19 +86,59 @@ export async function createEdgeRuntime(
     terminal: { reason: string; at: number; seq: number } | null;
   } = { renewedAt: null, renewedSeq: 0, expires: null, failure: null, terminal: null };
   const now = () => (ports.now ?? Date.now)();
+  // Once this process's generation is irrecoverably lost it never renews
+  // again, makes no further central calls or external effects, and tells the
+  // operator exactly once. Startup is exempt: it retries a fenced first claim.
+  let started = false;
+  let lossLatched = false;
+  let stopStreamsRef: (() => void) | undefined;
+  const latchLoss = () => {
+    if (!started || lossLatched) return;
+    lossLatched = true;
+    stopStreamsRef?.();
+    ports.leaseLost?.();
+  };
+  // Expiry is judged on this process's monotonic clock: renewal request start
+  // plus the protocol TTL, so edge/central wall-clock skew cannot stretch (or
+  // spuriously shorten) the lease. Central's `expires` is kept for reporting.
+  const mono = ports.monotonicNow ?? (() => performance.now());
+  const leaseTtlMs = ports.leaseTtlMs ?? 10000;
+  let monoDeadline: number | null = null;
+  const expired = () => monoDeadline !== null && mono() >= monoDeadline;
   const leaseFailure = (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => {
     leaseEvidence.failure = { reason, at: now(), seq: ++evidenceSeq };
     if (reason !== "transport_uncertain") leaseEvidence.terminal = leaseEvidence.failure;
     ports.leaseFailure?.(reason);
+    if (reason !== "transport_uncertain") latchLoss();
+  };
+  // One synchronous admission check for every central call and external effect:
+  // closed, latched loss, or (after startup) a lease past its expiry. Expiry is
+  // checked here, not only by the 2.5 s heartbeat sample.
+  const fence = () => {
+    if (closed) throw Error("edge_runtime_closed");
+    if (lossLatched) throw Error("edge_lease_unavailable");
+    if (started && expired()) {
+      latchLoss();
+      throw Error("edge_lease_unavailable");
+    }
   };
   const refreshLease = () => {
-    if (closed) return Promise.reject(Error("edge_runtime_closed"));
+    try {
+      fence();
+    } catch (error) {
+      return Promise.reject(error);
+    }
     return (renewal ??= (async () => {
-      const lease = await ports.executorCall("edge_lease", {
+      const requestedAt = mono();
+      const lease = await (ports.leaseCall ?? ports.executorCall)("edge_lease", {
         epoch: ports.epoch,
         instance,
         ...(generation === undefined ? {} : { generation }),
       });
+      // Worker-side forwarding or internal faults say nothing about the lease:
+      // treat them as transport uncertainty (non-terminal), not as a refusal.
+      if (lease.reason === "forwarding_failed" || lease.reason === "internal_error")
+        throw Error("central_transport_uncertain");
       if (lease.reason !== undefined) {
         leaseFailure(lease.reason === "fenced" ? "fenced" : "refused");
         throw Error("edge_lease_unavailable");
@@ -95,16 +149,26 @@ export async function createEdgeRuntime(
         !Number.isSafeInteger(lease.generation) ||
         Number(lease.generation) < 1 ||
         !Number.isSafeInteger(lease.expires) ||
-        Number(lease.expires) <= (ports.now ?? Date.now)() ||
+        // Judged on our monotonic clock (request start + TTL), never by comparing
+        // central's wall-clock expiry with ours: skew must not reject a valid grant.
+        mono() >= requestedAt + leaseTtlMs ||
         (generation !== undefined && lease.generation !== generation)
       ) {
         leaseFailure("invalid_lease");
+        throw Error("edge_lease_unavailable");
+      }
+      // The transport may have taken a while: never publish a grant (or release
+      // waiting callers) after closure, latched loss, or the prior lease's expiry.
+      if (closed) throw Error("edge_runtime_closed");
+      if (lossLatched || (started && expired())) {
+        latchLoss();
         throw Error("edge_lease_unavailable");
       }
       generation = Number(lease.generation);
       leaseEvidence.renewedAt = now();
       leaseEvidence.renewedSeq = ++evidenceSeq;
       leaseEvidence.expires = Number(lease.expires);
+      monoDeadline = requestedAt + leaseTtlMs;
     })()
       .catch((error) => {
         if (error !== null && typeof error === "object") leaseErrors.add(error);
@@ -112,14 +176,58 @@ export async function createEdgeRuntime(
           leaseFailure("transport_uncertain");
         else if (!(error instanceof Error && error.message === "edge_lease_unavailable"))
           leaseEvidence.failure = { reason: "renewal_error", at: now(), seq: ++evidenceSeq };
+        if (expired()) latchLoss();
         throw error;
       })
       .finally(() => {
         renewal = undefined;
       }));
   };
-  // Refuse before creating listeners or opening an attempt journal.
-  await refreshLease();
+  // Refuse before creating listeners or opening an attempt journal. The first
+  // claim has no effects, so a claim fenced by a predecessor's unexpired lease
+  // (for example a crashed or restarting process) is retried with the same
+  // instance until that lease can expire. Other refusals stop startup at once.
+  // The deadline is rechecked after every sleep. A grant already in flight when
+  // the deadline passes is accepted: it is a valid lease, and abandoning it
+  // would only fence the next start for the rest of its TTL.
+  const startupDeadline = performance.now() + Math.max(0, ports.startupClaimMs ?? 30000);
+  for (let delay = 500; ; delay = Math.min(delay * 2, 4000)) {
+    try {
+      await refreshLease();
+      break;
+    } catch (error) {
+      const remaining = startupDeadline - performance.now();
+      if (generation !== undefined || leaseEvidence.failure?.reason !== "fenced" || remaining <= 0)
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
+      if (performance.now() >= startupDeadline) throw error;
+    }
+  }
+  started = true;
+  // Every central call made from here on (coordinator, observation, delivery,
+  // receipts, replica) passes the same synchronous fence first; lease renewals
+  // are fenced inside refreshLease.
+  const fenced =
+    <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      fence();
+      return fn(...args);
+    };
+  ports = Object.freeze({
+    ...ports,
+    executorCall: fenced(ports.executorCall),
+    ownerCall: fenced(ports.ownerCall),
+    observationOwnerCall: fenced(ports.observationOwnerCall),
+  });
+  // Synchronous last check at external send points (native dispatch, followup,
+  // settings, webhook POST): the same fence, reported as lease unavailability.
+  bridge.effectGuard = () => {
+    try {
+      fence();
+    } catch {
+      throw Error("edge_lease_unavailable");
+    }
+  };
   const central = {
     release_version:
       typeof ports.centralStatus?.release_version === "string"
@@ -136,7 +244,7 @@ export async function createEdgeRuntime(
     const terminalLast = terminal !== null && terminal.seq > renewedSeq;
     const shown = terminalLast ? terminal : failure;
     // Expiry is loss even while a renewal is still pending with no failure yet.
-    const expired = expires !== null && now() >= expires;
+    const isExpired = expired();
     const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
     return {
       mode: "central_edge",
@@ -145,7 +253,7 @@ export async function createEdgeRuntime(
         // A fenced/refused generation is never reacquired by this process; a
         // transport failure is "renewal_failing" until the lease expiry passes.
         state:
-          closed || terminalLast || expired
+          closed || lossLatched || terminalLast || isExpired
             ? "lost"
             : failedLast
               ? "renewal_failing"
@@ -196,10 +304,14 @@ export async function createEdgeRuntime(
         throw error;
       }
     };
-    restoreEffects = checkpointNativeEffects(bridge, async () => {
-      await replica.flush();
-      await refreshLease();
-    });
+    restoreEffects = checkpointNativeEffects(
+      bridge,
+      async () => {
+        await replica.flush();
+        await refreshLease();
+      },
+      () => bridge.effectGuard?.(),
+    );
     const coordinate = coordinatorForBridge(bridge, { ...ports, journal });
     routes = composeEdgeRoutes(
       bridge,
@@ -221,13 +333,17 @@ export async function createEdgeRuntime(
     throw error;
   }
   const stopStreams = () => routes.collaboration.inner.stopStreams();
+  stopStreamsRef = stopStreams;
   Object.assign(routes.collaboration.server, { stopStreams });
   // Native reads can take longer than a lease. Renew independently of the
   // observation cycle; a blocked JS event loop still correctly loses its lease.
   const heartbeat = setInterval(() => {
-    void refreshLease().catch(() => {
-      stopStreams();
-    });
+    // A renewal still in flight past expiry is loss too (see latchLoss).
+    if (expired()) latchLoss();
+    // A transient failure must not stop collaboration permanently: latchLoss
+    // stops streams on real loss, and each streaming request re-checks the
+    // lease itself every second.
+    void refreshLease().catch(() => {});
   }, 2500);
   heartbeat.unref();
   let cycling = false;
@@ -288,7 +404,9 @@ export async function createEdgeRuntime(
       if (closed) return;
       stopStreams();
       try {
-        await replica.flush();
+        // After loss nothing may reach central: the queued replica state stays
+        // local (with the attempt journal) for the next lease holder to reconcile.
+        if (!lossLatched) await replica.flush();
       } finally {
         closed = true;
         clearInterval(heartbeat);

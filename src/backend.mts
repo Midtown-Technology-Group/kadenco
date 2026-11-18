@@ -58,15 +58,17 @@ export async function fleetBackend(helperPath, transportOptions = {}) {
       }
     },
     preflight: (session, runId) => withCurrent(session, runId, async () => {}),
-    followup: (session, message, requestId, runId) =>
-      withCurrent(session, runId, (client) =>
-        client.sendThreadMessage({
+    followup: (session, message, requestId, runId, beforeSend: () => void = () => {}) =>
+      withCurrent(session, runId, (client) => {
+        // Last synchronous check after connect/read, before the native send.
+        beforeSend();
+        return client.sendThreadMessage({
           threadId: session.threadId,
           message,
           mode: "queue",
           clientRequestId: requestId,
-        }),
-      ),
+        });
+      }),
     close: () => Promise.all([...active].map((t) => t.close())),
   };
 }

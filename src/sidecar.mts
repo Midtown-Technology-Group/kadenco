@@ -139,7 +139,10 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
       store,
       backend,
       policy,
-      post: (url, headers, body) => postWebhook(url, headers, body, policy().callbackHosts),
+      post: (url, headers, body) =>
+        postWebhook(url, headers, body, policy().callbackHosts, undefined, () =>
+          bridge.effectGuard?.(),
+        ),
     });
     if (reader) bridge.fleetReads = reader;
     if (config.nativeDelivery) bridge.commands = new Commands({ policy, store, reader });

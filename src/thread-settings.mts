@@ -278,6 +278,18 @@ export class ThreadSettings {
           });
           throw e;
         }
+        try {
+          this.commands.effectGuard?.();
+        } catch (e) {
+          // Refused before any native bytes: not attempted, so not uncertain.
+          save({
+            ...submitted,
+            state: "rejected",
+            reason: "edge_lease_unavailable",
+            submission_not_attempted: true,
+          });
+          throw e;
+        }
         let native;
         try {
           native = await client.configure(p.thread_id, expected);

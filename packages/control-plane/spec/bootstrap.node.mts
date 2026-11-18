@@ -159,6 +159,23 @@ test("supported startup refuses historical cache aliases, key mismatch and inact
       readFileSync(join(archive, "historical.db"), "utf8"),
       "historical bytes untouched",
     );
+    // An active Worker without instance-bound leases (e.g. alpha.16) is refused
+    // read-only, before any lease claim could displace a live predecessor.
+    const ops: string[] = [];
+    await assert.rejects(
+      startProductionSidecar({
+        ...input,
+        bootstrap: {
+          ...input.bootstrap,
+          fetch: (async (url: string | URL) => {
+            ops.push(new URL(url).pathname);
+            return Response.json({ mode: "active", epoch: 1, release_version: "0.1.0-alpha.16" });
+          }) as typeof fetch,
+        },
+      }),
+      /central_lease_capability_required/,
+    );
+    assert.deepEqual(ops, ["/status"], "no edge_lease claim was attempted");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
