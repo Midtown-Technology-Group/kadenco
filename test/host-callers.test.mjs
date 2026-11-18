@@ -18,6 +18,7 @@ import { HostCallers } from "../dist/host-callers.mjs";
 import { hostCallerOwner } from "../dist/host-caller-scope.mjs";
 import { httpServer } from "../dist/server.mjs";
 import { configSchema } from "../dist/config.mjs";
+import { listenLoopback } from "./support/listen.mjs";
 function fixture(t) {
   const store = new Store(":memory:", randomBytes(32)),
     token = randomBytes(32).toString("base64");
@@ -271,7 +272,7 @@ test("bounded wait returns an exact authorized reply without repeated native pol
 test("official MCP and stdio expose only passive tools with the host schema and no claimed run ID", async (t) => {
   const f = fixture(t),
     server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   const endpoint = `http://127.0.0.1:${server.address().port}/mcp`,
     client = new Client(
       { name: "host-test", version: "1" },
@@ -360,7 +361,7 @@ test("policy permits separate passive host callers only and reserves derived pri
 test("universal CLI and native Pi tools use the same host-scoped MCP exchange and never leak their credential", async (t) => {
   const f = fixture(t),
     server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   const dir = mkdtempSync(join(tmpdir(), "eddie-agent-")),
     launch = join(dir, "launch.mjs"),
     connection = join(dir, "connection.json"),
@@ -488,7 +489,7 @@ test("host delivery acknowledgements retain host/thread scope and fail after rev
 test("legacy host caller discovery remains five tools unless acknowledgement is explicitly negotiated", async (t) => {
   const f = fixture(t),
     server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   const client = new Client(
     { name: "legacy-caller", version: "0.7.1" },
     { versionNegotiation: { mode: { pin: "2026-07-28" } } },
@@ -697,7 +698,7 @@ test("uncertain owner approval reconciles the same invitation and expired reques
 test("sharing MCP tools require explicit negotiation and never expose owner decisions", async (t) => {
   const f = sharingFixture(t),
     server = httpServer(f.bridge);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenLoopback(server);
   const client = new Client(
     { name: "sharing-test", version: "1" },
     { versionNegotiation: { mode: { pin: "2026-07-28" } } },
@@ -729,7 +730,7 @@ test("sharing MCP tools require explicit negotiation and never expose owner deci
 test("terminal sharing modes traverse agent client, stdio and HTTP using one retained request", async (t) => {
   const f = sharingFixture(t),
     server = httpServer(f.bridge);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenLoopback(server);
   const directory = mkdtempSync(join(tmpdir(), "kadenco-sharing-cli-")),
     launch = join(directory, "launch.mjs"),
     connection = join(directory, "connection.json"),

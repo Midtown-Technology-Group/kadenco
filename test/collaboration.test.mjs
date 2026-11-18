@@ -6,6 +6,7 @@ import { Store } from "../dist/store.mjs";
 import { Collaboration, grantArgs } from "../dist/collaboration.mjs";
 import { accessIdentity, collaborationServer } from "../dist/collaboration-http.mjs";
 import { generateKeyPair, SignJWT } from "jose";
+import { listenLoopback } from "./support/listen.mjs";
 
 function fixture(t) {
   let now = Date.now(),
@@ -528,7 +529,7 @@ test("HTTP rejects CSRF, oversized input and native endpoints; streams recheck g
       intervalMs: 10,
     },
   );
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenLoopback(server);
   t.after(() => {
     server.stopStreams();
     server.closeAllConnections();
@@ -603,7 +604,7 @@ test("stream authentication resuming after stop cannot enroll a new stream or de
       intervalMs: 10,
     },
   );
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenLoopback(server);
   t.after(() => {
     release();
     server.stopStreams();
