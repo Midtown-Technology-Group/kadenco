@@ -213,7 +213,7 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
     }
     outcomes.push({
       ms: d.centralResultAt,
-      order: 0,
+      order: Number.isSafeInteger(d.centralResultSeq) ? d.centralResultSeq : 0,
       ok: d.status === "acknowledged",
       at: new Date(d.centralResultAt).toISOString(),
       outcome: `${d.status}:${d.httpStatus ?? 0}`,
@@ -233,7 +233,7 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
     return (
       Number.isFinite(started) &&
       now - started > JOURNEY_STUCK_MS &&
-      (ackMs === null || ackMs <= started)
+      (ackMs === null || ackMs < started)
     );
   });
   const failedLast =

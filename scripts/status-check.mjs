@@ -56,8 +56,17 @@ const expected = (lease, states) =>
         ? "ok"
         : "unverified";
 const journeyStates = [s?.journeys?.ask_eddie?.state, s?.journeys?.event_delivery?.state];
+const optionalText = (v) => v === null || v === undefined || typeof v === "string";
+const leaseFits = (mode, lease) =>
+  (mode === "standalone" && lease === "not_applicable") ||
+  (mode === "central_edge" && lease !== "not_applicable");
 if (
   s?.schema !== 1 ||
+  !leaseFits(s.runtime?.mode, s.runtime?.lease?.state) ||
+  !optionalText(s.build?.package_version) ||
+  !optionalText(s.build?.source_commit) ||
+  !optionalText(s.runtime?.lease?.last_failure?.reason) ||
+  !optionalText(s.runtime?.central?.release_version) ||
   !journeyStates.every((x) => JOURNEY.includes(x)) ||
   !LEASE.includes(s.runtime?.lease?.state) ||
   !Array.isArray(s.hosts) ||

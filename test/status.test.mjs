@@ -629,6 +629,14 @@ test("status-check exits 2 when a report contradicts itself or has malformed hos
   assert.equal(await run(), 2);
   body = { ...ok, runtime: { mode: "central_edge", lease: { state: "held" } }, hosts: {} };
   assert.equal(await run(), 2);
+  body = { ...ok, runtime: { mode: "central_edge", lease: { state: "not_applicable" } } };
+  assert.equal(await run(), 2, "central edge cannot have a not-applicable lease");
+  body = {
+    ...ok,
+    runtime: { mode: "central_edge", lease: { state: "held" } },
+    build: { source_commit: 42 },
+  };
+  assert.equal(await run(), 2, "malformed build identity");
   body = { ...ok, runtime: { mode: "central_edge", lease: { state: "held" } } };
   assert.equal(await run(), 0);
 });
@@ -655,4 +663,50 @@ test("a terminal delivery failure is not hidden by unrelated pending work", asyn
   put("C", "pending", base + 3000);
   f.advance(5000);
   assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
+});
+
+test("a later central failure in the same millisecond wins by central audit order", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  const [sub] = f.store.all("subscription");
+  const at = f.bridge.now() - 1000;
+  const put = (id, status, http, seq) =>
+    f.store.put("delivery", id, {
+      id,
+      subId: sub.id,
+      status,
+      central_id: "c" + id,
+      httpStatus: http,
+      centralResultAt: at,
+      centralResultSeq: seq,
+      event: { name: "t3.eddie.requested", timestamp: new Date(at).toISOString(), data: {} },
+    });
+  put("ok", "acknowledged", 204, 10);
+  put("bad", "stopped", 403, 11);
+  assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
+});
+
+test("a success exactly at a pending attempt's start time counts as recovery", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  const [sub] = f.store.all("subscription");
+  const at = f.bridge.now();
+  f.store.put("delivery", "done", {
+    id: "done",
+    subId: sub.id,
+    status: "acknowledged",
+    central_id: "cdone",
+    httpStatus: 204,
+    centralResultAt: at,
+    centralResultSeq: 1,
+    event: { name: "t3.eddie.requested", timestamp: new Date(at).toISOString(), data: {} },
+  });
+  f.store.put("delivery", "waiting", {
+    id: "waiting",
+    subId: sub.id,
+    status: "pending",
+    event: { name: "t3.eddie.requested", timestamp: new Date(at).toISOString(), data: {} },
+  });
+  f.advance(JOURNEY_STUCK_MS + 1000);
+  assert.notEqual(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
 });
