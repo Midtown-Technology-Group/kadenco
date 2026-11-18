@@ -28,7 +28,8 @@ jobs:
       - name: Format, lint and both compiler checks
         run: npm exec -- vp run check
       - run: npm run release:check
-      - run: npm audit
+      # npm audit with dated, owner-approved exceptions only (audit-exceptions.json).
+      - run: node scripts/audit-gate.mjs
   test:
     name: test / ${{ matrix.os }} / node-${{ matrix.node }}
     strategy:
@@ -68,7 +69,7 @@ jobs:
       - run: npm ci --ignore-scripts && npm run build
       - run: npm ci --ignore-scripts
         working-directory: packages/control-plane
-      - run: npm run types && npm run typecheck && npm test && npm run build && npm audit
+      - run: npm run types && npm run typecheck && npm test && npm run build && node ../../scripts/audit-gate.mjs
         working-directory: packages/control-plane
       - run: npm run staging:qualify
         working-directory: packages/control-plane
