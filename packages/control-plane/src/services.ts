@@ -6,6 +6,11 @@ import {
   type NativeGrantScope,
 } from "./binding.ts";
 import { replicaSchema, replicaOperation } from "./replica-state.ts";
+/** Edge lease TTL. Long enough to ride out Durable Object latency spikes with
+ * an 8 s renewal deadline and a 2.5 s heartbeat (two failed renewals in a row
+ * no longer expire it); a single edge, so failover speed is not at stake. */
+export const EDGE_LEASE_TTL_MS = 30000;
+
 export type ServicePrincipal = {
   id: string;
   role: "owner" | "executor";
@@ -120,13 +125,15 @@ export function serviceOperation(
       "INSERT INTO edge_lease(id,holder,generation,expires,instance) VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET holder=excluded.holder,generation=excluded.generation,expires=excluded.expires,instance=excluded.instance",
       a.id,
       generation,
-      now + 10000,
+      now + EDGE_LEASE_TTL_MS,
       instance,
     );
     return {
       holder: a.id,
       generation,
-      expires: now + 10000,
+      expires: now + EDGE_LEASE_TTL_MS,
+      // The edge judges expiry on its own clock from this TTL (never longer).
+      ttl_ms: EDGE_LEASE_TTL_MS,
       ...(instance === null ? {} : { instance }),
     };
   }

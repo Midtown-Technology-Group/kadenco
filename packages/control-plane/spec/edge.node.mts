@@ -2423,3 +2423,39 @@ test("a transient Worker forwarding fault is not lease loss", async () => {
     f.cleanup();
   }
 });
+
+test("the edge uses the TTL the Worker reports, capped by its own bound; none means 10 s", async () => {
+  let mono = 0,
+    ttl: number | undefined = 30000;
+  const f = await leaseFixture((_n, p) => ({ ...granted(p), ...(ttl ? { ttl_ms: ttl } : {}) }));
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start({ monotonicNow: () => mono });
+    mono += 20000; // well past the old 10 s, inside the reported 30 s
+    assert.equal(f.lease().state, "held");
+    mono += 10001;
+    assert.equal(f.lease().state, "lost");
+  } finally {
+    await sidecar?.shutdown().catch(() => {});
+    f.cleanup();
+  }
+  for (const [reported, cap, holdsAt, lostAt] of [
+    [undefined, undefined, 9000, 10001], // older Worker: assume 10 s
+    [60000, 30000, 29000, 30001], // never longer than the edge's own bound
+  ] as const) {
+    mono = 0;
+    ttl = reported;
+    const g = await leaseFixture((_n, p) => ({ ...granted(p), ...(ttl ? { ttl_ms: ttl } : {}) }));
+    let s2: { shutdown(): Promise<void> } | undefined;
+    try {
+      s2 = await g.start({ monotonicNow: () => mono, ...(cap ? { leaseTtlMs: cap } : {}) });
+      mono = holdsAt;
+      assert.equal(g.lease().state, "held", `held at ${holdsAt}`);
+      mono = lostAt;
+      assert.equal(g.lease().state, "lost", `lost at ${lostAt}`);
+    } finally {
+      await s2?.shutdown().catch(() => {});
+      g.cleanup();
+    }
+  }
+});
