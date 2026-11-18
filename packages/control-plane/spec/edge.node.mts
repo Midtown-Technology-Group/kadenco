@@ -2377,3 +2377,48 @@ test("lease expiry uses the local monotonic clock, not central wall time", async
     f.cleanup();
   }
 });
+
+test("edge wall-clock skew does not reject a valid grant", async () => {
+  // The edge's wall clock runs 20 s ahead of central (more than the 10 s TTL).
+  const f = await leaseFixture((_n, p) => granted(p));
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start({ now: () => Date.now() + 20000 });
+    assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 200);
+    assert.equal(f.lease().state, "held");
+    assert.equal(f.lost(), 0);
+  } finally {
+    await sidecar?.shutdown();
+    f.cleanup();
+  }
+});
+
+test("a transient Worker forwarding fault is not lease loss", async () => {
+  let faults = 0;
+  const f = await leaseFixture((_n, p) => {
+    if (faults > 0) {
+      faults--;
+      return { reason: "forwarding_failed" };
+    }
+    return granted(p);
+  });
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start();
+    const generation = f.lease().generation;
+    faults = 1;
+    // Whichever renewal (heartbeat or request) meets the fault, it is transient.
+    while (!f.failures.includes("transport_uncertain")) {
+      await fetch(`http://127.0.0.1:${f.port}/healthz`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.notEqual(f.lease().state, "lost");
+    assert.equal(f.lost(), 0, "not terminal");
+    assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 200);
+    assert.equal(f.lease().state, "held");
+    assert.equal(f.lease().generation, generation, "same generation kept");
+  } finally {
+    await sidecar?.shutdown();
+    f.cleanup();
+  }
+});

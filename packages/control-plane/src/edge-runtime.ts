@@ -135,6 +135,10 @@ export async function createEdgeRuntime(
         instance,
         ...(generation === undefined ? {} : { generation }),
       });
+      // Worker-side forwarding or internal faults say nothing about the lease:
+      // treat them as transport uncertainty (non-terminal), not as a refusal.
+      if (lease.reason === "forwarding_failed" || lease.reason === "internal_error")
+        throw Error("central_transport_uncertain");
       if (lease.reason !== undefined) {
         leaseFailure(lease.reason === "fenced" ? "fenced" : "refused");
         throw Error("edge_lease_unavailable");
@@ -145,7 +149,9 @@ export async function createEdgeRuntime(
         !Number.isSafeInteger(lease.generation) ||
         Number(lease.generation) < 1 ||
         !Number.isSafeInteger(lease.expires) ||
-        Number(lease.expires) <= (ports.now ?? Date.now)() ||
+        // Judged on our monotonic clock (request start + TTL), never by comparing
+        // central's wall-clock expiry with ours: skew must not reject a valid grant.
+        mono() >= requestedAt + leaseTtlMs ||
         (generation !== undefined && lease.generation !== generation)
       ) {
         leaseFailure("invalid_lease");
