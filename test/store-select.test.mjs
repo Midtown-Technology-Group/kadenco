@@ -5,11 +5,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { Store } from "../dist/store.mjs";
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "kadenco-select-"));
-  const store = new Store(join(dir, "state.db"), randomBytes(32));
+  const path = join(dir, "state.db");
+  const store = new Store(path, randomBytes(32));
   t.after(() => {
     store.db.close();
     rmSync(dir, { recursive: true, force: true });
@@ -20,7 +22,7 @@ function fixture(t) {
     decodes++;
     return decode(raw);
   };
-  return { store, decodes: () => decodes, reset: () => (decodes = 0) };
+  return { store, path, decodes: () => decodes, reset: () => (decodes = 0) };
 }
 const pending = (d) => d.status === "pending";
 const ids = (rows) => rows.map((r) => r.id);
@@ -102,4 +104,46 @@ test("signatures are read from the covering index, not from row values", (t) => 
     .map((r) => r.detail)
     .join(" ");
   assert.match(plan, /COVERING INDEX records_signature/);
+});
+
+test("both phases read one snapshot, even while another connection commits", (t) => {
+  const { store, path } = fixture(t);
+  store.put("delivery", "a", { id: "a", status: "acknowledged" });
+  store.put("delivery", "b", { id: "b", status: "pending" });
+  assert.deepEqual(ids(store.select("delivery", "pending", pending)), ["b"]);
+  // A second connection swaps the statuses atomically between select()'s
+  // signature scan and its value reads (injected at the first value read).
+  const other = new DatabaseSync(path);
+  const swap = [
+    store.encode({ id: "a", status: "pending" }),
+    store.encode({ id: "b", status: "acknowledged" }),
+  ];
+  const prepare = store.db.prepare.bind(store.db);
+  let injected = false;
+  store.db.prepare = (sql) => {
+    const stmt = prepare(sql);
+    if (!/AND id=\?/.test(sql) || injected) return stmt;
+    return {
+      get: (...args) => {
+        if (!injected) {
+          injected = true;
+          other.exec("BEGIN IMMEDIATE");
+          other.prepare("UPDATE records SET value=? WHERE kind='delivery' AND id='a'").run(swap[0]);
+          other.prepare("UPDATE records SET value=? WHERE kind='delivery' AND id='b'").run(swap[1]);
+          other.exec("COMMIT");
+        }
+        return stmt.get(...args);
+      },
+    };
+  };
+  // Inside the snapshot, b is still pending: never the impossible empty result.
+  assert.deepEqual(ids(store.select("delivery", "pending", pending)), ["b"]);
+  assert.ok(injected, "the concurrent commit happened mid-select");
+  other.close();
+  store.db.prepare = prepare;
+  assert.deepEqual(ids(store.select("delivery", "pending", pending)), ["a"]);
+  // Inside a caller's transaction, select() reuses it instead of nesting.
+  store.transaction(() =>
+    assert.deepEqual(ids(store.select("delivery", "pending", pending)), ["a"]),
+  );
 });

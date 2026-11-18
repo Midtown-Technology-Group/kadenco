@@ -66,8 +66,29 @@ export class Store {
    *
    * `name` identifies the predicate. It must be a pure function of the record
    * (no clock, policy or other state): such conditions belong after selection.
+   *
+   * Both phases (signatures, then matching values) read one snapshot: the
+   * caller's open transaction, or a read transaction opened here, so another
+   * connection's commit cannot produce a result that never existed.
+   *
+   * Integrity: a row skipped on a cached non-match is not re-authenticated, so
+   * damage to its ciphertext beyond the signature goes unnoticed here until the
+   * row is next decoded (get(), all(), or a write). Matching rows are always
+   * authenticated, since they are decoded on every call.
    */
   select(kind: string, name: string, predicate: (value: any) => boolean) {
+    const own = !this.db.isTransaction;
+    if (own) this.db.exec("BEGIN");
+    try {
+      const out = this.selectInSnapshot(kind, name, predicate);
+      if (own) this.db.exec("COMMIT");
+      return out;
+    } catch (error) {
+      if (own && this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  private selectInSnapshot(kind: string, name: string, predicate: (value: any) => boolean) {
     const key = kind + "\u0000" + name,
       prior = (this.verdicts ??= new Map()).get(key) ?? new Map<string, [string, boolean]>(),
       next = new Map<string, [string, boolean]>(),
