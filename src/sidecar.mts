@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, openSync, fstatSync, closeSync } from "node:fs";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { SynchronousTimings } from "./synchronous-timings.mjs";
 import type { AddressInfo } from "node:net";
@@ -54,6 +54,49 @@ function projectionBackend(config: Policy): Backend {
 let environmentKey: Buffer | undefined;
 
 // Importing this module has no process, signal, model or network side effects.
+/**
+ * Live policy reader: every read reflects the file as it is now. Parsing and
+ * schema-validating it cost ~1.5 ms per read, and the fleet loop reads it
+ * several times per thread per cycle, so the parsed value is reused while the
+ * file's identity (size, modification and change times, inode, device) is
+ * unchanged; any edit or replacement re-parses on the next read, and an invalid
+ * file keeps failing. The file is opened on every read (on NFS that revalidates
+ * attributes), and the value is re-parsed at least every `maxAgeMs` regardless,
+ * so a filesystem that reports unchanged metadata for changed contents delays a
+ * policy change (such as a revocation) by at most that long. The trusted
+ * `validate` hook still runs on every read, and each caller gets its own copy.
+ */
+export const POLICY_MAX_AGE_MS = 5000;
+export function livePolicy(
+  configPath: string,
+  validate?: (policy: Policy) => void,
+  monotonic: () => number = () => performance.now(),
+  maxAgeMs = POLICY_MAX_AGE_MS,
+) {
+  let parsed: { identity: string; at: number; value: Policy } | undefined;
+  return (): Policy => {
+    // One open descriptor: the identity and the contents come from the same
+    // file, so a replacement between a path stat and a path read cannot pair
+    // one file's identity with another's contents.
+    const fd = openSync(configPath, "r");
+    try {
+      const s = fstatSync(fd, { bigint: true });
+      const identity = [s.size, s.mtimeNs, s.ctimeNs, s.ino, s.dev].join(":");
+      const now = monotonic();
+      if (parsed?.identity !== identity || !(now - parsed.at < maxAgeMs))
+        parsed = {
+          identity,
+          at: now,
+          value: configSchema.parse(JSON.parse(readFileSync(fd, "utf8"))),
+        };
+    } finally {
+      closeSync(fd);
+    }
+    const value = structuredClone(parsed.value);
+    validate?.(value);
+    return value;
+  };
+}
 export async function startSidecar(options: SidecarOptions = {}): Promise<Sidecar> {
   const configPath = options.configPath ?? process.env.EDDIE_T3_CONFIG;
   if (process.env.EDDIE_T3_STATE_KEY !== undefined)
@@ -63,12 +106,8 @@ export async function startSidecar(options: SidecarOptions = {}): Promise<Sideca
   if (!configPath || !key) throw Error("EDDIE_T3_CONFIG and EDDIE_T3_STATE_KEY required");
   if (key.length !== 32) throw Error("32_byte_state_key_required");
   const synchronous = new SynchronousTimings();
-  const policy = () =>
-    synchronous.measure("policy", () => {
-      const value = configSchema.parse(JSON.parse(readFileSync(configPath, "utf8")));
-      options.validatePolicy?.(value);
-      return value;
-    });
+  const read = livePolicy(configPath, options.validatePolicy);
+  const policy = () => synchronous.measure("policy", read);
   const config = policy();
   if (process.platform !== "win32" && statSync(config.stateDirectory).mode & 0o077)
     throw Error("state_directory_must_be_private");
