@@ -60,11 +60,20 @@ let environmentKey: Buffer | undefined;
  * several times per thread per cycle, so the parsed value is reused while the
  * file's identity (size, modification and change times, inode, device) is
  * unchanged; any edit or replacement re-parses on the next read, and an invalid
- * file keeps failing. The trusted `validate` hook still runs on every read, and
- * each caller gets its own copy, as before.
+ * file keeps failing. The file is opened on every read (on NFS that revalidates
+ * attributes), and the value is re-parsed at least every `maxAgeMs` regardless,
+ * so a filesystem that reports unchanged metadata for changed contents delays a
+ * policy change (such as a revocation) by at most that long. The trusted
+ * `validate` hook still runs on every read, and each caller gets its own copy.
  */
-export function livePolicy(configPath: string, validate?: (policy: Policy) => void) {
-  let parsed: { identity: string; value: Policy } | undefined;
+export const POLICY_MAX_AGE_MS = 5000;
+export function livePolicy(
+  configPath: string,
+  validate?: (policy: Policy) => void,
+  monotonic: () => number = () => performance.now(),
+  maxAgeMs = POLICY_MAX_AGE_MS,
+) {
+  let parsed: { identity: string; at: number; value: Policy } | undefined;
   return (): Policy => {
     // One open descriptor: the identity and the contents come from the same
     // file, so a replacement between a path stat and a path read cannot pair
@@ -73,8 +82,13 @@ export function livePolicy(configPath: string, validate?: (policy: Policy) => vo
     try {
       const s = fstatSync(fd, { bigint: true });
       const identity = [s.size, s.mtimeNs, s.ctimeNs, s.ino, s.dev].join(":");
-      if (parsed?.identity !== identity)
-        parsed = { identity, value: configSchema.parse(JSON.parse(readFileSync(fd, "utf8"))) };
+      const now = monotonic();
+      if (parsed?.identity !== identity || !(now - parsed.at < maxAgeMs))
+        parsed = {
+          identity,
+          at: now,
+          value: configSchema.parse(JSON.parse(readFileSync(fd, "utf8"))),
+        };
     } finally {
       closeSync(fd);
     }

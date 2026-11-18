@@ -90,3 +90,31 @@ test("an unchanged file is not re-read or re-parsed", (t) => {
     syncBuiltinESMExports();
   }
 });
+
+test("the parsed value is refreshed at least every max age, even if metadata looks unchanged", (t) => {
+  const f = fixture(t);
+  let clock = 0;
+  const read = livePolicy(f.path, undefined, () => clock, 5000);
+  let reads = 0;
+  const original = fs.readFileSync;
+  const mocked = t.mock.method(fs, "readFileSync", (...args) => {
+    if (args[0] === f.path || typeof args[0] === "number") reads++;
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    read();
+    clock = 4999;
+    read();
+    assert.equal(reads, 1, "reused within the max age");
+    clock = 5000;
+    read();
+    assert.equal(reads, 2, "re-read once the max age has passed");
+    clock = 5001;
+    read();
+    assert.equal(reads, 2, "and reused again from the refreshed parse");
+  } finally {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  }
+});

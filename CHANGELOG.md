@@ -12,8 +12,8 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
   production config), and fleet observation reads policy several times per
   thread per cycle, so a cycle spent seconds of CPU there. The parsed policy is
   now reused while the file's identity (size, modification and change times,
-  inode, device) is unchanged; any edit or replacement is read on the next call
-  and an invalid file keeps failing. The trusted per-read validation hook still
+  inode, device) is unchanged and for at most 5 s; any edit or replacement is
+  read on the next call and an invalid file keeps failing. The trusted per-read validation hook still
   runs every time and each caller still gets its own copy (~0.23 ms per read in
   total).
 
