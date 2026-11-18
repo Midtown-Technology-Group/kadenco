@@ -1,8 +1,10 @@
 # Contributing
 
 Use a supported Node 22 or 24 release, then `npm ci --ignore-scripts`.
-Run `npm exec -- vp run check`, `npm exec -- vp run test`, and `npm run audit:gate` (`npm audit` that accepts only the dated, owner-approved
-exceptions in `audit-exceptions.json`; it also runs in `packages/control-plane`).
+Run `npm exec -- vp run check`, `npm exec -- vp run test`, and the audit gates, which run `npm audit` and accept only the dated,
+owner-approved, development-only exceptions in `audit-exceptions.json`:
+`npm run audit:gate` from the repository root (it also flags stale exceptions),
+and `node ../../scripts/audit-gate.mjs` from `packages/control-plane`. CI runs both.
 The check runs both pinned compilers; the test command first builds with `tsrs`.
 Edit `src/*.mts`, not generated `dist/*.mjs`. Production startup uses compiled
 output and needs no compiler. The sidecar's independent CI/release and typed

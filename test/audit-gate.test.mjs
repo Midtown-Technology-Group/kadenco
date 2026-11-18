@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { evaluate, stale } from "../scripts/audit-gate.mjs";
+import { evaluate, stale, expiryTime } from "../scripts/audit-gate.mjs";
 
 const report = (...ids) => ({
   vulnerabilities: Object.fromEntries(
@@ -46,7 +46,7 @@ test("a listed advisory reaching production dependencies fails", () => {
     [exception],
     today,
   );
-  assert.deepEqual(f, ["advisory GHSA-a reaches production dependencies"]);
+  assert.deepEqual(f, ["production dependencies are vulnerable (GHSA-a)"]);
 });
 
 test("an exception naming a different package fails", () => {
@@ -66,4 +66,38 @@ test("a stale exception (fixed upstream, no longer reported anywhere) fails", ()
     "stale exception GHSA-a: no longer reported, remove it",
   ]);
   assert.deepEqual(stale([exception], [clean, report(["picomatch", "GHSA-a"])]), []);
+});
+
+test("null or array vulnerability maps are unreadable, an empty map is valid", () => {
+  for (const bad of [{ vulnerabilities: null }, { vulnerabilities: [] }, null, {}])
+    assert.deepEqual(evaluate(report(["picomatch", "GHSA-a"]), bad, [exception], today), [
+      "production audit report unreadable",
+    ]);
+  assert.deepEqual(evaluate(clean, clean, [exception], today), []);
+});
+
+test("any production finding fails, even without an extractable advisory id", () => {
+  const prod = { vulnerabilities: { fdir: { via: ["picomatch"] } } };
+  assert.deepEqual(evaluate(report(["picomatch", "GHSA-a"]), prod, [exception], today), [
+    "production dependencies are vulnerable (fdir)",
+  ]);
+});
+
+test("expiry must be a real YYYY-MM-DD calendar date", () => {
+  assert.ok(Number.isFinite(expiryTime("2026-12-18")));
+  for (const bad of ["2027-02-30", "2026-13-01", "next month", "2026-12-18T00:00:00Z", undefined])
+    assert.ok(Number.isNaN(expiryTime(bad)), String(bad));
+  const f = evaluate(
+    report(["picomatch", "GHSA-a"]),
+    clean,
+    [{ ...exception, expires: "2027-02-30" }],
+    today,
+  );
+  assert.match(f[0], /invalid expiry date/);
+});
+
+test("staleness is only decided when every report is readable", () => {
+  assert.deepEqual(stale([exception], [clean, undefined]), [
+    "cannot check exception staleness: audit report unreadable",
+  ]);
 });
