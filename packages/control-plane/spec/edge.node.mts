@@ -2125,6 +2125,35 @@ test("startup retries a claim fenced by a predecessor's unexpired lease, with on
   }
 });
 
+test("by default startup waits out a predecessor's full 120 s lease", async (t) => {
+  // Promotion or a crash can kill the edge just after a renewal; the successor
+  // stays fenced for almost the whole 120 s TTL. Each fenced claim here jumps the
+  // startup clock 40 s, so the claim succeeds only on attempt 4 at 120 s: the
+  // default retry window must outlast the TTL (alpha.18's 45 s would not).
+  let offset = 0;
+  const real = performance.now.bind(performance);
+  t.mock.method(performance, "now", () => real() + offset);
+  let firstGrant: number | undefined;
+  const f = await leaseFixture((n, p) => {
+    if (offset >= 120000) {
+      firstGrant ??= n;
+      return granted(p);
+    }
+    offset += 40000;
+    return { reason: "fenced" };
+  });
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start();
+    assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 200);
+    assert.equal(firstGrant, 4, "claimed on the first attempt after the 120 s lease");
+    assert.equal(f.instances.size, 1, "retries reuse the same process instance");
+  } finally {
+    await sidecar?.shutdown();
+    f.cleanup();
+  }
+});
+
 test("startup refuses immediately on non-fence refusals and after the claim deadline", async () => {
   const refused = await leaseFixture(() => ({ reason: "forbidden" }));
   try {

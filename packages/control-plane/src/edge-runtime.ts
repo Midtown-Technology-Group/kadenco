@@ -26,7 +26,7 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
   leaseFailure?: (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => void;
   /** Monotonic clock for lease expiry (default `performance.now`). */
   monotonicNow?: () => number;
-  /** Upper bound on the lease TTL this edge assumes (default 30 s); the Worker-reported ttl_ms is used when smaller. */
+  /** Upper bound on the lease TTL this edge assumes (default 120 s); the Worker-reported ttl_ms is used when smaller. */
   leaseTtlMs?: number;
   /** Lease-only transport. Its deadline must be well under the lease TTL so one
    * slow renewal cannot consume the whole lease; defaults to executorCall. */
@@ -36,7 +36,7 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
    * shut down and restart the edge; this process never reacquires a generation. */
   leaseLost?: () => void;
   /** How long startup keeps retrying an effect-free first claim that is fenced
-   * by a predecessor's unexpired lease. Default 45 s (lease TTL is 30 s). */
+   * by a predecessor's unexpired lease. Default 150 s (lease TTL is 120 s). */
   startupClaimMs?: number;
   /** Central Worker/DO identity read by bootstrap before the runtime starts. */
   centralStatus?: { release_version?: unknown; epoch?: unknown };
