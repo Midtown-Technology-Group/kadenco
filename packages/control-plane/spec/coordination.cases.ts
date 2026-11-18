@@ -977,9 +977,9 @@ describe("central observation, outbox and shared budgets", () => {
     const before = Date.now();
     const lease = await call("edge_lease", { epoch: 7 }, "synthetic-agent");
     expect(lease.holder).toBe("agent");
-    // 30 s lease, reported so the edge can judge expiry on its own clock.
-    expect(lease.ttl_ms).toBe(30000);
-    expect(lease.expires).toBeGreaterThanOrEqual(before + 30000);
+    // 120 s lease, reported so the edge can judge expiry on its own clock.
+    expect(lease.ttl_ms).toBe(120000);
+    expect(lease.expires).toBeGreaterThanOrEqual(before + 120000);
     expect(await call("edge_lease", { epoch: 7 }, "synthetic-agent2")).toEqual({
       reason: "fenced",
     });

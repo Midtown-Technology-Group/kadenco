@@ -228,8 +228,9 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
     fetch: config.fetch,
     diagnostic: diagnostic(config.executor),
   });
-  // Lease renewals get an 8 s deadline, well under the 30 s lease TTL; the heartbeat
-  // retries every 2.5 s, so a hung request no longer consumes the whole lease.
+  // Lease renewals get an 8 s deadline, well under the 120 s lease TTL; the
+  // heartbeat retries every 2.5 s, so a hung request never consumes the lease
+  // and renewals keep retrying through an upstream network drop.
   const leaseCall = centralTransport({
     origin: config.origin,
     token: () => config.executorToken,

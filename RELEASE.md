@@ -78,9 +78,23 @@ authority changes remain separate decisions.
 ## Recovery maintenance
 
 Lease TTL compatibility: an edge trusts the lease TTL its Worker reports. Never
-restore a Worker that grants a shorter lease (for example alpha.17's 10 s after
-alpha.18's 30 s) while an edge that trusts the longer TTL is running: stop the
+restore a Worker that grants a shorter lease (for example alpha.18's 30 s after
+alpha.19's 120 s) while an edge that trusts the longer TTL is running: stop the
 edge first, then restore the Worker, then start the matching edge.
+
+A killed or crashed edge holds the central lease until its TTL runs out, so its
+successor waits up to 120 s (alpha.19) before it binds and reports healthy; its
+claim retry window is 150 s. Rollout prerequisite for alpha.19 and later: the
+supervisor's adapter readiness wait and any promotion readiness wait must be at
+least 180 s (150 s retry window, an in-flight claim with its 8 s deadline, and
+startup and polling margin). Shorter waits turn a normal promotion into a
+startup timeout and an extra restart.
+
+Between the Worker and edge steps of an alpha.19 rollout, an alpha.18 edge
+renews 120 s rows but retries a startup claim for only 45 s; keep that window
+short. After rolling the Worker back, a 120 s row written before the rollback
+can outlive the stopped edge: wait 120 s after stopping it before starting an
+older edge, or expect its first startup attempt to time out.
 
 Before stopping the managed edge, retain its exact task definition and pause its
 automatic revival. Verify exact process ancestry/creation identity and closed

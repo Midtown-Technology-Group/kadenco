@@ -2125,6 +2125,35 @@ test("startup retries a claim fenced by a predecessor's unexpired lease, with on
   }
 });
 
+test("by default startup waits out a predecessor's full 120 s lease", async (t) => {
+  // Promotion or a crash can kill the edge just after a renewal; the successor
+  // stays fenced for almost the whole 120 s TTL. Each fenced claim here jumps the
+  // startup clock 40 s, so the claim succeeds only on attempt 4 at 120 s: the
+  // default retry window must outlast the TTL (alpha.18's 45 s would not).
+  let offset = 0;
+  const real = performance.now.bind(performance);
+  t.mock.method(performance, "now", () => real() + offset);
+  let firstGrant: number | undefined;
+  const f = await leaseFixture((n, p) => {
+    if (offset >= 120000) {
+      firstGrant ??= n;
+      return granted(p);
+    }
+    offset += 40000;
+    return { reason: "fenced" };
+  });
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start();
+    assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 200);
+    assert.equal(firstGrant, 4, "claimed on the first attempt after the 120 s lease");
+    assert.equal(f.instances.size, 1, "retries reuse the same process instance");
+  } finally {
+    await sidecar?.shutdown();
+    f.cleanup();
+  }
+});
+
 test("startup refuses immediately on non-fence refusals and after the claim deadline", async () => {
   const refused = await leaseFixture(() => ({ reason: "forbidden" }));
   try {
@@ -2426,14 +2455,14 @@ test("a transient Worker forwarding fault is not lease loss", async () => {
 
 test("the edge uses the TTL the Worker reports, capped by its own bound; none means 10 s", async () => {
   let mono = 0,
-    ttl: number | undefined = 30000;
+    ttl: number | undefined = 120000;
   const f = await leaseFixture((_n, p) => ({ ...granted(p), ...(ttl ? { ttl_ms: ttl } : {}) }));
   let sidecar: { shutdown(): Promise<void> } | undefined;
   try {
     sidecar = await f.start({ monotonicNow: () => mono });
-    mono += 20000; // well past the old 10 s, inside the reported 30 s
+    mono += 100000; // a 100 s network drop: well past alpha.18's 30 s, inside 120 s
     assert.equal(f.lease().state, "held");
-    mono += 10001;
+    mono += 20001;
     assert.equal(f.lease().state, "lost");
   } finally {
     await sidecar?.shutdown().catch(() => {});
@@ -2441,7 +2470,8 @@ test("the edge uses the TTL the Worker reports, capped by its own bound; none me
   }
   for (const [reported, cap, holdsAt, lostAt] of [
     [undefined, undefined, 9000, 10001], // older Worker: assume 10 s
-    [60000, 30000, 29000, 30001], // never longer than the edge's own bound
+    [300000, undefined, 119000, 120001], // never longer than the default 120 s bound
+    [60000, 30000, 29000, 30001], // never longer than an explicit bound
   ] as const) {
     mono = 0;
     ttl = reported;

@@ -5,6 +5,21 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.19
+
+- Longer edge lease, so upstream network drops no longer restart the edge.
+  After alpha.18, the remaining restarts (about every 10 minutes) coincided
+  with 30-90 s losses of connectivity to Cloudflare from the edge's network:
+  renewals kept retrying but the 30 s lease expired first. The Worker now
+  grants a 120 s lease (reported as `ttl_ms`), the edge's own bound is 120 s,
+  and the startup claim retry covers 150 s. Trade-off: a killed or crashed
+  edge's successor waits up to 120 s for the old lease before it starts.
+  Deploy the Worker before the edge, as before (an alpha.18 edge keeps its
+  30 s bound against the new Worker). To roll back to a Worker that grants a
+  shorter lease, stop the edge first.
+- Remove the picomatch audit exception (GHSA-fc5q-39xc-vjpf): npm audit no
+  longer reports it, so the audit gate flagged it as stale. Audit is clean.
+
 ## 0.1.0-alpha.18
 
 - Fix the central edge restart loop seen in production after alpha.17. Renewals
