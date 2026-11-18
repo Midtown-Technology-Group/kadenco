@@ -66,7 +66,10 @@ test("standalone local-projection entrypoint starts with synthetic state and no 
       await new Promise((r) => setTimeout(r, 50));
     }
     assert.equal(ready, true, stderr);
-    assert.equal(stderr.includes("listening on loopback"), true);
+    // stderr is an asynchronous pipe; the ready line may trail /healthz slightly.
+    while (Date.now() < deadline + 5000 && !stderr.includes("listening on loopback"))
+      await new Promise((r) => setTimeout(r, 50));
+    assert.equal(stderr.includes("listening on loopback"), true, stderr);
   } finally {
     if (child.exitCode === null) child.kill("SIGTERM");
     await exited;

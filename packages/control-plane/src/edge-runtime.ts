@@ -34,6 +34,8 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
   /** How long startup keeps retrying an effect-free first claim that is fenced
    * by a predecessor's unexpired lease. Default 30 s (lease TTL is 10 s). */
   startupClaimMs?: number;
+  /** Central Worker/DO identity read by bootstrap before the runtime starts. */
+  centralStatus?: { release_version?: unknown; epoch?: unknown };
   checkpointFailure?: (
     reason:
       | "transport_uncertain"
@@ -69,14 +71,17 @@ export async function createEdgeRuntime(
   let renewal: Promise<void> | undefined;
   const leaseErrors = new WeakSet<object>();
   // Evidence for the read-only /status endpoint; never consulted for authority.
+  // `seq` orders renewal outcomes exactly, even within one millisecond.
+  let evidenceSeq = 0;
   const leaseEvidence: {
     renewedAt: number | null;
+    renewedSeq: number;
     expires: number | null;
-    failure: { reason: string; at: number } | null;
-  } = { renewedAt: null, expires: null, failure: null };
+    failure: { reason: string; at: number; seq: number } | null;
+  } = { renewedAt: null, renewedSeq: 0, expires: null, failure: null };
   const now = () => (ports.now ?? Date.now)();
   const leaseFailure = (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => {
-    leaseEvidence.failure = { reason, at: now() };
+    leaseEvidence.failure = { reason, at: now(), seq: ++evidenceSeq };
     ports.leaseFailure?.(reason);
   };
   const refreshLease = () => {
@@ -105,6 +110,7 @@ export async function createEdgeRuntime(
       }
       generation = Number(lease.generation);
       leaseEvidence.renewedAt = now();
+      leaseEvidence.renewedSeq = ++evidenceSeq;
       leaseEvidence.expires = Number(lease.expires);
     })()
       .catch((error) => {
@@ -112,7 +118,7 @@ export async function createEdgeRuntime(
         if (error instanceof Error && error.message === "central_transport_uncertain")
           leaseFailure("transport_uncertain");
         else if (!(error instanceof Error && error.message === "edge_lease_unavailable"))
-          leaseEvidence.failure = { reason: "renewal_error", at: now() };
+          leaseEvidence.failure = { reason: "renewal_error", at: now(), seq: ++evidenceSeq };
         throw error;
       })
       .finally(() => {
@@ -138,14 +144,25 @@ export async function createEdgeRuntime(
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
+  const central = {
+    release_version:
+      typeof ports.centralStatus?.release_version === "string"
+        ? ports.centralStatus.release_version
+        : null,
+    epoch: Number.isSafeInteger(ports.centralStatus?.epoch)
+      ? Number(ports.centralStatus!.epoch)
+      : null,
+    observed_at: new Date(now()).toISOString(),
+  };
   bridge.runtimeStatus = () => {
-    const { renewedAt, expires, failure } = leaseEvidence;
-    const failedLast = failure !== null && (renewedAt === null || failure.at >= renewedAt);
+    const { renewedAt, renewedSeq, expires, failure } = leaseEvidence;
+    const failedLast = failure !== null && failure.seq > renewedSeq;
     // Expiry is loss even while a renewal is still pending with no failure yet.
     const expired = expires !== null && now() >= expires;
     const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
     return {
       mode: "central_edge",
+      central,
       lease: {
         // A fenced/refused generation is never reacquired by this process; a
         // transport failure is "renewal_failing" until the lease expiry passes.

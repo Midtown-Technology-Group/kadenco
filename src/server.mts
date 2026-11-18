@@ -881,20 +881,27 @@ export function httpServer(bridge) {
       return;
     }
     if (req.url === "/status" && req.method === "GET") {
-      let owner;
+      // Read-only: no audit or other writes, even for denials.
+      let owner, policy;
       try {
-        owner = principalFor(req.headers.authorization, bridge.policy());
+        policy = bridge.policy();
+        owner = principalFor(req.headers.authorization, policy);
       } catch {
         owner = undefined;
       }
       if (!owner) {
-        bridge.store.audit("status.auth", "anonymous", "denied");
         res.writeHead(401, { "content-type": "application/json" });
         res.end('{"reason":"authentication_required"}');
         return;
       }
       try {
-        const body = JSON.stringify(statusReport(bridge, owner));
+        const report = statusReport(bridge, owner, policy);
+        if (!report) {
+          res.writeHead(403, { "content-type": "application/json" });
+          res.end('{"reason":"operator_status_only"}');
+          return;
+        }
+        const body = JSON.stringify(report);
         res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
         res.end(body);
       } catch {
