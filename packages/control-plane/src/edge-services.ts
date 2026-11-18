@@ -314,21 +314,24 @@ export async function reconcileCallbackReceipts(
     )
       throw Error("central_receipt_invalid");
     await ports.refreshLease();
-    const current = bridge.store.get("delivery", d.id);
-    if (current?.status !== "centralized" || current.central_id !== d.central_id) continue;
-    bridge.store.put("delivery", d.id, {
-      ...current,
-      status: receipt.state,
-      attempts: receipt.attempts,
-      httpStatus: receipt.http_status,
+    // State and its /status evidence commit together: a crash between them
+    // would otherwise leave a reconciled delivery with no receipt evidence.
+    bridge.store.transaction(() => {
+      const current = bridge.store.get("delivery", d.id);
+      if (current?.status !== "centralized" || current.central_id !== d.central_id) return;
+      bridge.store.put("delivery", d.id, {
+        ...current,
+        status: receipt.state,
+        attempts: receipt.attempts,
+        httpStatus: receipt.http_status,
+      });
+      // Separate action: local `webhook.delivery` history keeps its own format.
+      bridge.store.audit(
+        "webhook.delivery.central",
+        d.id,
+        `${receipt.state}:${receipt.http_status ?? 0}`,
+      );
     });
-    // Separate action: local `webhook.delivery` history keeps its own format.
-    // /status reads both so centrally delivered events are visible evidence.
-    bridge.store.audit(
-      "webhook.delivery.central",
-      d.id,
-      `${receipt.state}:${receipt.http_status ?? 0}`,
-    );
   }
   return rows.length === 100 ? (rows.at(-1)!.id as string) : undefined;
 }

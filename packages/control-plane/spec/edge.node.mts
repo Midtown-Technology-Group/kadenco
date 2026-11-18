@@ -1825,12 +1825,27 @@ test("central callback receipts repair local views without sending, regressions 
     mode = "pending",
     drift = false;
   const audits: string[][] = [];
+  let failAudit = false;
   const bridge = {
     store: {
       all: () => [...rows.values()],
       get: (_k: string, id: string) => rows.get(id),
       put: (_k: string, id: string, v: any) => rows.set(id, v),
-      audit: (...a: string[]) => audits.push(a),
+      audit: (...a: string[]) => {
+        if (failAudit) throw Error("audit_write_failed");
+        audits.push(a);
+      },
+      // Snapshot rollback, like Store.transaction's BEGIN/ROLLBACK.
+      transaction: (fn: () => unknown) => {
+        const before = new Map([...rows].map(([k, v]) => [k, structuredClone(v)]));
+        try {
+          return fn();
+        } catch (e) {
+          rows.clear();
+          for (const [k, v] of before) rows.set(k, v);
+          throw e;
+        }
+      },
     },
   } as any;
   const ports = {
@@ -1877,6 +1892,18 @@ test("central callback receipts repair local views without sending, regressions 
   await reconcileCallbackReceipts(bridge, ports);
   assert.deepEqual(rows.get("001"), stable);
   assert.equal(audits.length, 99, "already-reconciled rows are not re-audited");
+  // A failed evidence write rolls the state change back, so the next pass
+  // reconciles the same receipt again instead of losing its evidence.
+  rows.set("rollback", { id: "rollback", status: "centralized", central_id: "central-rb" });
+  mode = "acknowledged";
+  failAudit = true;
+  await assert.rejects(reconcileCallbackReceipts(bridge, ports, "099"), /audit_write_failed/);
+  assert.equal(rows.get("rollback").status, "centralized");
+  failAudit = false;
+  await reconcileCallbackReceipts(bridge, ports, "099");
+  assert.equal(rows.get("rollback").status, "acknowledged");
+  assert.deepEqual(audits.at(-1), ["webhook.delivery.central", "rollback", "acknowledged:200"]);
+  mode = "pending";
   rows.clear();
   rows.set("one", { id: "one", status: "centralized", central_id: "central" });
   await assert.doesNotReject(
