@@ -111,6 +111,8 @@ export async function createEdgeRuntime(
       ? Math.min(Number(lease.ttl_ms), leaseTtlMs)
       : Math.min(10000, leaseTtlMs);
   let monoDeadline: number | null = null;
+  // TTL of the current grant, for the request admission margin below.
+  let heldTtl = 0;
   const expired = () => monoDeadline !== null && mono() >= monoDeadline;
   const leaseFailure = (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => {
     leaseEvidence.failure = { reason, at: now(), seq: ++evidenceSeq };
@@ -176,6 +178,7 @@ export async function createEdgeRuntime(
       leaseEvidence.renewedSeq = ++evidenceSeq;
       leaseEvidence.expires = Number(lease.expires);
       monoDeadline = requestedAt + grantedTtl(lease);
+      heldTtl = grantedTtl(lease);
     })()
       .catch((error) => {
         if (error !== null && typeof error === "object") leaseErrors.add(error);
@@ -322,11 +325,34 @@ export async function createEdgeRuntime(
       () => bridge.effectGuard?.(),
     );
     const coordinate = coordinatorForBridge(bridge, { ...ports, journal });
+    // HTTP admission. The heartbeat renews every 2.5 s, so a renewal is almost
+    // always in flight; joining it made every request (including /healthz) wait
+    // a central round trip of up to the 8 s lease-call deadline, and a transient
+    // renewal failure answered 503 edge_lease_unavailable although the lease was
+    // still valid. A held lease that fence() accepts (not closed, lost or past
+    // its monotonic deadline) and that keeps more than a quarter of its TTL (at
+    // most 10 s) admits at once; only near expiry does a request wait for a
+    // renewal. No other edge can hold the lease before it expires, mutations
+    // still renew through the coordinator, and every effect still passes the
+    // synchronous effectGuard at its send point.
+    const admitLease = () => {
+      try {
+        fence();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return monoDeadline !== null && monoDeadline - mono() > Math.min(10000, heldTtl / 4)
+        ? Promise.resolve()
+        : refreshLease();
+    };
     routes = composeEdgeRoutes(
       bridge,
       async () => {
-        await refreshLease();
+        await admitLease();
         await replica.flush();
+        // Loss can latch while a request waits behind a replica write: recheck
+        // synchronously at dispatch so nothing is served after it.
+        fence();
       },
       undefined,
       (kind, owner, input, execute) =>
