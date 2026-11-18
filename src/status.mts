@@ -193,9 +193,11 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
   //   counted as `untimed` and never treated as fresh evidence.
   type Outcome = { ms: number; order: number; ok: boolean; at: string; outcome: string };
   const outcomes: Outcome[] = [];
+  // No age cutoff: the newest outcome per owned delivery decides stale vs
+  // unverified (ownership filtering and the row limit bound the work).
   for (const row of bridge.store.recentDeliveryOutcomes(
     mine.map((d) => d.id),
-    new Date(now - 7 * 86400000).toISOString(),
+    "",
   ))
     outcomes.push({
       ms: Date.parse(row.at),
@@ -229,7 +231,9 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
   // Every pending attempt is checked on its own: one success between two old
   // pending attempts must not hide the later one.
   const stuck = pending.some((d) => {
-    const started = Date.parse(d.event?.timestamp);
+    // Backlog age counts from queue entry (immutable), not the native event
+    // time (which can predate observation) nor nextAt (which moves on retry).
+    const started = Number.isSafeInteger(d.queuedAt) ? d.queuedAt : Date.parse(d.event?.timestamp);
     return (
       Number.isFinite(started) &&
       now - started > JOURNEY_STUCK_MS &&

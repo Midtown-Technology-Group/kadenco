@@ -444,6 +444,7 @@ export class Bridge {
               event: outgoing,
               attempts: 0,
               nextAt: this.now(),
+              queuedAt: this.now(),
               status: "pending",
             });
           }
