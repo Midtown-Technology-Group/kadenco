@@ -335,7 +335,7 @@ test("last verified is the newest acknowledgement, not the newest question", asy
   assert.equal(statusReport(f.bridge, "eddie").journeys.ask_eddie.last_verified.request_id, first);
 });
 
-test("centrally reconciled delivery outcomes count, and other owners cannot crowd them out", async (t) => {
+test("central receipts count at their central result time; untimed ones are never fresh", async (t) => {
   const f = fixture(t);
   await f.bridge.subscribe("eddie", f.subscription);
   await f.bridge.exchanges.ask("caller", {
@@ -346,11 +346,52 @@ test("centrally reconciled delivery outcomes count, and other owners cannot crow
   });
   const [delivery] = f.store.all("delivery");
   // Central edge: the local record is centralized, then a receipt reconciles it.
-  f.store.put("delivery", delivery.id, { ...delivery, status: "centralized" });
+  f.store.put("delivery", delivery.id, { ...delivery, status: "centralized", central_id: "c1" });
   assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.pending, 1);
   f.advance(STATUS_CACHE_MS);
-  f.store.put("delivery", delivery.id, { ...delivery, status: "acknowledged" });
-  f.store.audit("webhook.delivery.central", delivery.id, "acknowledged:204");
+  const now = f.bridge.now();
+  // Reconciled now, but the delivery itself happened two days ago: stale, not fresh.
+  f.store.put("delivery", delivery.id, {
+    ...delivery,
+    status: "acknowledged",
+    central_id: "c1",
+    httpStatus: 204,
+    centralResultAt: now - 2 * 86400000,
+  });
+  assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "stale");
+  f.advance(STATUS_CACHE_MS);
+  f.store.put("delivery", delivery.id, {
+    ...delivery,
+    status: "acknowledged",
+    central_id: "c1",
+    httpStatus: 204,
+    centralResultAt: null,
+  });
+  let s = statusReport(f.bridge, "eddie");
+  assert.equal(s.journeys.event_delivery.state, "unverified");
+  assert.equal(s.journeys.event_delivery.untimed_central_receipts, 1);
+  f.advance(STATUS_CACHE_MS);
+  f.store.put("delivery", delivery.id, {
+    ...delivery,
+    status: "acknowledged",
+    central_id: "c1",
+    httpStatus: 204,
+    centralResultAt: f.bridge.now() - 1000,
+  });
+  s = statusReport(f.bridge, "eddie");
+  assert.equal(s.journeys.event_delivery.state, "verified");
+});
+
+test("other owners' local delivery history cannot crowd out this owner's evidence", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  await f.bridge.exchanges.ask("caller", {
+    request_id: randomUUID(),
+    run_id: "run-a",
+    question: "local",
+    ttl_ms: 3600000,
+  });
+  await f.bridge.deliver();
   // 6000 newer outcomes for someone else's deliveries must not hide ours.
   f.store.transaction(() => {
     for (let i = 0; i < 6000; i++) f.store.audit("webhook.delivery", `foreign:${i}`, "stopped:500");
@@ -437,8 +478,9 @@ test("polls inside the cache window reuse store evidence but always report curre
       last_failure: null,
     },
   });
-  const first = statusReport(f.bridge, "eddie");
+  // Same scope (grants and active subscriptions) across both polls.
   await f.bridge.subscribe("eddie", f.subscription);
+  const first = statusReport(f.bridge, "eddie");
   await f.roundTrip();
   lease = "lost";
   const second = statusReport(f.bridge, "eddie");
@@ -472,4 +514,121 @@ test("status-check exits 2 for a 200 body that is not a status report", async (t
     child.on("close", resolve);
   });
   assert.equal(status, 2);
+});
+
+test("a later stuck delivery is not hidden by an earlier success", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  const [sub] = f.store.all("subscription");
+  const base = f.bridge.now();
+  const put = (id, status, ts, extra = {}) =>
+    f.store.put("delivery", id, {
+      id,
+      subId: sub.id,
+      status,
+      event: { name: "t3.eddie.requested", timestamp: new Date(ts).toISOString(), data: {} },
+      ...extra,
+    });
+  put("A", "pending", base);
+  put("B", "acknowledged", base + 1000, {
+    central_id: "cB",
+    httpStatus: 204,
+    centralResultAt: base + 2000,
+  });
+  put("C", "pending", base + 3000);
+  f.advance(JOURNEY_STUCK_MS + 10000);
+  assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
+});
+
+test("equal acknowledgement times pick the later conversation round, then a stable id", async (t) => {
+  const f = fixture(t);
+  const at = f.bridge.now();
+  const rec = (request_id, sequence) => ({
+    request_id,
+    conversation_id: "conv",
+    sequence,
+    reviewer: "eddie",
+    caller: "caller",
+    createdAt: at,
+    expiresAt: at + 3600000,
+    readAt: at,
+    repliedAt: at,
+    reply: "ok",
+    acknowledgedAt: at,
+  });
+  f.store.put("exchange", "b-first", rec("b-first", 1));
+  f.store.put("exchange", "a-second", rec("a-second", 2));
+  assert.equal(
+    statusReport(f.bridge, "eddie").journeys.ask_eddie.last_verified.request_id,
+    "a-second",
+  );
+});
+
+test("revoked grants invalidate cached evidence immediately", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", { ...f.subscription, ttlMs: null });
+  const id = await f.roundTrip();
+  assert.equal(statusReport(f.bridge, "eddie").journeys.ask_eddie.last_verified.request_id, id);
+  const eddie = f.bridge.policy().principals.find((p) => p.id === "eddie");
+  eddie.eddieInbox = false;
+  eddie.readHosts = [];
+  // No time passes: the cache must not serve the revoked scope.
+  const s = statusReport(f.bridge, "eddie");
+  assert.equal(s.journeys.ask_eddie.last_verified, null);
+  assert.deepEqual(s.hosts, []);
+});
+
+test("a stuck older request is reported as such, separate from the latest attempt", async (t) => {
+  const f = fixture(t);
+  const ask = (q) =>
+    f.bridge.exchanges.ask("caller", {
+      request_id: randomUUID(),
+      run_id: "run-a",
+      question: q,
+      ttl_ms: 3600000,
+    });
+  const old = await ask("old");
+  f.advance(JOURNEY_STUCK_MS + 1000);
+  const fresh = await ask("fresh");
+  const j = statusReport(f.bridge, "eddie").journeys.ask_eddie;
+  assert.equal(j.stuck.request_id, old.request_id);
+  assert.equal(j.latest.request_id, fresh.request_id);
+});
+
+test("status-check exits 2 when a report contradicts itself or has malformed hosts", async (t) => {
+  const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const ok = {
+    schema: 1,
+    overall: "ok",
+    runtime: { mode: "central_edge", lease: { state: "lost" } },
+    journeys: { ask_eddie: { state: "verified" }, event_delivery: { state: "verified" } },
+    hosts: [],
+  };
+  let body;
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => new Promise((r) => server.close(r)));
+  const run = () =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, ["scripts/status-check.mjs"], {
+        env: {
+          ...process.env,
+          KADENCO_STATUS_URL: `http://127.0.0.1:${server.address().port}/status`,
+          KADENCO_STATUS_TOKEN: "fixture",
+        },
+        windowsHide: true,
+      });
+      child.stdin.end();
+      child.on("close", resolve);
+    });
+  body = ok; // "ok" with a lost lease
+  assert.equal(await run(), 2);
+  body = { ...ok, runtime: { mode: "central_edge", lease: { state: "held" } }, hosts: {} };
+  assert.equal(await run(), 2);
+  body = { ...ok, runtime: { mode: "central_edge", lease: { state: "held" } } };
+  assert.equal(await run(), 0);
 });

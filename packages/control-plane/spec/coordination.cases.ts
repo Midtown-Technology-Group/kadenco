@@ -868,8 +868,11 @@ describe("central observation, outbox and shared budgets", () => {
       "delivery_acknowledged",
       "http_status",
       "id",
+      "result_at",
       "state",
     ]);
+    // When the terminal outcome happened, from the central outbox_result audit.
+    expect(Number.isSafeInteger(receipt.result_at)).toBe(true);
     expect(await call("outbox_receipt", { epoch: 7, id: event.id }, "synthetic-agent")).toEqual(
       receipt,
     );

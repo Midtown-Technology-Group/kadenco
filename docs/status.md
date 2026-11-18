@@ -13,18 +13,19 @@ Authenticate with an enabled operator-style principal's bearer
 only while it is currently an Eddie inbox (`eddieInbox`), deliveries only for
 its currently active subscriptions, and hosts only from its current read
 grants. Unauthenticated requests write nothing. Store-derived evidence is
-reused for 5 seconds (`evidence_observed_at`); the lease state is always current.
+reused for up to 5 seconds (`evidence_observed_at`) only while the principal's
+grants and active subscriptions are unchanged; the lease state is always current.
 
-| Field                     | Meaning                                                                                                                                                                                                                                  |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `overall`                 | `ok` (every journey verified), `unverified` (no fresh evidence yet), `degraded` (a journey is failing or the lease is renewing badly), `down` (edge lease lost)                                                                          |
-| `build`                   | `package_version` from the installed `package.json`, `source_commit` and `build_run` from a release's `BUILD.json` (null in a source checkout)                                                                                           |
-| `runtime.central`         | Central Worker/DO `release_version` and `epoch` read when the edge started (central edge only)                                                                                                                                           |
-| `native.t3_build`         | Installed T3 build; `null` until adapter negotiation (#62) observes it                                                                                                                                                                   |
-| `runtime.lease`           | `held`, `renewal_failing` (renewals failing, lease not yet expired), `lost` (fenced/refused/expired), or `not_applicable` for the standalone sidecar; with the last renewal, expiry and last failure reason                              |
-| `journeys.ask_eddie`      | Last completed question/answer loop (asked → read → replied → acknowledged by the asking agent), whether its wake webhook was delivered (`wake_delivered`; Eddie may have found it by polling), and the stage the newest attempt reached |
-| `journeys.event_delivery` | Last 2xx webhook acknowledgement and last failed attempt. A 2xx proves receipt by the callback endpoint, not agent execution                                                                                                             |
-| `hosts`                   | The newest stored diagnostic per readable host                                                                                                                                                                                           |
+| Field                     | Meaning                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `overall`                 | `ok` (every journey verified), `unverified` (no fresh evidence yet), `degraded` (a journey is failing or the lease is renewing badly), `down` (edge lease lost)                                                                                                                                                                                                                                  |
+| `build`                   | `package_version` from the installed `package.json`, `source_commit` and `build_run` from a release's `BUILD.json` (null in a source checkout)                                                                                                                                                                                                                                                   |
+| `runtime.central`         | Central Worker/DO `release_version` and `epoch` read when the edge started (central edge only)                                                                                                                                                                                                                                                                                                   |
+| `native.t3_build`         | Installed T3 build; `null` until adapter negotiation (#62) observes it                                                                                                                                                                                                                                                                                                                           |
+| `runtime.lease`           | `held`, `renewal_failing` (renewals failing, lease not yet expired), `lost` (fenced/refused/expired), or `not_applicable` for the standalone sidecar; with the last renewal, expiry and last failure reason                                                                                                                                                                                      |
+| `journeys.ask_eddie`      | Last completed question/answer loop (asked → read → replied → acknowledged by the asking agent), whether its wake webhook was delivered (`wake_delivered`; Eddie may have found it by polling), and the stage the newest attempt reached; `stuck` names the oldest request holding the journey in `failing`                                                                                      |
+| `journeys.event_delivery` | Last 2xx acknowledgement and last failed attempt, timed when the outcome happened: local attempts from the audit log, central ones from the central result time stored on the replicated delivery record. Terminal central receipts without a result time are counted in `untimed_central_receipts` and never count as fresh. A 2xx proves receipt by the callback endpoint, not agent execution |
+| `hosts`                   | The newest stored diagnostic per readable host                                                                                                                                                                                                                                                                                                                                                   |
 
 Journey states, evaluated in this order:
 
@@ -43,6 +44,9 @@ Journey states, evaluated in this order:
 KADENCO_STATUS_TOKEN=<owner bearer> npm run status          # summary
 npm run status -- --json < bearer.txt                         # full JSON, bearer on stdin
 ```
+
+The check validates the report (state values, hosts, and that `overall`
+matches its own lease and journey states) before trusting it.
 
 Exit codes: `0` every journey verified, `1` degraded/unverified/down, `2`
 unreachable or refused. Set `KADENCO_STATUS_URL` for a non-default listener.

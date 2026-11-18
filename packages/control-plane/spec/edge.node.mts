@@ -1824,27 +1824,15 @@ test("central callback receipts repair local views without sending, regressions 
   let calls = 0,
     mode = "pending",
     drift = false;
-  const audits: string[][] = [];
-  let failAudit = false;
+  let transactions = 0;
   const bridge = {
     store: {
       all: () => [...rows.values()],
       get: (_k: string, id: string) => rows.get(id),
       put: (_k: string, id: string, v: any) => rows.set(id, v),
-      audit: (...a: string[]) => {
-        if (failAudit) throw Error("audit_write_failed");
-        audits.push(a);
-      },
-      // Snapshot rollback, like Store.transaction's BEGIN/ROLLBACK.
       transaction: (fn: () => unknown) => {
-        const before = new Map([...rows].map(([k, v]) => [k, structuredClone(v)]));
-        try {
-          return fn();
-        } catch (e) {
-          rows.clear();
-          for (const [k, v] of before) rows.set(k, v);
-          throw e;
-        }
+        transactions++;
+        return fn();
       },
     },
   } as any;
@@ -1860,6 +1848,7 @@ test("central callback receipts repair local views without sending, regressions 
         state: mode,
         attempts: 1,
         http_status: mode === "acknowledged" ? 200 : null,
+        result_at: mode === "acknowledged" ? 1_700_000_000_000 : null,
         delivery_acknowledged: mode === "acknowledged",
         agent_completed: false,
       };
@@ -1876,34 +1865,16 @@ test("central callback receipts repair local views without sending, regressions 
   await reconcileCallbackReceipts(bridge, ports);
   assert.equal(rows.get("000").status, "revoked");
   assert.equal(rows.get("001").status, "acknowledged");
-  // Each applied receipt leaves /status evidence; drifted rows record nothing.
-  assert.deepEqual(
-    audits.find((a) => a[1] === "001"),
-    ["webhook.delivery.central", "001", "acknowledged:200"],
-  );
-  assert.equal(
-    audits.some((a) => a[1] === "000"),
-    false,
-  );
-  assert.equal(audits.length, 99, "one page: 001-099 applied, 000 drifted");
+  // The central result time travels with the replicated record (for /status);
+  // a drifted row is left exactly as it was.
+  assert.equal(rows.get("001").centralResultAt, 1_700_000_000_000);
+  assert.equal(rows.get("000").centralResultAt, undefined);
+  assert.ok(transactions >= 100, "each re-check and update is one transaction");
   const stable = structuredClone(rows.get("001"));
   mode = "pending";
   drift = false;
   await reconcileCallbackReceipts(bridge, ports);
   assert.deepEqual(rows.get("001"), stable);
-  assert.equal(audits.length, 99, "already-reconciled rows are not re-audited");
-  // A failed evidence write rolls the state change back, so the next pass
-  // reconciles the same receipt again instead of losing its evidence.
-  rows.set("rollback", { id: "rollback", status: "centralized", central_id: "central-rb" });
-  mode = "acknowledged";
-  failAudit = true;
-  await assert.rejects(reconcileCallbackReceipts(bridge, ports, "099"), /audit_write_failed/);
-  assert.equal(rows.get("rollback").status, "centralized");
-  failAudit = false;
-  await reconcileCallbackReceipts(bridge, ports, "099");
-  assert.equal(rows.get("rollback").status, "acknowledged");
-  assert.deepEqual(audits.at(-1), ["webhook.delivery.central", "rollback", "acknowledged:200"]);
-  mode = "pending";
   rows.clear();
   rows.set("one", { id: "one", status: "centralized", central_id: "central" });
   await assert.doesNotReject(

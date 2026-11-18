@@ -43,13 +43,26 @@ try {
 } catch {
   s = undefined;
 }
-const STATES = ["ok", "unverified", "degraded", "down"];
+// Validate every field the exit code and summary depend on, and recompute
+// `overall` from its inputs; a report that disagrees with itself is not trusted.
+const JOURNEY = ["verified", "stale", "failing", "unverified"];
+const LEASE = ["held", "renewal_failing", "lost", "unknown", "not_applicable"];
+const expected = (lease, states) =>
+  lease === "lost"
+    ? "down"
+    : lease === "unknown" || lease === "renewal_failing" || states.includes("failing")
+      ? "degraded"
+      : states.every((x) => x === "verified")
+        ? "ok"
+        : "unverified";
+const journeyStates = [s?.journeys?.ask_eddie?.state, s?.journeys?.event_delivery?.state];
 if (
   s?.schema !== 1 ||
-  !STATES.includes(s.overall) ||
-  typeof s.journeys?.ask_eddie?.state !== "string" ||
-  typeof s.journeys?.event_delivery?.state !== "string" ||
-  typeof s.runtime?.lease?.state !== "string"
+  !journeyStates.every((x) => JOURNEY.includes(x)) ||
+  !LEASE.includes(s.runtime?.lease?.state) ||
+  !Array.isArray(s.hosts) ||
+  !s.hosts.every((h) => typeof h?.host === "string") ||
+  s.overall !== expected(s.runtime.lease.state, journeyStates)
 ) {
   console.error(`status-check: ${url} returned an incomplete or unrecognised status body`);
   process.exit(2);
@@ -70,8 +83,11 @@ else {
   );
   for (const [name, j] of Object.entries(s.journeys ?? {})) {
     const at = j.last_verified?.acknowledged_at ?? j.last_acknowledged_at ?? "never";
-    const stuck =
-      j.latest && j.state === "failing" ? `; latest stuck at ${j.latest.stage_reached}` : "";
+    const stuck = j.stuck
+      ? `; stuck: ${j.stuck.request_id} at ${j.stuck.stage_reached}`
+      : j.latest
+        ? `; latest attempt at ${j.latest.stage_reached}`
+        : "";
     console.log(`${name.padEnd(12)} ${j.state} (last verified ${at}${stuck})`);
   }
   for (const h of s.hosts ?? [])
