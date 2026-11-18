@@ -228,13 +228,13 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
     fetch: config.fetch,
     diagnostic: diagnostic(config.executor),
   });
-  // Lease renewals get a deadline well under the 10 s lease TTL; the heartbeat
+  // Lease renewals get an 8 s deadline, well under the 30 s lease TTL; the heartbeat
   // retries every 2.5 s, so a hung request no longer consumes the whole lease.
   const leaseCall = centralTransport({
     origin: config.origin,
     token: () => config.executorToken,
     fetch: config.fetch,
-    timeoutMs: 4000,
+    timeoutMs: 8000,
     diagnostic: diagnostic(config.executor),
   });
   const ownerCall = (owner: string, op: string, body: object) => {

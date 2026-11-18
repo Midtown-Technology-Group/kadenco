@@ -5,6 +5,19 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.18
+
+- Fix the central edge restart loop seen in production after alpha.17. Renewals
+  had a 4 s deadline against a 10 s lease, while Durable Object round trips run
+  at about 2-3 s, so two slow renewals in a row expired the lease and the edge
+  exited. The Worker now grants a 30 s lease and reports `ttl_ms`; the edge
+  judges expiry with the reported TTL (never longer than its own bound,
+  10 s if a Worker reports none). Renewals get an 8 s deadline, and the startup
+  claim retry covers 45 s. Normal replies have ample room and an occasional
+  timeout is absorbed; two consecutive timeouts can still exhaust the lease.
+  Deploy the Worker before the edge, as before. To roll back to a Worker that
+  grants a shorter lease (alpha.17 or earlier), stop the edge first.
+
 ## 0.1.0-alpha.17
 
 - Fleet monitoring now requires only the principal's current read scope

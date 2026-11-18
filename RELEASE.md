@@ -77,6 +77,11 @@ authority changes remain separate decisions.
 
 ## Recovery maintenance
 
+Lease TTL compatibility: an edge trusts the lease TTL its Worker reports. Never
+restore a Worker that grants a shorter lease (for example alpha.17's 10 s after
+alpha.18's 30 s) while an edge that trusts the longer TTL is running: stop the
+edge first, then restore the Worker, then start the matching edge.
+
 Before stopping the managed edge, retain its exact task definition and pause its
 automatic revival. Verify exact process ancestry/creation identity and closed
 ingress before capture. Checkpoints and native attempt journals are separate:

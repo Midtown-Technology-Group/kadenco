@@ -26,7 +26,7 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
   leaseFailure?: (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => void;
   /** Monotonic clock for lease expiry (default `performance.now`). */
   monotonicNow?: () => number;
-  /** Protocol lease TTL granted by central (default 10 s). */
+  /** Upper bound on the lease TTL this edge assumes (default 30 s); the Worker-reported ttl_ms is used when smaller. */
   leaseTtlMs?: number;
   /** Lease-only transport. Its deadline must be well under the lease TTL so one
    * slow renewal cannot consume the whole lease; defaults to executorCall. */
@@ -36,7 +36,7 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
    * shut down and restart the edge; this process never reacquires a generation. */
   leaseLost?: () => void;
   /** How long startup keeps retrying an effect-free first claim that is fenced
-   * by a predecessor's unexpired lease. Default 30 s (lease TTL is 10 s). */
+   * by a predecessor's unexpired lease. Default 45 s (lease TTL is 30 s). */
   startupClaimMs?: number;
   /** Central Worker/DO identity read by bootstrap before the runtime starts. */
   centralStatus?: { release_version?: unknown; epoch?: unknown };
@@ -102,7 +102,14 @@ export async function createEdgeRuntime(
   // plus the protocol TTL, so edge/central wall-clock skew cannot stretch (or
   // spuriously shorten) the lease. Central's `expires` is kept for reporting.
   const mono = ports.monotonicNow ?? (() => performance.now());
-  const leaseTtlMs = ports.leaseTtlMs ?? 10000;
+  // Upper bound on the TTL this edge will assume; the Worker reports the TTL it
+  // granted (ttl_ms) and the edge uses the smaller. A Worker that reports none
+  // is assumed to grant the historical 10 s.
+  const leaseTtlMs = ports.leaseTtlMs ?? 30000;
+  const grantedTtl = (lease: Record<string, unknown>) =>
+    Number.isSafeInteger(lease.ttl_ms) && Number(lease.ttl_ms) > 0
+      ? Math.min(Number(lease.ttl_ms), leaseTtlMs)
+      : Math.min(10000, leaseTtlMs);
   let monoDeadline: number | null = null;
   const expired = () => monoDeadline !== null && mono() >= monoDeadline;
   const leaseFailure = (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => {
@@ -151,7 +158,7 @@ export async function createEdgeRuntime(
         !Number.isSafeInteger(lease.expires) ||
         // Judged on our monotonic clock (request start + TTL), never by comparing
         // central's wall-clock expiry with ours: skew must not reject a valid grant.
-        mono() >= requestedAt + leaseTtlMs ||
+        mono() >= requestedAt + grantedTtl(lease) ||
         (generation !== undefined && lease.generation !== generation)
       ) {
         leaseFailure("invalid_lease");
@@ -168,7 +175,7 @@ export async function createEdgeRuntime(
       leaseEvidence.renewedAt = now();
       leaseEvidence.renewedSeq = ++evidenceSeq;
       leaseEvidence.expires = Number(lease.expires);
-      monoDeadline = requestedAt + leaseTtlMs;
+      monoDeadline = requestedAt + grantedTtl(lease);
     })()
       .catch((error) => {
         if (error !== null && typeof error === "object") leaseErrors.add(error);
@@ -190,7 +197,7 @@ export async function createEdgeRuntime(
   // The deadline is rechecked after every sleep. A grant already in flight when
   // the deadline passes is accepted: it is a valid lease, and abandoning it
   // would only fence the next start for the rest of its TTL.
-  const startupDeadline = performance.now() + Math.max(0, ports.startupClaimMs ?? 30000);
+  const startupDeadline = performance.now() + Math.max(0, ports.startupClaimMs ?? 45000);
   for (let delay = 500; ; delay = Math.min(delay * 2, 4000)) {
     try {
       await refreshLease();
