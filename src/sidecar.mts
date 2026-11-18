@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, openSync, fstatSync, closeSync } from "node:fs";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { SynchronousTimings } from "./synchronous-timings.mjs";
 import type { AddressInfo } from "node:net";
@@ -66,13 +66,18 @@ let environmentKey: Buffer | undefined;
 export function livePolicy(configPath: string, validate?: (policy: Policy) => void) {
   let parsed: { identity: string; value: Policy } | undefined;
   return (): Policy => {
-    const s = statSync(configPath, { bigint: true });
-    const identity = [s.size, s.mtimeNs, s.ctimeNs, s.ino, s.dev].join(":");
-    if (parsed?.identity !== identity)
-      parsed = {
-        identity,
-        value: configSchema.parse(JSON.parse(readFileSync(configPath, "utf8"))),
-      };
+    // One open descriptor: the identity and the contents come from the same
+    // file, so a replacement between a path stat and a path read cannot pair
+    // one file's identity with another's contents.
+    const fd = openSync(configPath, "r");
+    try {
+      const s = fstatSync(fd, { bigint: true });
+      const identity = [s.size, s.mtimeNs, s.ctimeNs, s.ino, s.dev].join(":");
+      if (parsed?.identity !== identity)
+        parsed = { identity, value: configSchema.parse(JSON.parse(readFileSync(fd, "utf8"))) };
+    } finally {
+      closeSync(fd);
+    }
     const value = structuredClone(parsed.value);
     validate?.(value);
     return value;

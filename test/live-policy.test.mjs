@@ -73,7 +73,8 @@ test("an unchanged file is not re-read or re-parsed", (t) => {
   let reads = 0;
   const original = fs.readFileSync;
   const mocked = t.mock.method(fs, "readFileSync", (...args) => {
-    if (args[0] === f.path) reads++;
+    // The reader reads through an open descriptor (or, formerly, the path).
+    if (args[0] === f.path || typeof args[0] === "number") reads++;
     return original(...args);
   });
   // The reader imports readFileSync by name: re-sync builtin named exports.
