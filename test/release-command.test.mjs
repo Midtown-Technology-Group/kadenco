@@ -12,6 +12,7 @@ import {
   safeArchiveListing,
   installationDigest,
   assertReleaseMain,
+  childEnv,
 } from "../scripts/release.mjs";
 test("advanced main refuses before recording or dispatching any release effect", () =>
   fixture(async (dir) => {
@@ -111,8 +112,11 @@ test("an actual crashed release process retains the pending dispatch and can be 
       `import {ReleaseState} from ${JSON.stringify(new URL("../scripts/release-state.mjs", import.meta.url).href)};const s=new ReleaseState(${JSON.stringify(path)},${JSON.stringify(identity)});await s.effect('dispatch',async()=>({done:false}),async()=>process.exit(17));`,
     );
     assert.equal(
-      spawnSync(process.execPath, [script], { encoding: "utf8", timeout: 10000, windowsHide: true })
-        .status,
+      spawnSync(process.execPath, [script], {
+        encoding: "utf8",
+        timeout: 10000,
+        windowsHide: true,
+      }).status,
       17,
     );
     const state = new ReleaseState(path, identity);
@@ -229,3 +233,19 @@ test("extracted installation fingerprint includes operator scripts and rejects c
     writeFileSync(join(dir, "run-edge.mjs"), "modified");
     assert.notEqual(installationDigest(dir), before);
   }));
+
+test("Windows PowerShell children do not inherit pwsh's PSModulePath", () => {
+  const env = { PATH: "p", PSModulePath: "C:\\pwsh7\\Modules", Other: "x" };
+  for (const command of [
+    "powershell.exe",
+    "POWERSHELL.EXE",
+    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "powershell",
+  ])
+    assert.deepEqual(childEnv(command, env), { PATH: "p", Other: "x" }, command);
+  const lower = { psmodulepath: "x", PATH: "p" };
+  assert.deepEqual(childEnv("powershell.exe", lower), { PATH: "p" });
+  // Other commands (git, gh, node, tar) keep the environment unchanged.
+  for (const command of ["git", "gh", "node", "tar", "pwsh"])
+    assert.equal(childEnv(command, env), env);
+});
