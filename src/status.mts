@@ -6,12 +6,17 @@
 // extends any grant, so it stays safe to serve while the edge lease is lost.
 import { readFileSync } from "node:fs";
 import type { Bridge } from "./bridge.mjs";
+import { subscriptionState } from "./subscription-state.mjs";
 
 export const STATUS_SCHEMA = 1;
 /** A journey is "verified" only when its last full round trip is this recent. */
 export const JOURNEY_FRESH_MS = 24 * 3600000;
 /** An unfinished attempt older than this, with no later success, is "failing". */
 export const JOURNEY_STUCK_MS = 15 * 60000;
+/** Repeated polls within this window reuse one report (bounds event-loop work). */
+export const STATUS_CACHE_MS = 5000;
+/** Evidence timestamped further than this in the future is not trusted as fresh. */
+const CLOCK_SKEW_MS = 60000;
 
 export type RuntimeStatus = {
   mode: "standalone" | "central_edge";
@@ -24,6 +29,8 @@ export type RuntimeStatus = {
         expires_at: string | null;
         last_failure: { reason: string; at: string } | null;
       };
+  /** Central Worker/DO identity observed at edge startup (central edge only). */
+  central?: { release_version: string | null; epoch: number | null; observed_at: string };
 };
 
 type BuildIdentity = {
@@ -69,31 +76,45 @@ export function buildIdentity(root = new URL("../", import.meta.url)): BuildIden
 
 type Stage = "asked" | "delivered" | "read" | "replied" | "acknowledged";
 
-function exchangeStage(r, deliveries): Stage {
+/** A status reader is an operator-like principal: thread callers authenticate
+ * for one exact exchange binding and never see aggregate deployment state. */
+export function statusPrincipal(policy, owner: string) {
+  const p = policy.principals.find((x) => x.id === owner && x.enabled !== false);
+  return p && !p.eddieCaller && !p.eddieHostCaller ? p : undefined;
+}
+
+const fresh = (now: number, at: number | null) =>
+  at !== null && at - now <= CLOCK_SKEW_MS && now - at <= JOURNEY_FRESH_MS;
+
+function exchangeStage(r, wakeDelivered: boolean): Stage {
   if (r.acknowledgedAt !== undefined) return "acknowledged";
   if (r.reply !== null) return "replied";
   if (r.readAt !== null) return "read";
-  if (deliveries.some((d) => d.status === "acknowledged")) return "delivered";
+  if (wakeDelivered) return "delivered";
   return "asked";
 }
 
-function askEddieJourney(bridge: Bridge, owner: string, now: number) {
-  const mine = bridge.store
-    .all("exchange")
-    .filter((r) => r.reviewer === owner || r.caller === owner)
-    .sort((a, b) => a.createdAt - b.createdAt);
-  const deliveriesFor = (r) =>
-    bridge.store
-      .all("delivery")
-      .filter(
-        (d) => d.event?.name === "t3.eddie.requested" && d.event.data?.request_id === r.request_id,
-      );
+function askEddieJourney(bridge: Bridge, principal, now: number) {
+  // Only the principal's current inbox scope: a former inbox sees nothing.
+  const mine = principal.eddieInbox
+    ? bridge.store
+        .all("exchange")
+        .filter((r) => r.reviewer === principal.id)
+        .sort((a, b) => a.createdAt - b.createdAt || (a.sequence ?? 0) - (b.sequence ?? 0))
+    : [];
+  const deliveries = mine.length ? bridge.store.all("delivery") : [];
+  const wakeDelivered = (r) =>
+    deliveries.some(
+      (d) =>
+        d.status === "acknowledged" &&
+        d.event?.name === "t3.eddie.requested" &&
+        d.event.data?.request_id === r.request_id,
+    );
   // The last completion is the newest acknowledgement, not the newest question.
   const last = mine
     .filter((r) => r.acknowledgedAt !== undefined)
     .reduce((m, r) => (!m || r.acknowledgedAt > m.acknowledgedAt ? r : m), undefined);
   const latest = mine.at(-1);
-  const latestStage = latest ? exchangeStage(latest, deliveriesFor(latest)) : null;
   // Any unfinished request (including one that expired unanswered) older than
   // the stuck window, with no completion acknowledged after it was asked, keeps
   // the journey failing even when newer requests arrive.
@@ -103,16 +124,20 @@ function askEddieJourney(bridge: Bridge, owner: string, now: number) {
       now - r.createdAt > JOURNEY_STUCK_MS &&
       (!last || last.acknowledgedAt <= r.createdAt),
   );
+  const lastAt = last ? last.acknowledgedAt : null;
   return {
     state: !mine.length
       ? "unverified"
       : stuck
         ? "failing"
-        : last && now - last.acknowledgedAt <= JOURNEY_FRESH_MS
+        : fresh(now, lastAt)
           ? "verified"
           : last
             ? "stale"
             : "unverified",
+    // Verifies the question/answer loop. Whether the wake webhook reached Eddie
+    // is reported per exchange (`wake_delivered`) and by `event_delivery`; Eddie
+    // may also have found the request by polling its inbox.
     stages: ["asked", "delivered", "read", "replied", "acknowledged"],
     last_verified: last
       ? {
@@ -120,13 +145,15 @@ function askEddieJourney(bridge: Bridge, owner: string, now: number) {
           asked_at: iso(last.createdAt),
           replied_at: iso(last.repliedAt),
           acknowledged_at: iso(last.acknowledgedAt),
+          wake_delivered: wakeDelivered(last),
         }
       : null,
     latest: latest
       ? {
           request_id: latest.request_id,
           asked_at: iso(latest.createdAt),
-          stage_reached: latestStage,
+          stage_reached: exchangeStage(latest, wakeDelivered(latest)),
+          wake_delivered: wakeDelivered(latest),
           expired: latest.reply === null && latest.expiresAt <= now,
         }
       : null,
@@ -134,24 +161,27 @@ function askEddieJourney(bridge: Bridge, owner: string, now: number) {
 }
 
 function deliveryJourney(bridge: Bridge, owner: string, now: number) {
+  // Only the owner's currently active subscriptions; revoked or expired
+  // subscriptions stop contributing evidence.
   const subs = new Set(
     bridge.store
       .all("subscription")
-      .filter((s) => s.owner === owner)
+      .filter((s) => s.owner === owner && subscriptionState(s, now) === "active")
       .map((s) => s.id),
   );
-  const mine = bridge.store.all("delivery").filter((d) => subs.has(d.subId));
+  const mine = subs.size ? bridge.store.all("delivery").filter((d) => subs.has(d.subId)) : [];
   // Delivery records keep only their latest state; the audit log timestamps each
-  // attempt. One bounded newest-first query keeps this cheap on the event loop.
-  let lastAck: { at: string; id: string } | null = null;
-  let lastFailure: { at: string; outcome: string } | null = null;
+  // attempt (`webhook.delivery`) or central reconciliation (`.central`, stamped
+  // when the receipt is observed). Ownership filtering precedes the limit, and
+  // audit sequence breaks same-millisecond ties.
+  let lastAck: { at: string; seq: number } | null = null;
+  let lastFailure: { at: string; seq: number; outcome: string } | null = null;
   for (const row of bridge.store.recentDeliveryOutcomes(
     mine.map((d) => d.id),
     new Date(now - 7 * 86400000).toISOString(),
   )) {
-    if (String(row.outcome).startsWith("acknowledged:"))
-      lastAck ??= { at: row.at, id: row.subject };
-    else lastFailure ??= { at: row.at, outcome: String(row.outcome) };
+    if (String(row.outcome).startsWith("acknowledged:")) lastAck ??= { at: row.at, seq: row.seq };
+    else lastFailure ??= { at: row.at, seq: row.seq, outcome: String(row.outcome) };
     if (lastAck && lastFailure) break;
   }
   const pending = mine.filter((d) =>
@@ -169,24 +199,23 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
   return {
     state: !mine.length
       ? "unverified"
-      : stuck || (lastFailure && (!lastAck || lastFailure.at > lastAck.at) && !pending.length)
+      : stuck || (lastFailure && (!lastAck || lastFailure.seq > lastAck.seq) && !pending.length)
         ? "failing"
-        : ackMs !== null && now - ackMs <= JOURNEY_FRESH_MS
+        : fresh(now, ackMs)
           ? "verified"
           : ackMs !== null
             ? "stale"
             : "unverified",
     last_acknowledged_at: lastAck?.at ?? null,
-    last_failure: lastFailure,
+    last_failure: lastFailure ? { at: lastFailure.at, outcome: lastFailure.outcome } : null,
     pending: pending.length,
     stopped: mine.filter((d) => d.status === "stopped").length,
     note: "A 2xx webhook response proves receipt by the callback endpoint, not agent execution.",
   };
 }
 
-function hostStatus(bridge: Bridge, owner: string) {
-  const principal = bridge.policy().principals.find((p) => p.id === owner && p.enabled !== false);
-  const hosts = [...new Set((principal?.readHosts ?? []).map((h) => h.host))].sort();
+function hostStatus(bridge: Bridge, principal) {
+  const hosts = [...new Set((principal.readHosts ?? []).map((h) => h.host))].sort();
   return hosts.map((host) => {
     let latest;
     try {
@@ -205,18 +234,45 @@ function hostStatus(bridge: Bridge, owner: string) {
   });
 }
 
-export function statusReport(bridge: Bridge, owner: string) {
+type Evidence = {
+  at: number;
+  journeys: {
+    ask_eddie: ReturnType<typeof askEddieJourney>;
+    event_delivery: ReturnType<typeof deliveryJourney>;
+  };
+  hosts: ReturnType<typeof hostStatus>;
+};
+const cache = new WeakMap<Bridge, Map<string, Evidence>>();
+
+/** Returns undefined when `owner` may not read aggregate status. Pass the policy
+ * snapshot already used to authenticate so one request reads it once. */
+export function statusReport(bridge: Bridge, owner: string, policy = bridge.policy()) {
+  const principal = statusPrincipal(policy, owner);
+  if (!principal) return undefined;
   const now = bridge.now();
+  const perBridge = cache.get(bridge) ?? new Map<string, Evidence>();
+  cache.set(bridge, perBridge);
+  const hit = perBridge.get(owner);
+  // Store-derived evidence is reused briefly so polling cannot monopolise the
+  // event loop; lease state is cheap and always current.
+  const evidence: Evidence =
+    hit && now >= hit.at && now - hit.at < STATUS_CACHE_MS
+      ? hit
+      : {
+          at: now,
+          journeys: {
+            ask_eddie: askEddieJourney(bridge, principal, now),
+            event_delivery: deliveryJourney(bridge, owner, now),
+          },
+          hosts: hostStatus(bridge, principal),
+        };
+  perBridge.set(owner, evidence);
   const runtime: RuntimeStatus = bridge.runtimeStatus?.() ?? {
     mode: "standalone",
     lease: { state: "not_applicable" },
   };
-  const journeys = {
-    ask_eddie: askEddieJourney(bridge, owner, now),
-    event_delivery: deliveryJourney(bridge, owner, now),
-  };
   const leaseState = runtime.lease.state;
-  const states = Object.values(journeys).map((j) => j.state);
+  const states = [evidence.journeys.ask_eddie.state, evidence.journeys.event_delivery.state];
   const overall =
     leaseState === "lost"
       ? "down"
@@ -228,15 +284,18 @@ export function statusReport(bridge: Bridge, owner: string) {
   return {
     schema: STATUS_SCHEMA,
     observed_at: iso(now),
+    evidence_observed_at: iso(evidence.at),
     overall,
     build: buildIdentity(),
     runtime,
+    // Not observed yet: native build identity arrives with adapter negotiation (#62).
+    native: { t3_build: null },
     state_authority:
       runtime.mode === "central_edge" && leaseState !== "held"
         ? "local_cache_without_lease"
         : "local",
-    journeys,
-    hosts: hostStatus(bridge, owner),
+    journeys: evidence.journeys,
+    hosts: evidence.hosts,
     freshness_ms: { verified_within: JOURNEY_FRESH_MS, stuck_after: JOURNEY_STUCK_MS },
   };
 }

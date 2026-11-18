@@ -41,7 +41,17 @@ let s;
 try {
   s = await response.json();
 } catch {
-  console.error(`status-check: ${url} returned an incomplete or invalid status body`);
+  s = undefined;
+}
+const STATES = ["ok", "unverified", "degraded", "down"];
+if (
+  s?.schema !== 1 ||
+  !STATES.includes(s.overall) ||
+  typeof s.journeys?.ask_eddie?.state !== "string" ||
+  typeof s.journeys?.event_delivery?.state !== "string" ||
+  typeof s.runtime?.lease?.state !== "string"
+) {
+  console.error(`status-check: ${url} returned an incomplete or unrecognised status body`);
   process.exit(2);
 }
 if (json) console.log(JSON.stringify(s, null, 2));
@@ -53,6 +63,7 @@ else {
   );
   console.log(
     `runtime      ${s.runtime?.mode} lease ${lease.state}` +
+      (s.runtime?.central ? ` central ${s.runtime.central.release_version ?? "unknown"}` : "") +
       (lease.last_failure
         ? ` (last failure ${lease.last_failure.reason} at ${lease.last_failure.at})`
         : ""),

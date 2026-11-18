@@ -10,13 +10,14 @@ export function leaseGatedHttp(
   refreshLease: () => Promise<void>,
   checkMs = 1000,
   checkpoint?: () => Promise<void>,
+  statusBypass = false,
 ) {
   if (!Number.isSafeInteger(checkMs) || checkMs < 10 || checkMs > 10000)
     throw Error("invalid_lease_check_interval");
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     // Read-only, owner-authenticated status must stay observable while the lease
     // is lost; it reports that state itself and never mutates or checkpoints.
-    if (req.method === "GET" && req.url === "/status") {
+    if (statusBypass && req.method === "GET" && req.url === "/status") {
       inner.emit("request", req, res);
       return;
     }
@@ -65,12 +66,13 @@ export function composeEdgeRoutes(
         throw Error("central_coordinator_required");
       }),
   );
-  const guarded = <T extends Server>(inner: T) => {
-    const outer = leaseGatedHttp(inner, refreshLease, 1000, checkpoint);
+  const guarded = <T extends Server>(inner: T, statusBypass = false) => {
+    const outer = leaseGatedHttp(inner, refreshLease, 1000, checkpoint, statusBypass);
     return { server: outer, inner };
   };
   return {
-    mcp: guarded(httpServer(bridge)),
+    // Only the MCP listener serves /status; collaboration keeps lease-gated 503s.
+    mcp: guarded(httpServer(bridge), true),
     collaboration: guarded(collaborationServer(bridge, authenticate)),
   };
 }

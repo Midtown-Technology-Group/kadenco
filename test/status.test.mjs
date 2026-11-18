@@ -9,7 +9,12 @@ import { Store } from "../dist/store.mjs";
 import { Bridge } from "../dist/bridge.mjs";
 import { FleetReader } from "../dist/fleet-read.mjs";
 import { httpServer } from "../dist/server.mjs";
-import { statusReport, JOURNEY_FRESH_MS, JOURNEY_STUCK_MS } from "../dist/status.mjs";
+import {
+  statusReport,
+  JOURNEY_FRESH_MS,
+  JOURNEY_STUCK_MS,
+  STATUS_CACHE_MS,
+} from "../dist/status.mjs";
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -154,7 +159,8 @@ test("fresh install reports build identity, standalone runtime and unverified jo
 
 test("a completed round trip verifies both journeys, then goes stale without new evidence", async (t) => {
   const f = fixture(t);
-  await f.bridge.subscribe("eddie", f.subscription);
+  // Non-expiring: an expired subscription stops contributing evidence at all.
+  await f.bridge.subscribe("eddie", { ...f.subscription, ttlMs: null });
   const id = await f.roundTrip();
   let s = statusReport(f.bridge, "eddie");
   assert.equal(s.journeys.ask_eddie.state, "verified");
@@ -162,9 +168,10 @@ test("a completed round trip verifies both journeys, then goes stale without new
   assert.equal(s.journeys.ask_eddie.latest.stage_reached, "acknowledged");
   assert.equal(s.journeys.event_delivery.state, "verified");
   assert.equal(s.overall, "ok");
-  // The asking caller sees the same exchange; an unrelated inbox owner does not.
-  assert.equal(statusReport(f.bridge, "caller").journeys.ask_eddie.state, "verified");
+  // Thread callers never see aggregate status; another inbox sees none of this one's.
+  assert.equal(statusReport(f.bridge, "caller"), undefined);
   assert.equal(statusReport(f.bridge, "other").journeys.ask_eddie.state, "unverified");
+  assert.equal(s.journeys.ask_eddie.last_verified.wake_delivered, true);
   f.advance(JOURNEY_FRESH_MS + 1000);
   s = statusReport(f.bridge, "eddie");
   assert.equal(s.journeys.ask_eddie.state, "stale");
@@ -233,6 +240,9 @@ test("GET /status requires an owner bearer and never caches", async (t) => {
     ).status,
     401,
   );
+  const caller = await fetch(url, { headers: { authorization: "Bearer " + f.tokens.caller } });
+  assert.equal(caller.status, 403);
+  assert.deepEqual(await caller.json(), { reason: "operator_status_only" });
   const ok = await fetch(url, { headers: { authorization: "Bearer " + f.tokens.eddie } });
   assert.equal(ok.status, 200);
   assert.equal(ok.headers.get("cache-control"), "no-store");
@@ -269,6 +279,7 @@ test("status-check script reports the summary and exit code for an installed lis
   // Bearer on stdin when the environment variable is unset.
   await f.bridge.subscribe("eddie", f.subscription);
   await f.roundTrip();
+  f.advance(STATUS_CACHE_MS);
   r = await run(undefined, f.tokens.eddie + "\n");
   assert.equal(r.status, 0);
   assert.match(r.stdout, /^overall\s+ok/m);
@@ -294,6 +305,7 @@ test("an older stuck request stays failing after newer requests arrive", async (
   assert.equal(s.journeys.ask_eddie.latest.stage_reached, "asked");
   // A completion acknowledged after A was asked clears it.
   await f.roundTrip();
+  f.advance(STATUS_CACHE_MS);
   assert.equal(statusReport(f.bridge, "eddie").journeys.ask_eddie.state, "verified");
 });
 
@@ -336,6 +348,7 @@ test("centrally reconciled delivery outcomes count, and other owners cannot crow
   // Central edge: the local record is centralized, then a receipt reconciles it.
   f.store.put("delivery", delivery.id, { ...delivery, status: "centralized" });
   assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.pending, 1);
+  f.advance(STATUS_CACHE_MS);
   f.store.put("delivery", delivery.id, { ...delivery, status: "acknowledged" });
   f.store.audit("webhook.delivery.central", delivery.id, "acknowledged:204");
   // 6000 newer outcomes for someone else's deliveries must not hide ours.
@@ -353,6 +366,96 @@ test("status-check exits 2 when a 200 response body is incomplete or invalid", a
   const server = createServer((_req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     res.end('{"overall":');
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => new Promise((r) => server.close(r)));
+  const status = await new Promise((resolve) => {
+    const child = spawn(process.execPath, ["scripts/status-check.mjs"], {
+      env: {
+        ...process.env,
+        KADENCO_STATUS_URL: `http://127.0.0.1:${server.address().port}/status`,
+        KADENCO_STATUS_TOKEN: "fixture",
+      },
+      windowsHide: true,
+    });
+    child.stdin.end();
+    child.on("close", resolve);
+  });
+  assert.equal(status, 2);
+});
+
+test("an exchange Eddie found by polling verifies the loop but not the wake delivery", async (t) => {
+  const f = fixture(t);
+  const request_id = randomUUID();
+  await f.bridge.exchanges.ask("caller", {
+    request_id,
+    run_id: "run-a",
+    question: "polled",
+    ttl_ms: 3600000,
+  });
+  await f.bridge.exchanges.get("eddie", { request_id }, { reviewer: true });
+  const r = await f.bridge.exchanges.reply("eddie", { request_id, reply: "OK" });
+  await f.bridge.exchanges.acknowledge("caller", {
+    request_id,
+    run_id: "run-a",
+    reply_sha256: r.reply_sha256,
+  });
+  const s = statusReport(f.bridge, "eddie");
+  assert.equal(s.journeys.ask_eddie.state, "verified");
+  assert.equal(s.journeys.ask_eddie.last_verified.wake_delivered, false);
+  assert.equal(s.journeys.event_delivery.state, "unverified");
+  assert.equal(s.overall, "unverified");
+});
+
+test("revoked inbox scope and inactive subscriptions stop contributing evidence", async (t) => {
+  const f = fixture(t);
+  const sub = await f.bridge.subscribe("eddie", f.subscription);
+  await f.roundTrip();
+  f.bridge.unsubscribe("eddie", {
+    ...f.subscription,
+    delivery: { mode: "webhook", url: f.subscription.delivery.url },
+  });
+  f.advance(STATUS_CACHE_MS);
+  assert.ok(sub);
+  assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "unverified");
+  const eddie = f.bridge.policy().principals.find((p) => p.id === "eddie");
+  eddie.eddieInbox = false;
+  f.advance(STATUS_CACHE_MS);
+  assert.equal(statusReport(f.bridge, "eddie").journeys.ask_eddie.state, "unverified");
+});
+
+test("polls inside the cache window reuse store evidence but always report current lease", async (t) => {
+  const f = fixture(t);
+  let lease = "held";
+  f.bridge.runtimeStatus = () => ({
+    mode: "central_edge",
+    lease: {
+      state: lease,
+      generation: 1,
+      last_renewed_at: null,
+      expires_at: null,
+      last_failure: null,
+    },
+  });
+  const first = statusReport(f.bridge, "eddie");
+  await f.bridge.subscribe("eddie", f.subscription);
+  await f.roundTrip();
+  lease = "lost";
+  const second = statusReport(f.bridge, "eddie");
+  assert.equal(second.evidence_observed_at, first.evidence_observed_at);
+  assert.equal(second.journeys.ask_eddie.state, "unverified", "cached evidence");
+  assert.equal(second.overall, "down", "lease is never cached");
+  f.advance(STATUS_CACHE_MS);
+  lease = "held";
+  assert.equal(statusReport(f.bridge, "eddie").journeys.ask_eddie.state, "verified");
+});
+
+test("status-check exits 2 for a 200 body that is not a status report", async (t) => {
+  const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end('{"overall":"ok"}');
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => new Promise((r) => server.close(r)));

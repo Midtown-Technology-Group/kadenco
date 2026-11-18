@@ -100,9 +100,14 @@ export class Store {
     if (!ids.length) return [];
     return this.db
       .prepare(
-        "SELECT subject,at,outcome FROM audit WHERE action IN ('webhook.delivery','webhook.delivery.central') AND at>=? AND subject IN (SELECT value FROM json_each(?)) ORDER BY seq DESC LIMIT ?",
+        "SELECT seq,subject,at,outcome FROM audit WHERE action IN ('webhook.delivery','webhook.delivery.central') AND at>=? AND subject IN (SELECT value FROM json_each(?)) ORDER BY seq DESC LIMIT ?",
       )
-      .all(since, JSON.stringify(ids), limit) as { subject: string; at: string; outcome: string }[];
+      .all(since, JSON.stringify(ids), limit) as {
+      seq: number;
+      subject: string;
+      at: string;
+      outcome: string;
+    }[];
   }
   latestDiagnostic(host) {
     const r = this.db
