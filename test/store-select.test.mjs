@@ -64,12 +64,15 @@ test("any write, rollback or direct SQL change is seen on the next call", (t) =>
   store.put("delivery", "b", { id: "b", status: "pending" });
   assert.deepEqual(ids(store.select("delivery", "pending", pending)), ["b"]);
   // A transaction that is observed mid-flight and then rolled back.
-  assert.throws(() =>
-    store.transaction(() => {
-      store.put("delivery", "a", { id: "a", status: "pending" });
-      assert.deepEqual(ids(store.select("delivery", "pending", pending)), ["a", "b"]);
-      throw Error("rollback");
-    }),
+  assert.throws(
+    () =>
+      store.transaction(() => {
+        store.put("delivery", "a", { id: "a", status: "pending" });
+        assert.deepEqual(ids(store.select("delivery", "pending", pending)), ["a", "b"]);
+        throw Error("rollback");
+      }),
+    // Only the deliberate error: a failed assertion inside must not pass here.
+    { message: "rollback" },
   );
   assert.deepEqual(ids(store.select("delivery", "pending", pending)), ["b"]);
   // A writer that bypasses Store.put (for example replica rehydration).
