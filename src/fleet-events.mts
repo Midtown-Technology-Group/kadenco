@@ -4,6 +4,22 @@ import { createHash } from "node:crypto";
 import { subscriptionActive, subscriptionExpiry } from "./subscription-state.mjs";
 import { readReason } from "./read-errors.mjs";
 import { setImmediate as yieldToIO } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
+
+// A pass that changes nothing material rewrites the coverage record at most
+// this often. Every record write is replicated to central before the next HTTP
+// response, so rewriting each host's timestamps every ~12 s cycle made requests
+// queue behind a central push every cycle. Coverage turns stale only after
+// 300 s (status below), so a 60 s heartbeat keeps it accurate.
+const COVERAGE_HEARTBEAT_MS = 60000;
+const COVERAGE_MATERIAL = [
+  "state",
+  "reason",
+  "cursor",
+  "currentRead",
+  "consecutiveFailures",
+  "lastFailureAt",
+] as const;
 
 const hash = (x) => createHash("sha256").update(JSON.stringify(x)).digest("hex");
 const fail = () => Object.assign(Error("forbidden"), { reason: "forbidden" });
@@ -157,6 +173,16 @@ export class FleetEvents {
       id = hash([sub.id, host]),
       at = new Date(b.now()).toISOString();
     const next = { ...previous, ...extra, id, subId: sub.id, host, state, at };
+    // Nothing material changed and the stored timestamps are recent: skip the
+    // write (and its central replication). Changes are written at once.
+    if (
+      previous &&
+      COVERAGE_MATERIAL.every((k) => isDeepStrictEqual(previous[k], next[k])) &&
+      !!previous.lastCompleteAt === !!next.lastCompleteAt &&
+      !!previous.lastSuccessfulReadAt === !!next.lastSuccessfulReadAt &&
+      b.now() - Date.parse(previous.at) < COVERAGE_HEARTBEAT_MS
+    )
+      return;
     b.store.transaction(() => {
       if (previous?.state !== state || previous?.reason !== next.reason) {
         next.revision = (previous?.revision ?? 0) + 1;
