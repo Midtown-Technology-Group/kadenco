@@ -2011,6 +2011,7 @@ async function leaseFixture(
     lost = 0;
   const instances = new Set<string>();
   const failures: string[] = [];
+  let bridgeRef: { runtimeStatus?: () => { lease: Record<string, unknown> } } | undefined;
   const start = (extra: Partial<EdgeRuntimePorts> = {}) =>
     startSidecar({
       configPath,
@@ -2026,6 +2027,7 @@ async function leaseFixture(
         },
       }),
       runtimeFactory: (bridge) => {
+        bridgeRef = bridge as unknown as typeof bridgeRef;
         bridge.observe = async () => {};
         bridge.deliver = async () => {};
         bridge.fleetEvents.observe = async () => {};
@@ -2075,6 +2077,7 @@ async function leaseFixture(
     start,
     attempts: () => attempts,
     lost: () => lost,
+    lease: () => bridgeRef!.runtimeStatus!().lease,
     instances,
     failures,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
@@ -2157,6 +2160,31 @@ test("lease renewals use the dedicated lease transport when provided", async () 
     assert.equal(f.attempts(), 0);
   } finally {
     await sidecar?.shutdown();
+    f.cleanup();
+  }
+});
+
+test("an expired lease reports lost even while its renewal is still pending", async () => {
+  let hang = false,
+    expires = 0;
+  const f = await leaseFixture((_n, p) => {
+    // A slow renewal (like one held by the 4 s lease deadline) that outlives expiry.
+    if (hang)
+      return new Promise((resolve) =>
+        setTimeout(() => resolve({ reason: "fenced" }), 3000),
+      ) as never;
+    expires = Date.now() + 1500;
+    return { ...granted(p), expires };
+  });
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start();
+    assert.equal(f.lease().state, "held");
+    hang = true;
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, expires - Date.now()) + 100));
+    assert.equal(f.lease().state, "lost", "no failure recorded yet, but the lease has expired");
+  } finally {
+    await sidecar?.shutdown().catch(() => {});
     f.cleanup();
   }
 });
