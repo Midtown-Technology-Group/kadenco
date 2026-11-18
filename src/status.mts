@@ -193,19 +193,18 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
   //   counted as `untimed` and never treated as fresh evidence.
   type Outcome = { ms: number; order: number; ok: boolean; at: string; outcome: string };
   const outcomes: Outcome[] = [];
-  // No age cutoff: the newest outcome per owned delivery decides stale vs
-  // unverified (ownership filtering and the row limit bound the work).
-  for (const row of bridge.store.recentDeliveryOutcomes(
-    mine.map((d) => d.id),
-    "",
-  ))
-    outcomes.push({
-      ms: Date.parse(row.at),
-      order: row.seq,
-      ok: String(row.outcome).startsWith("acknowledged:"),
-      at: row.at,
-      outcome: String(row.outcome),
-    });
+  // The newest acknowledgement, terminal failure and failure are each selected
+  // independently (no age window or row cap can drop one of them).
+  const latest = bridge.store.latestDeliveryOutcomes(mine.map((d) => d.id));
+  for (const row of [latest.ack, latest.terminal, latest.failure])
+    if (row)
+      outcomes.push({
+        ms: Date.parse(row.at),
+        order: row.seq,
+        ok: String(row.outcome).startsWith("acknowledged:"),
+        at: row.at,
+        outcome: String(row.outcome),
+      });
   let untimed = 0;
   for (const d of mine) {
     if (!d.central_id || !["acknowledged", "stopped", "revoked"].includes(d.status)) continue;

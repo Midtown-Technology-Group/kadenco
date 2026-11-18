@@ -816,3 +816,28 @@ test("new deliveries record an immutable queue-entry time", async (t) => {
   const [d] = f.store.all("delivery");
   assert.equal(d.queuedAt, f.bridge.now());
 });
+
+test("an old terminal failure with no later recovery still reads failing", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", { ...f.subscription, ttlMs: null });
+  const [sub] = f.store.all("subscription");
+  f.store.put("delivery", "gone", {
+    id: "gone",
+    subId: sub.id,
+    status: "revoked",
+    queuedAt: f.bridge.now(),
+    event: {
+      name: "t3.eddie.requested",
+      timestamp: new Date(f.bridge.now()).toISOString(),
+      data: {},
+    },
+  });
+  f.store.audit("webhook.delivery.revoked", "gone", "revoked:0");
+  // Many newer retryable outcomes on the same owned delivery must not crowd it out.
+  f.store.transaction(() => {
+    for (let i = 0; i < 6000; i++) f.store.audit("webhook.delivery", "gone", "pending:503");
+  });
+  f.advance(8 * 86400000);
+  const j = statusReport(f.bridge, "eddie").journeys.event_delivery;
+  assert.equal(j.state, "failing");
+});

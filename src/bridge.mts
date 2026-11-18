@@ -522,8 +522,12 @@ export class Bridge {
           : attempts >= 6 || (status >= 300 && status < 500 && ![408, 429].includes(status))
             ? "stopped"
             : "pending";
-      this.store.put("delivery", d.id, { ...sending, status: state, httpStatus: status });
-      this.store.audit("webhook.delivery", d.id, `${state}:${status}`);
+      // State and its timed audit evidence commit together, so a crash between
+      // them cannot leave a stopped delivery with no failure evidence.
+      this.store.transaction(() => {
+        this.store.put("delivery", d.id, { ...sending, status: state, httpStatus: status });
+        this.store.audit("webhook.delivery", d.id, `${state}:${status}`);
+      });
       const diagnosticHost = s.host ?? d.event.data?.host;
       if (typeof diagnosticHost === "string") {
         try {

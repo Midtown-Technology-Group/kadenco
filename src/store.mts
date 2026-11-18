@@ -94,20 +94,23 @@ export class Store {
       )
       .all(id, after, since, limit + 1);
   }
-  /** Newest-first local webhook attempt outcomes for exactly these delivery IDs
-   * since `since`; ownership filtering precedes the limit. */
-  recentDeliveryOutcomes(ids: string[], since: string, limit = 5000) {
-    if (!ids.length) return [];
-    return this.db
-      .prepare(
-        "SELECT seq,subject,at,outcome FROM audit WHERE action IN ('webhook.delivery','webhook.delivery.revoked') AND at>=? AND subject IN (SELECT value FROM json_each(?)) ORDER BY seq DESC LIMIT ?",
-      )
-      .all(since, JSON.stringify(ids), limit) as {
-      seq: number;
-      subject: string;
-      at: string;
-      outcome: string;
-    }[];
+  /** For exactly these delivery IDs (ownership precedes selection), the newest
+   * acknowledgement, the newest terminal failure (stopped/revoked) and the
+   * newest failure of any kind, each found independently of age or volume. */
+  latestDeliveryOutcomes(ids: string[]) {
+    type Row = { seq: number; subject: string; at: string; outcome: string };
+    if (!ids.length) return { ack: undefined, terminal: undefined, failure: undefined };
+    const pick = (filter: string) =>
+      this.db
+        .prepare(
+          `SELECT seq,subject,at,outcome FROM audit WHERE action IN ('webhook.delivery','webhook.delivery.revoked') AND subject IN (SELECT value FROM json_each(?)) AND ${filter} ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(JSON.stringify(ids)) as Row | undefined;
+    return {
+      ack: pick("outcome LIKE 'acknowledged:%'"),
+      terminal: pick("(outcome LIKE 'stopped:%' OR outcome LIKE 'revoked:%')"),
+      failure: pick("outcome NOT LIKE 'acknowledged:%'"),
+    };
   }
   latestDiagnostic(host) {
     const r = this.db
