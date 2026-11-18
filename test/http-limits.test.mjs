@@ -6,6 +6,7 @@ import { httpServer } from "../dist/server.mjs";
 import { resolveCallback, postWebhook, sendWhenSecure } from "../dist/webhook.mjs";
 import { createServer } from "node:http";
 import { T3FleetTransport } from "../dist/fleet-transport-read.mjs";
+import { listenLoopback } from "./support/listen.mjs";
 
 test("read fetch wrapper preserves a caller cleanup signal and only supplies a missing deadline", async () => {
   const signal = AbortSignal.abort();
@@ -128,12 +129,12 @@ test("native HTTP redirects cannot leave the exact configured origin", async (t)
     leaked++;
     res.end("{}");
   });
-  await new Promise((r) => sink.listen(0, "127.0.0.1", r));
+  await listenLoopback(sink);
   const server = createServer((_req, res) => {
     res.writeHead(307, { location: `http://127.0.0.1:${sink.address().port}/leak` });
     res.end();
   });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   const base = `http://127.0.0.1:${server.address().port}`;
   const transport = new T3FleetTransport({
     hostsProvider: () => ({ hosts: [{ name: "local", url: base + "/mcp" }] }),

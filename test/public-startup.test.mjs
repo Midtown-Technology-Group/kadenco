@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { randomBytes } from "node:crypto";
+import { listenLoopback } from "./support/listen.mjs";
 
 test("standalone local-projection entrypoint starts with synthetic state and no private helper or fleet credentials", async () => {
   const directory = mkdtempSync(join(tmpdir(), "public-relay-startup-")),
@@ -21,7 +22,7 @@ test("standalone local-projection entrypoint starts with synthetic state and no 
  CREATE TABLE orchestration_v2_projection_messages(thread_id TEXT,run_id TEXT,created_at TEXT,message_id TEXT,payload_json TEXT);`);
   db.close();
   const listener = createServer();
-  await new Promise((r) => listener.listen(0, "127.0.0.1", r));
+  await listenLoopback(listener);
   const port = listener.address().port;
   await new Promise((r) => listener.close(r));
   const policy = join(directory, "config.json");

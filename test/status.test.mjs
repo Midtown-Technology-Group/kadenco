@@ -15,6 +15,7 @@ import {
   JOURNEY_STUCK_MS,
   STATUS_CACHE_MS,
 } from "../dist/status.mjs";
+import { listenLoopback } from "./support/listen.mjs";
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -228,7 +229,7 @@ test("runtime lease evidence drives overall state and local-cache authority", (t
 test("GET /status requires an owner bearer and never caches", async (t) => {
   const f = fixture(t),
     server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const url = `http://127.0.0.1:${server.address().port}/status`;
   assert.equal((await fetch(url)).status, 401);
@@ -256,7 +257,7 @@ test("status-check script reports the summary and exit code for an installed lis
   const { spawn } = await import("node:child_process");
   const f = fixture(t),
     server = httpServer(f.bridge);
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const url = `http://127.0.0.1:${server.address().port}/status`;
   const run = (token, input) =>
@@ -408,7 +409,7 @@ test("status-check exits 2 when a 200 response body is incomplete or invalid", a
     res.writeHead(200, { "content-type": "application/json" });
     res.end('{"overall":');
   });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const status = await new Promise((resolve) => {
     const child = spawn(process.execPath, ["scripts/status-check.mjs"], {
@@ -499,7 +500,7 @@ test("status-check exits 2 for a 200 body that is not a status report", async (t
     res.writeHead(200, { "content-type": "application/json" });
     res.end('{"overall":"ok"}');
   });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const status = await new Promise((resolve) => {
     const child = spawn(process.execPath, ["scripts/status-check.mjs"], {
@@ -611,7 +612,7 @@ test("status-check exits 2 when a report contradicts itself or has malformed hos
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
   });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await listenLoopback(server);
   t.after(() => new Promise((r) => server.close(r)));
   const run = () =>
     new Promise((resolve) => {
