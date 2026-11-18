@@ -218,6 +218,7 @@ export class ThreadLanes {
               },
               attempts: 0,
               nextAt: b.now(),
+              queuedAt: b.now(),
               status: "pending",
             })
           )

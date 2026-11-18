@@ -193,17 +193,18 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
   //   counted as `untimed` and never treated as fresh evidence.
   type Outcome = { ms: number; order: number; ok: boolean; at: string; outcome: string };
   const outcomes: Outcome[] = [];
-  for (const row of bridge.store.recentDeliveryOutcomes(
-    mine.map((d) => d.id),
-    new Date(now - 7 * 86400000).toISOString(),
-  ))
-    outcomes.push({
-      ms: Date.parse(row.at),
-      order: row.seq,
-      ok: String(row.outcome).startsWith("acknowledged:"),
-      at: row.at,
-      outcome: String(row.outcome),
-    });
+  // The newest acknowledgement, terminal failure and failure are each selected
+  // independently (no age window or row cap can drop one of them).
+  const latest = bridge.store.latestDeliveryOutcomes(mine.map((d) => d.id));
+  for (const row of [latest.ack, latest.terminal, latest.failure])
+    if (row)
+      outcomes.push({
+        ms: Date.parse(row.at),
+        order: row.seq,
+        ok: String(row.outcome).startsWith("acknowledged:"),
+        at: row.at,
+        outcome: String(row.outcome),
+      });
   let untimed = 0;
   for (const d of mine) {
     if (!d.central_id || !["acknowledged", "stopped", "revoked"].includes(d.status)) continue;
@@ -229,7 +230,9 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
   // Every pending attempt is checked on its own: one success between two old
   // pending attempts must not hide the later one.
   const stuck = pending.some((d) => {
-    const started = Date.parse(d.event?.timestamp);
+    // Backlog age counts from queue entry (immutable), not the native event
+    // time (which can predate observation) nor nextAt (which moves on retry).
+    const started = Number.isSafeInteger(d.queuedAt) ? d.queuedAt : Date.parse(d.event?.timestamp);
     return (
       Number.isFinite(started) &&
       now - started > JOURNEY_STUCK_MS &&

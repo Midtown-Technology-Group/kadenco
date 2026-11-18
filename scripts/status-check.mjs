@@ -56,6 +56,25 @@ const expected = (lease, states) =>
         ? "ok"
         : "unverified";
 const journeyStates = [s?.journeys?.ask_eddie?.state, s?.journeys?.event_delivery?.state];
+// Every rendered journey must be an object with a known state, and any attempt
+// diagnostic it carries must name a request and a stage.
+const attempt = (x) =>
+  x === undefined ||
+  x === null ||
+  (typeof x === "object" &&
+    typeof x.request_id === "string" &&
+    typeof x.stage_reached === "string");
+const journeysValid = () =>
+  typeof s?.journeys === "object" &&
+  s.journeys !== null &&
+  Object.values(s.journeys).every(
+    (j) =>
+      typeof j === "object" &&
+      j !== null &&
+      JOURNEY.includes(j.state) &&
+      attempt(j.stuck) &&
+      attempt(j.latest),
+  );
 // Present and string-or-null; nested objects are checked only when present.
 const text = (v) => v === null || typeof v === "string";
 const nested = (obj, key) => obj === undefined || obj === null || text(obj[key]);
@@ -64,6 +83,7 @@ const leaseFits = (mode, lease) =>
   (mode === "central_edge" && lease !== "not_applicable");
 if (
   s?.schema !== 1 ||
+  !journeysValid() ||
   !leaseFits(s.runtime?.mode, s.runtime?.lease?.state) ||
   typeof s.build !== "object" ||
   s.build === null ||
@@ -108,4 +128,5 @@ else {
       `host ${h.host.padEnd(7)} ${h.last_outcome}${h.last_reason ? ` ${h.last_reason}` : ""} at ${h.last_observed_at ?? "never"}`,
     );
 }
-process.exit(s.overall === "ok" ? 0 : 1);
+// exitCode (not exit()) lets a large --json report finish writing to a pipe.
+process.exitCode = s.overall === "ok" ? 0 : 1;

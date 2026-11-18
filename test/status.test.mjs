@@ -640,6 +640,15 @@ test("status-check exits 2 when a report contradicts itself or has malformed hos
   assert.equal(await run(), 2, "malformed build identity");
   body = { ...ok, runtime: { mode: "central_edge", lease: { state: "held" } }, build: undefined };
   assert.equal(await run(), 2, "missing build identity");
+  const held = { mode: "central_edge", lease: { state: "held" } };
+  body = { ...ok, runtime: held, journeys: { ...ok.journeys, future_journey: null } };
+  assert.equal(await run(), 2, "malformed journey entry");
+  body = {
+    ...ok,
+    runtime: held,
+    journeys: { ...ok.journeys, ask_eddie: { state: "verified", stuck: {} } },
+  };
+  assert.equal(await run(), 2, "malformed stuck diagnostic");
   body = { ...ok, runtime: { mode: "central_edge", lease: { state: "held" } } };
   assert.equal(await run(), 0);
 });
@@ -766,4 +775,69 @@ test("a standalone revocation is a timed terminal failure, not a silent state ch
   const j = statusReport(f.bridge, "eddie").journeys.event_delivery;
   assert.equal(j.state, "failing");
   assert.match(j.last_failure.outcome, /^revoked:/);
+});
+
+test("backlog age counts from queue entry, not the older native event time", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  const [sub] = f.store.all("subscription");
+  const t0 = f.bridge.now();
+  // Acknowledged at t0+5m; another event that happened at t0 is only queued at t0+10m.
+  f.store.put("delivery", "acked", {
+    id: "acked",
+    subId: sub.id,
+    status: "acknowledged",
+    central_id: "c1",
+    httpStatus: 204,
+    centralResultAt: t0 + 5 * 60000,
+    centralResultSeq: 1,
+    event: { name: "t3.eddie.requested", timestamp: new Date(t0).toISOString(), data: {} },
+  });
+  f.store.put("delivery", "late", {
+    id: "late",
+    subId: sub.id,
+    status: "pending",
+    queuedAt: t0 + 10 * 60000,
+    event: { name: "t3.eddie.requested", timestamp: new Date(t0).toISOString(), data: {} },
+  });
+  f.advance(26 * 60000);
+  assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
+});
+
+test("new deliveries record an immutable queue-entry time", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  await f.bridge.exchanges.ask("caller", {
+    request_id: randomUUID(),
+    run_id: "run-a",
+    question: "queued",
+    ttl_ms: 3600000,
+  });
+  const [d] = f.store.all("delivery");
+  assert.equal(d.queuedAt, f.bridge.now());
+});
+
+test("an old terminal failure with no later recovery still reads failing", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", { ...f.subscription, ttlMs: null });
+  const [sub] = f.store.all("subscription");
+  f.store.put("delivery", "gone", {
+    id: "gone",
+    subId: sub.id,
+    status: "revoked",
+    queuedAt: f.bridge.now(),
+    event: {
+      name: "t3.eddie.requested",
+      timestamp: new Date(f.bridge.now()).toISOString(),
+      data: {},
+    },
+  });
+  f.store.audit("webhook.delivery.revoked", "gone", "revoked:0");
+  // Many newer retryable outcomes on the same owned delivery must not crowd it out.
+  f.store.transaction(() => {
+    for (let i = 0; i < 6000; i++) f.store.audit("webhook.delivery", "gone", "pending:503");
+  });
+  f.advance(8 * 86400000);
+  const j = statusReport(f.bridge, "eddie").journeys.event_delivery;
+  assert.equal(j.state, "failing");
 });
