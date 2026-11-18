@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Store } from "../dist/store.mjs";
 import { ThreadSettings, standardSpeedArgs } from "../dist/thread-settings.mjs";
+import { listenLoopback } from "./support/listen.mjs";
 function fixture(t) {
   const store = new Store(":memory:", randomBytes(32));
   t.after(() => store.close());
@@ -297,7 +298,7 @@ test("MCP settings failures preserve safe reasons and denied-operation audit", a
   };
   bridge.commands = { settings: { read: deny, standard: deny, receipt: deny } };
   const server = httpServer(bridge);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenLoopback(server);
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const client = new Client(
     { name: "test", version: "1" },
