@@ -387,7 +387,7 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
             throw Error("unused");
           },
         }),
-        runtimeFactory: (bridge) => createEdgeRuntime(bridge, ports),
+        runtimeFactory: (bridge) => createEdgeRuntime(bridge, { ...ports, startupClaimMs: 0 }),
       }),
       /edge_lease_unavailable/,
     );
@@ -1966,5 +1966,184 @@ test("host receipt recovery retains revoked targets, skips resolved foreign host
     }
   } finally {
     store.close();
+  }
+});
+
+async function leaseFixture(
+  lease: (attempt: number, p: Record<string, unknown>) => Record<string, unknown>,
+) {
+  const { startSidecar } = await import("../../../dist/sidecar.mjs");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { createServer } = await import("node:net");
+  const root = mkdtempSync(join(tmpdir(), "kadenco-lease-"));
+  const state = join(root, "state");
+  mkdirSync(state, { mode: 0o700 });
+  const reservation = createServer();
+  await new Promise<void>((r) => reservation.listen(0, "127.0.0.1", r));
+  const port = (reservation.address() as { port: number }).port;
+  await new Promise<void>((r) => reservation.close(() => r()));
+  const configPath = join(root, "policy.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      port,
+      stateDirectory: state,
+      source: { type: "local-projection", databasePath: "unused-fixture" },
+      callbackHosts: [],
+      principals: [],
+      sessions: [],
+    }),
+  );
+  let attempts = 0,
+    lost = 0;
+  const instances = new Set<string>();
+  const failures: string[] = [];
+  const start = (extra: Partial<EdgeRuntimePorts> = {}) =>
+    startSidecar({
+      configPath,
+      stateKey: randomBytes(32),
+      backendFactory: () => ({
+        close: async () => {},
+        supportsFollowup: false,
+        read: async () => {
+          throw Error("unused");
+        },
+        followup: async () => {
+          throw Error("unused");
+        },
+      }),
+      runtimeFactory: (bridge) => {
+        bridge.observe = async () => {};
+        bridge.deliver = async () => {};
+        bridge.fleetEvents.observe = async () => {};
+        return createEdgeRuntime(bridge, {
+          epoch: 1,
+          executor: "fixture-executor",
+          key: randomBytes(32),
+          journalPath: join(state, "attempts.db"),
+          leaseFailure: (reason) => failures.push(reason),
+          leaseLost: () => lost++,
+          async executorCall(op, p) {
+            if (op === "edge_lease") {
+              instances.add((p as { instance: string }).instance);
+              return lease(++attempts, p as Record<string, unknown>);
+            }
+            if (op === "outbox_pending") return { ids: [], next: null };
+            if (op === "replica_head") return { revision: 0 };
+            if (op === "replica_page") return { revision: 0, records: [], next: null };
+            if (op === "replica_receipt") return { committed: false };
+            if (op === "replica_apply") return { committed: true, revision: 1 };
+            throw Error("unexpected_operation");
+          },
+          async ownerCall() {
+            throw Error("no_mutation_in_fixture");
+          },
+          async observationOwnerCall() {
+            throw Error("no_subscriptions_in_fixture");
+          },
+          async bind() {
+            throw Error("no_mutation_in_fixture");
+          },
+          async currentGrant() {
+            throw Error("no_mutation_in_fixture");
+          },
+          async observe() {
+            return { state: "unknown", evidence: "fixture" };
+          },
+          observationBinding() {
+            throw Error("no_subscriptions_in_fixture");
+          },
+          ...extra,
+        });
+      },
+    });
+  return {
+    port,
+    start,
+    attempts: () => attempts,
+    lost: () => lost,
+    instances,
+    failures,
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+const granted = (p: Record<string, unknown>) => ({
+  holder: "fixture-executor",
+  instance: p.instance,
+  generation: 4,
+  expires: Date.now() + 10000,
+});
+
+test("startup retries a claim fenced by a predecessor's unexpired lease, with one instance", async () => {
+  // A restarted edge races its predecessor's 10 s lease; it must wait it out
+  // rather than failing startup and re-entering the supervisor's restart loop.
+  const f = await leaseFixture((n, p) => (n <= 2 ? { reason: "fenced" } : granted(p)));
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start();
+    assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 200);
+    assert.ok(f.attempts() >= 3);
+    assert.equal(f.instances.size, 1, "retries reuse the same process instance");
+    assert.ok(f.failures.every((r) => r === "fenced"));
+  } finally {
+    await sidecar?.shutdown();
+    f.cleanup();
+  }
+});
+
+test("startup refuses immediately on non-fence refusals and after the claim deadline", async () => {
+  const refused = await leaseFixture(() => ({ reason: "forbidden" }));
+  try {
+    await assert.rejects(refused.start({ startupClaimMs: 10000 }), /edge_lease_unavailable/);
+    assert.equal(refused.attempts(), 1, "a refusal other than fenced is not retried");
+  } finally {
+    refused.cleanup();
+  }
+  const fenced = await leaseFixture(() => ({ reason: "fenced" }));
+  try {
+    await assert.rejects(fenced.start({ startupClaimMs: 1200 }), /edge_lease_unavailable/);
+    assert.ok(fenced.attempts() >= 2 && fenced.attempts() <= 3);
+  } finally {
+    fenced.cleanup();
+  }
+});
+
+test("a running edge that is fenced reports terminal lease loss exactly once", async () => {
+  let deny = false;
+  const f = await leaseFixture((_n, p) => (deny ? { reason: "fenced" } : granted(p)));
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start();
+    assert.equal(f.lost(), 0);
+    deny = true;
+    await new Promise((resolve) => setTimeout(resolve, 6000));
+    assert.equal(f.lost(), 1, "two failed heartbeats still report loss once");
+    assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 503);
+  } finally {
+    await sidecar?.shutdown();
+    f.cleanup();
+  }
+});
+
+test("lease renewals use the dedicated lease transport when provided", async () => {
+  let viaLease = 0;
+  const f = await leaseFixture(() => {
+    throw Error("lease_must_not_use_executor_transport");
+  });
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start({
+      async leaseCall(op, p) {
+        assert.equal(op, "edge_lease");
+        viaLease++;
+        return granted(p as Record<string, unknown>);
+      },
+    });
+    assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 200);
+    assert.ok(viaLease >= 1);
+    assert.equal(f.attempts(), 0);
+  } finally {
+    await sidecar?.shutdown();
+    f.cleanup();
   }
 });

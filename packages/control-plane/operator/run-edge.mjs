@@ -55,6 +55,20 @@ try {
       executorToken: secrets.executorToken,
       ownerTokens: new Map(secrets.ownerTokens),
       leaseFailure: failureReporter("edge_lease_failure"),
+      // A lost generation is never reacquired in-process. Exit promptly (75,
+      // EX_TEMPFAIL) so the supervisor restarts a fresh edge instead of
+      // probing a 503 listener; the attempt journal survives for reconciliation.
+      leaseLost: () => {
+        console.error(JSON.stringify({ event: "edge_lease_lost_exit", local_fallback: false }));
+        void (async () => {
+          try {
+            await sidecar?.shutdown();
+          } finally {
+            stateKey?.fill(0);
+            process.exit(75);
+          }
+        })();
+      },
       checkpointFailure: failureReporter("edge_checkpoint_failure"),
     },
     backendFactory: async (policy) => {

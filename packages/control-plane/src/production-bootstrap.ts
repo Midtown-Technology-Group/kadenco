@@ -22,6 +22,7 @@ export type BootstrapConfig = {
   journalPath: string;
   fetch?: typeof fetch;
   leaseFailure?: import("./edge-runtime.ts").EdgeRuntimePorts["leaseFailure"];
+  leaseLost?: import("./edge-runtime.ts").EdgeRuntimePorts["leaseLost"];
   checkpointFailure?: import("./edge-runtime.ts").EdgeRuntimePorts["checkpointFailure"];
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -203,6 +204,15 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
     fetch: config.fetch,
     diagnostic: diagnostic(config.executor),
   });
+  // Lease renewals get a deadline well under the 10 s lease TTL; the heartbeat
+  // retries every 2.5 s, so a hung request no longer consumes the whole lease.
+  const leaseCall = centralTransport({
+    origin: config.origin,
+    token: () => config.executorToken,
+    fetch: config.fetch,
+    timeoutMs: 4000,
+    diagnostic: diagnostic(config.executor),
+  });
   const ownerCall = (owner: string, op: string, body: object) => {
     const token = owners.get(owner),
       p = bridge.policy().principals.find((p) => p.id === owner && p.enabled !== false);
@@ -231,7 +241,9 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
     journalPath: config.journalPath,
     ownerCall,
     executorCall,
+    leaseCall,
     leaseFailure: config.leaseFailure,
+    leaseLost: config.leaseLost,
     checkpointFailure: config.checkpointFailure,
     observationOwnerCall: (op, p) => ownerCall(config.observationOwner, op, p),
   });

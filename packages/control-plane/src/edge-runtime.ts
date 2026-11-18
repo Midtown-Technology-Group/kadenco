@@ -24,6 +24,16 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
   observationBinding: Parameters<typeof observeExisting>[1]["binding"];
   observationOwnerCall: Parameters<typeof observeExisting>[1]["ownerCall"];
   leaseFailure?: (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => void;
+  /** Lease-only transport. Its deadline must be well under the lease TTL so one
+   * slow renewal cannot consume the whole lease; defaults to executorCall. */
+  leaseCall?: EdgeRuntimePorts["executorCall"];
+  /** Called once when this process's generation is irrecoverably lost (fenced,
+   * refused, invalid, or expired while renewals fail). The supervisor should
+   * shut down and restart the edge; this process never reacquires a generation. */
+  leaseLost?: () => void;
+  /** How long startup keeps retrying an effect-free first claim that is fenced
+   * by a predecessor's unexpired lease. Default 30 s (lease TTL is 10 s). */
+  startupClaimMs?: number;
   checkpointFailure?: (
     reason:
       | "transport_uncertain"
@@ -72,7 +82,7 @@ export async function createEdgeRuntime(
   const refreshLease = () => {
     if (closed) return Promise.reject(Error("edge_runtime_closed"));
     return (renewal ??= (async () => {
-      const lease = await ports.executorCall("edge_lease", {
+      const lease = await (ports.leaseCall ?? ports.executorCall)("edge_lease", {
         epoch: ports.epoch,
         instance,
         ...(generation === undefined ? {} : { generation }),
@@ -109,8 +119,25 @@ export async function createEdgeRuntime(
         renewal = undefined;
       }));
   };
-  // Refuse before creating listeners or opening an attempt journal.
-  await refreshLease();
+  // Refuse before creating listeners or opening an attempt journal. The first
+  // claim has no effects, so a claim fenced by a predecessor's unexpired lease
+  // (for example a crashed or restarting process) is retried with the same
+  // instance until that lease can expire. Other refusals stop startup at once.
+  const startupDeadline = now() + (ports.startupClaimMs ?? 30000);
+  for (let delay = 500; ; delay = Math.min(delay * 2, 4000)) {
+    try {
+      await refreshLease();
+      break;
+    } catch (error) {
+      if (
+        generation !== undefined ||
+        leaseEvidence.failure?.reason !== "fenced" ||
+        now() + delay > startupDeadline
+      )
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
   bridge.runtimeStatus = () => {
     const { renewedAt, expires, failure } = leaseEvidence;
     const failedLast = failure !== null && (renewedAt === null || failure.at >= renewedAt);
@@ -203,9 +230,16 @@ export async function createEdgeRuntime(
   Object.assign(routes.collaboration.server, { stopStreams });
   // Native reads can take longer than a lease. Renew independently of the
   // observation cycle; a blocked JS event loop still correctly loses its lease.
+  let lostReported = false;
   const heartbeat = setInterval(() => {
     void refreshLease().catch(() => {
       stopStreams();
+      // Serving 503 forever helps nobody: report terminal loss once so the
+      // supervisor can recycle the edge promptly with its journal intact.
+      if (!lostReported && bridge.runtimeStatus?.().lease.state === "lost") {
+        lostReported = true;
+        ports.leaseLost?.();
+      }
     });
   }, 2500);
   heartbeat.unref();
