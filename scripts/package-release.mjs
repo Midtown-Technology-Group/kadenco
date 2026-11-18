@@ -93,6 +93,7 @@ try {
     "caller-mcp.mjs",
     "caller.mjs",
     "pi-eddie.mjs",
+    "status-check.mjs",
     "worker-provenance.mjs",
   ])
     cpSync(join(root, "scripts", file), join(stage, "scripts", file));

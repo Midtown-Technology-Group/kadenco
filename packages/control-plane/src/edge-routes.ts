@@ -14,6 +14,12 @@ export function leaseGatedHttp(
   if (!Number.isSafeInteger(checkMs) || checkMs < 10 || checkMs > 10000)
     throw Error("invalid_lease_check_interval");
   return createServer((req: IncomingMessage, res: ServerResponse) => {
+    // Read-only, owner-authenticated status must stay observable while the lease
+    // is lost; it reports that state itself and never mutates or checkpoints.
+    if (req.method === "GET" && req.url === "/status") {
+      inner.emit("request", req, res);
+      return;
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const stop = () => clearTimeout(timer);
     res.once("close", stop);

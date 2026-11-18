@@ -41,6 +41,9 @@ export class Bridge {
     limit: number,
   ) => Promise<Record<string, unknown>>;
   declare relayDiagnosticAccess?: (owner: string) => Promise<void>;
+  /** Set by a runtime composition (for example the central edge) to report its
+   * mode and lease evidence through the read-only /status endpoint. */
+  declare runtimeStatus?: () => import("./status.mjs").RuntimeStatus;
 
   constructor({
     store,

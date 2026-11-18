@@ -58,6 +58,17 @@ export async function createEdgeRuntime(
   let closed = false;
   let renewal: Promise<void> | undefined;
   const leaseErrors = new WeakSet<object>();
+  // Evidence for the read-only /status endpoint; never consulted for authority.
+  const leaseEvidence: {
+    renewedAt: number | null;
+    expires: number | null;
+    failure: { reason: string; at: number } | null;
+  } = { renewedAt: null, expires: null, failure: null };
+  const now = () => (ports.now ?? Date.now)();
+  const leaseFailure = (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => {
+    leaseEvidence.failure = { reason, at: now() };
+    ports.leaseFailure?.(reason);
+  };
   const refreshLease = () => {
     if (closed) return Promise.reject(Error("edge_runtime_closed"));
     return (renewal ??= (async () => {
@@ -67,7 +78,7 @@ export async function createEdgeRuntime(
         ...(generation === undefined ? {} : { generation }),
       });
       if (lease.reason !== undefined) {
-        ports.leaseFailure?.(lease.reason === "fenced" ? "fenced" : "refused");
+        leaseFailure(lease.reason === "fenced" ? "fenced" : "refused");
         throw Error("edge_lease_unavailable");
       }
       if (
@@ -79,15 +90,19 @@ export async function createEdgeRuntime(
         Number(lease.expires) <= (ports.now ?? Date.now)() ||
         (generation !== undefined && lease.generation !== generation)
       ) {
-        ports.leaseFailure?.("invalid_lease");
+        leaseFailure("invalid_lease");
         throw Error("edge_lease_unavailable");
       }
       generation = Number(lease.generation);
+      leaseEvidence.renewedAt = now();
+      leaseEvidence.expires = Number(lease.expires);
     })()
       .catch((error) => {
         if (error !== null && typeof error === "object") leaseErrors.add(error);
         if (error instanceof Error && error.message === "central_transport_uncertain")
-          ports.leaseFailure?.("transport_uncertain");
+          leaseFailure("transport_uncertain");
+        else if (!(error instanceof Error && error.message === "edge_lease_unavailable"))
+          leaseEvidence.failure = { reason: "renewal_error", at: now() };
         throw error;
       })
       .finally(() => {
@@ -96,6 +111,34 @@ export async function createEdgeRuntime(
   };
   // Refuse before creating listeners or opening an attempt journal.
   await refreshLease();
+  bridge.runtimeStatus = () => {
+    const { renewedAt, expires, failure } = leaseEvidence;
+    const failedLast = failure !== null && (renewedAt === null || failure.at >= renewedAt);
+    const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
+    return {
+      mode: "central_edge",
+      lease: {
+        // A fenced/refused generation is never reacquired by this process; a
+        // transport failure is "renewal_failing" until the lease expiry passes.
+        state:
+          closed ||
+          (failedLast && ["fenced", "refused", "invalid_lease"].includes(failure.reason)) ||
+          (failedLast && expires !== null && now() >= expires)
+            ? "lost"
+            : failedLast
+              ? "renewal_failing"
+              : renewedAt !== null
+                ? "held"
+                : "unknown",
+        generation: generation ?? null,
+        last_renewed_at: iso(renewedAt),
+        expires_at: iso(expires),
+        last_failure: failure
+          ? { reason: failure.reason, at: new Date(failure.at).toISOString() }
+          : null,
+      },
+    };
+  };
   const journal = new SqliteJournal(ports.journalPath, ports.key);
   let routes: ReturnType<typeof composeEdgeRoutes>;
   let replica: Awaited<ReturnType<typeof openStoreReplica>>;

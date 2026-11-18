@@ -94,6 +94,14 @@ export class Store {
       )
       .all(id, after, since, limit + 1);
   }
+  /** Newest-first webhook attempt outcomes since `since`, bounded for status reads. */
+  recentDeliveryOutcomes(since: string, limit = 5000) {
+    return this.db
+      .prepare(
+        "SELECT subject,at,outcome FROM audit WHERE action='webhook.delivery' AND at>=? ORDER BY seq DESC LIMIT ?",
+      )
+      .all(since, limit) as { subject: string; at: string; outcome: string }[];
+  }
   latestDiagnostic(host) {
     const r = this.db
       .prepare("SELECT value FROM diagnostics WHERE host=? ORDER BY seq DESC LIMIT 1")

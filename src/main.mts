@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { startSidecar } from "./sidecar.mjs";
+import { buildIdentity } from "./status.mjs";
 const sidecar = await startSidecar();
 const shutdown = async () => {
   await sidecar.shutdown();
@@ -7,4 +8,6 @@ const shutdown = async () => {
 };
 process.once("SIGTERM", shutdown);
 process.once("SIGINT", shutdown);
-console.error("Kadenco 0.1.0-alpha.2 listening on loopback; no model calls in event worker");
+console.error(
+  `Kadenco ${buildIdentity().package_version ?? "unknown version"} listening on loopback; no model calls in event worker`,
+);

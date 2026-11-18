@@ -247,6 +247,7 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     revision = 0,
     fixtureChange = 0;
   let changeFixture: (() => void) | undefined;
+  let runtimeStatus: (() => { mode: string; lease: Record<string, unknown> }) | undefined;
   const ports: EdgeRuntimePorts = {
     epoch: 1,
     executor: "fixture-executor",
@@ -322,10 +323,16 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
           deliveries++;
         };
         bridge.fleetEvents.observe = async () => {};
-        return createEdgeRuntime(bridge, ports);
+        return createEdgeRuntime(bridge, ports).then((runtime) => {
+          runtimeStatus = bridge.runtimeStatus as typeof runtimeStatus;
+          return runtime;
+        });
       },
     });
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
+    assert.equal(runtimeStatus!().mode, "central_edge");
+    assert.equal(runtimeStatus!().lease.state, "held");
+    assert.equal(runtimeStatus!().lease.generation, 9);
     assert.equal(observations, 1);
     assert.equal(deliveries, 0);
     const renewals = generations.length;
@@ -351,9 +358,16 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     loseLeaseDuringCheckpoint = false;
     denied = false;
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
+    assert.equal(runtimeStatus!().lease.state, "held", "a later successful renewal is held again");
     denied = true;
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);
     assert.equal(leaseFailures.at(-1), "fenced");
+    const lost = runtimeStatus!().lease;
+    assert.equal(lost.state, "lost");
+    assert.equal((lost.last_failure as { reason: string }).reason, "fenced");
+    // /status bypasses the lease gate: without a bearer it is refused for
+    // authentication (401), not hidden behind the lost lease (503).
+    assert.equal((await fetch(`http://127.0.0.1:${port}/status`)).status, 401);
     assert.equal(generations[0], undefined);
     assert.ok(generations.slice(1).every((g) => g === 9));
     await sidecar.shutdown();
