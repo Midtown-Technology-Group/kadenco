@@ -676,6 +676,8 @@ test("a host that keeps failing or keeps paging is not rewritten every pass", as
   f.advance(25000); // 61 s since the failure was written
   await f.bridge.fleetEvents.observe();
   assert.equal(writes, 2, "the heartbeat persists the count");
+  const storedA = () => f.store.all("fleet_scan").find((r) => r.host === "a");
+  assert.equal(storedA().consecutiveFailures, 5, "with the current failure count");
   f.outage(false);
   // Paging: the in-memory cursor advances every pass without a write per page.
   const pages = [];
@@ -693,4 +695,54 @@ test("a host that keeps failing or keeps paging is not rewritten every pass", as
   assert.deepEqual(pages, [null, "page-1", "page-2", "page-3"], "each pass reads the next page");
   assert.equal(writes, 0, "page-to-page cursor moves wait for the heartbeat");
   assert.equal(host().scanning, true);
+});
+
+test("deferred paging recovers: restarts persist a cleared cursor; a restart resumes from the store", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  const pages = [];
+  let restart = false;
+  f.bridge.fleetReads.inventory = async (_o, p) => {
+    if (p.host !== "a") return { threads: [], next_cursor: null };
+    pages.push(p.cursor ?? null);
+    if (restart) {
+      restart = false;
+      throw Object.assign(Error("restart"), { reason: "invalid_inventory_cursor" });
+    }
+    return { threads: [], next_cursor: `page-${pages.length}` };
+  };
+  const storedA = () => f.store.all("fleet_scan").find((r) => r.host === "a");
+  await f.bridge.fleetEvents.observe(); // scanning starts: written with page-1
+  for (let i = 0; i < 3; i++) {
+    f.advance(12000);
+    await f.bridge.fleetEvents.observe();
+  }
+  assert.deepEqual(pages, [null, "page-1", "page-2", "page-3"]);
+  assert.equal(storedA().cursor, "page-1", "deferred: the store keeps the last written cursor");
+  // A process restart loses the deferred pass and resumes from the store.
+  f.bridge.fleetEvents.unwritten.clear();
+  f.advance(12000);
+  await f.bridge.fleetEvents.observe();
+  assert.equal(pages.at(-1), "page-1", "resumes from the persisted cursor (idempotent replay)");
+  // An inventory restart clears the checkpoint, persists it, and starts over.
+  restart = true;
+  f.advance(12000);
+  await f.bridge.fleetEvents.observe();
+  assert.equal(storedA().cursor, null, "the cleared checkpoint is written at once");
+  f.advance(12000);
+  await f.bridge.fleetEvents.observe();
+  assert.equal(pages.at(-1), null, "and paging restarts at page one");
+});
+
+test("deferred passes for keys no longer observed are evicted", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observe();
+  f.advance(12000);
+  await f.bridge.fleetEvents.observe(); // quiet: deferred
+  assert.ok(f.bridge.fleetEvents.unwritten.size > 0);
+  f.bridge.unsubscribe("eddie", f.p);
+  f.advance(121000);
+  await f.bridge.fleetEvents.observe();
+  assert.equal(f.bridge.fleetEvents.unwritten.size, 0);
 });

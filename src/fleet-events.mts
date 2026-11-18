@@ -450,6 +450,12 @@ export class FleetEvents {
     await this.observePass(host);
   }
   private async observePass(onlyHost?: string) {
+    // A visited key is written at least every heartbeat, so a deferred pass
+    // older than two heartbeats belongs to a subscription or host no longer
+    // observed (expired, unsubscribed, out of scope): drop it.
+    const now = this.bridge.now();
+    for (const [id, pass] of this.unwritten)
+      if (!(now - Date.parse(pass.at) < 2 * COVERAGE_HEARTBEAT_MS)) this.unwritten.delete(id);
     for (const sub of this.active()) {
       let hosts;
       try {
