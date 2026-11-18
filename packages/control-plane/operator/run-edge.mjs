@@ -5,8 +5,14 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { startupFailure, failureReporter } from "./startup-failure.mjs";
+import { exitController } from "./exit-controller.mjs";
 
 let sidecar, stateKey;
+// Signals and lease loss share one bounded exit; lease loss (75) wins.
+const requestExit = exitController({
+  shutdown: () => sidecar?.shutdown(),
+  zero: () => stateKey?.fill(0),
+});
 try {
   if (process.argv.length !== 3 || !isAbsolute(process.argv[2]))
     throw Error("supervisor_configuration_required");
@@ -60,14 +66,7 @@ try {
       // probing a 503 listener; the attempt journal survives for reconciliation.
       leaseLost: () => {
         console.error(JSON.stringify({ event: "edge_lease_lost_exit", local_fallback: false }));
-        void (async () => {
-          try {
-            await sidecar?.shutdown();
-          } finally {
-            stateKey?.fill(0);
-            process.exit(75);
-          }
-        })();
+        void requestExit(75);
       },
       checkpointFailure: failureReporter("edge_checkpoint_failure"),
     },
@@ -82,13 +81,8 @@ try {
     },
   });
   secrets = null;
-  const stop = async () => {
-    await sidecar.shutdown();
-    stateKey.fill(0);
-    process.exit(0);
-  };
-  process.once("SIGTERM", stop);
-  process.once("SIGINT", stop);
+  process.once("SIGTERM", () => void requestExit(0));
+  process.once("SIGINT", () => void requestExit(0));
   console.error("Kadenco central edge ready; original native routes and authorization retained");
 } catch (error) {
   await sidecar?.shutdown();

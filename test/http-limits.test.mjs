@@ -154,3 +154,25 @@ test("native HTTP redirects cannot leave the exact configured origin", async (t)
   await assert.rejects(transport.connect("local"));
   assert.equal(leaked, 0);
 });
+
+test("webhook effect guard runs after DNS and before any request is sent", async () => {
+  const calls = [];
+  await assert.rejects(
+    postWebhook(
+      "https://callbacks.example.com/hook",
+      {},
+      "{}",
+      ["callbacks.example.com"],
+      async () => {
+        calls.push("dns");
+        return [{ address: "93.184.216.34", family: 4 }];
+      },
+      () => {
+        calls.push("guard");
+        throw Error("edge_lease_unavailable");
+      },
+    ),
+    /edge_lease_unavailable/,
+  );
+  assert.deepEqual(calls, ["dns", "guard"]);
+});

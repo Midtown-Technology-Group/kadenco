@@ -5,6 +5,7 @@ const known = new Set([
   "supervisor_secret_input_too_large",
   "supervisor_identity_required",
   "central_activation_required",
+  "central_lease_capability_required",
   "central_transport_uncertain",
   "edge_lease_unavailable",
   "replica_inventory_changed",

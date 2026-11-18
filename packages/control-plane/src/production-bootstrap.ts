@@ -223,6 +223,10 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
   const status = await executorCall("status", {});
   if (status.mode !== "active" || status.epoch !== config.epoch)
     throw Error("central_activation_required");
+  // Read-only, before any claim: never let this edge displace a live
+  // predecessor through a Worker that ignores process-instance leases.
+  if (!Array.isArray(status.capabilities) || !status.capabilities.includes("edge_lease_instance"))
+    throw Error("central_lease_capability_required");
   bridge.deliveryHistory = (owner, id, after, limit) =>
     ownerCall(owner, "outbox_history", { epoch: config.epoch, id, after_sequence: after, limit });
   bridge.relayDiagnosticAccess = async (owner) => {

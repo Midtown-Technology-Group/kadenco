@@ -356,12 +356,12 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
       "lease loss during flush is not a second checkpoint failure",
     );
     loseLeaseDuringCheckpoint = false;
+    // A fenced generation is latched: even if central would grant again, this
+    // process stays down (no renewal is attempted) until it is restarted.
     denied = false;
-    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
-    assert.equal(runtimeStatus!().lease.state, "held", "a later successful renewal is held again");
-    denied = true;
+    const claimsBefore = generations.length;
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);
-    assert.equal(leaseFailures.at(-1), "fenced");
+    assert.equal(generations.length, claimsBefore, "no renewal after the loss latch");
     const lost = runtimeStatus!().lease;
     assert.equal(lost.state, "lost");
     assert.equal((lost.last_failure as { reason: string }).reason, "fenced");
@@ -372,6 +372,7 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     assert.ok(generations.slice(1).every((g) => g === 9));
     await sidecar.shutdown();
     sidecar = undefined;
+    denied = true;
     // Restart under denial must refuse before exposing even the health endpoint.
     await assert.rejects(
       startSidecar({
@@ -2078,6 +2079,7 @@ async function leaseFixture(
     attempts: () => attempts,
     lost: () => lost,
     lease: () => bridgeRef!.runtimeStatus!().lease,
+    effectGuard: () => (bridgeRef as unknown as { effectGuard: () => void }).effectGuard,
     instances,
     failures,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
@@ -2187,4 +2189,78 @@ test("an expired lease reports lost even while its renewal is still pending", as
     await sidecar?.shutdown().catch(() => {});
     f.cleanup();
   }
+});
+
+test("terminal loss latches: no further central calls, effects refused, no final flush", async () => {
+  let deny = false,
+    afterLoss: string[] = [];
+  const f = await leaseFixture((_n, p) => (deny ? { reason: "fenced" } : granted(p)));
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start({
+      async executorCall(op, p) {
+        if (deny) afterLoss.push(op);
+        if (op === "edge_lease") return deny ? { reason: "fenced" } : granted(p as never);
+        if (op === "outbox_pending") return { ids: [], next: null };
+        if (op === "replica_head") return { revision: 0 };
+        if (op === "replica_page") return { revision: 0, records: [], next: null };
+        if (op === "replica_receipt") return { committed: false };
+        if (op === "replica_apply") return { committed: true, revision: 1 };
+        throw Error("unexpected_operation");
+      },
+    });
+    deny = true;
+    // Loss seen by an HTTP-triggered renewal (not the heartbeat) still latches.
+    assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 503);
+    assert.equal(f.lost(), 1);
+    assert.equal(f.lease().state, "lost");
+    afterLoss = [];
+    assert.equal((await fetch(`http://127.0.0.1:${f.port}/healthz`)).status, 503);
+    await new Promise((resolve) => setTimeout(resolve, 2700));
+    assert.deepEqual(afterLoss, [], "no renewal, flush or other central call after the latch");
+    assert.throws(() => f.effectGuard()(), /edge_lease_unavailable/);
+    assert.equal(f.lost(), 1, "reported exactly once");
+    await sidecar.shutdown();
+    sidecar = undefined;
+    assert.deepEqual(afterLoss, [], "shutdown after loss skips the replica flush");
+  } finally {
+    await sidecar?.shutdown();
+    f.cleanup();
+  }
+});
+
+test("native dispatch is refused at the send point once the effect guard trips", async () => {
+  const { checkpointNativeEffects } = await import("../src/effect-checkpoint.ts");
+  let blocked = false,
+    authorized = 0;
+  const route = { authorizeDispatch: () => authorized++ };
+  const bridge = {
+    commands: {
+      session(r: typeof route, fn: (call: unknown) => unknown) {
+        return fn(async () => {
+          r.authorizeDispatch();
+          return "sent";
+        });
+      },
+    },
+    backend: { followup: async () => "followed" },
+  } as any;
+  const restore = checkpointNativeEffects(
+    bridge,
+    async () => {},
+    () => {
+      if (blocked) throw Error("edge_lease_unavailable");
+    },
+  );
+  const dispatch = () =>
+    bridge.commands.session(route, (call: (b: string, t: string, p: unknown) => unknown) =>
+      call("base", "orchestration.dispatchCommand", {}),
+    );
+  assert.equal(await dispatch(), "sent");
+  assert.equal(authorized, 1);
+  blocked = true;
+  await assert.rejects(dispatch(), /edge_lease_unavailable/);
+  assert.equal(authorized, 1, "the original authorization never ran after the guard tripped");
+  await assert.rejects(bridge.backend.followup(), /edge_lease_unavailable/);
+  restore();
 });

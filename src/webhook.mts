@@ -54,12 +54,21 @@ export async function resolveCallback(host, resolve = lookup, timeoutMs = 10000)
 
 // Resolve again on EVERY connection; pin the validated address through TLS lookup.
 // No redirects, proxies, private destinations, or unbounded response bodies.
-export async function postWebhook(url, headers, body, allowedHosts, resolve = lookup) {
+export async function postWebhook(
+  url,
+  headers,
+  body,
+  allowedHosts,
+  resolve = lookup,
+  beforeRequest: () => void = () => {},
+) {
   const u = callbackUrl(url, allowedHosts);
   const addresses = await resolveCallback(u.hostname, resolve);
   if (!addresses.length || addresses.some((a) => !publicAddress(a.address)))
     throw new Error("callback_address_denied");
   const target = addresses[0];
+  // Last synchronous check after DNS, immediately before any bytes are sent.
+  beforeRequest();
   return new Promise((accept, reject) => {
     const req = https.request(
       u,
