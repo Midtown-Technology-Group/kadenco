@@ -841,3 +841,29 @@ test("an old terminal failure with no later recovery still reads failing", async
   const j = statusReport(f.bridge, "eddie").journeys.event_delivery;
   assert.equal(j.state, "failing");
 });
+
+test("selection and comparison agree on outcome time after a clock rollback", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", { ...f.subscription, ttlMs: null });
+  const [sub] = f.store.all("subscription");
+  f.store.put("delivery", "d", {
+    id: "d",
+    subId: sub.id,
+    status: "stopped",
+    queuedAt: f.bridge.now(),
+    event: {
+      name: "t3.eddie.requested",
+      timestamp: new Date(f.bridge.now()).toISOString(),
+      data: {},
+    },
+  });
+  const base = new Date(f.bridge.now() - 60 * 60000);
+  const at = (m) => new Date(base.getTime() + m * 60000).toISOString();
+  // Inserted in this order (seq ascending): ack 12:04, stop 12:05, then a stop
+  // stamped 12:03 after the wall clock was rolled back.
+  const insert = f.store.db.prepare("INSERT INTO audit(at,action,subject,outcome) VALUES(?,?,?,?)");
+  insert.run(at(4), "webhook.delivery", "d", "acknowledged:204");
+  insert.run(at(5), "webhook.delivery", "d", "stopped:410");
+  insert.run(at(3), "webhook.delivery", "d", "stopped:410");
+  assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
+});

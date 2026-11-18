@@ -96,14 +96,16 @@ export class Store {
   }
   /** For exactly these delivery IDs (ownership precedes selection), the newest
    * acknowledgement, the newest terminal failure (stopped/revoked) and the
-   * newest failure of any kind, each found independently of age or volume. */
+   * newest failure of any kind, each found independently of age or volume.
+   * "Newest" is by outcome time (then sequence), matching how /status compares
+   * them, so a wall-clock rollback cannot make selection and comparison disagree. */
   latestDeliveryOutcomes(ids: string[]) {
     type Row = { seq: number; subject: string; at: string; outcome: string };
     if (!ids.length) return { ack: undefined, terminal: undefined, failure: undefined };
     const pick = (filter: string) =>
       this.db
         .prepare(
-          `SELECT seq,subject,at,outcome FROM audit WHERE action IN ('webhook.delivery','webhook.delivery.revoked') AND subject IN (SELECT value FROM json_each(?)) AND ${filter} ORDER BY seq DESC LIMIT 1`,
+          `SELECT seq,subject,at,outcome FROM audit WHERE action IN ('webhook.delivery','webhook.delivery.revoked') AND subject IN (SELECT value FROM json_each(?)) AND ${filter} ORDER BY at DESC, seq DESC LIMIT 1`,
         )
         .get(JSON.stringify(ids)) as Row | undefined;
     return {
