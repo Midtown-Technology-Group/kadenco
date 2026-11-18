@@ -105,7 +105,7 @@ export async function createEdgeRuntime(
   // Upper bound on the TTL this edge will assume; the Worker reports the TTL it
   // granted (ttl_ms) and the edge uses the smaller. A Worker that reports none
   // is assumed to grant the historical 10 s.
-  const leaseTtlMs = ports.leaseTtlMs ?? 30000;
+  const leaseTtlMs = ports.leaseTtlMs ?? 120000;
   const grantedTtl = (lease: Record<string, unknown>) =>
     Number.isSafeInteger(lease.ttl_ms) && Number(lease.ttl_ms) > 0
       ? Math.min(Number(lease.ttl_ms), leaseTtlMs)
@@ -194,10 +194,12 @@ export async function createEdgeRuntime(
   // claim has no effects, so a claim fenced by a predecessor's unexpired lease
   // (for example a crashed or restarting process) is retried with the same
   // instance until that lease can expire. Other refusals stop startup at once.
-  // The deadline is rechecked after every sleep. A grant already in flight when
+  // The default covers the 120 s lease TTL plus margin, so a successor started
+  // right after a crash or kill waits out its predecessor's lease. The deadline
+  // is rechecked after every sleep. A grant already in flight when
   // the deadline passes is accepted: it is a valid lease, and abandoning it
   // would only fence the next start for the rest of its TTL.
-  const startupDeadline = performance.now() + Math.max(0, ports.startupClaimMs ?? 45000);
+  const startupDeadline = performance.now() + Math.max(0, ports.startupClaimMs ?? 150000);
   for (let delay = 500; ; delay = Math.min(delay * 2, 4000)) {
     try {
       await refreshLease();

@@ -11,7 +11,10 @@ import { replicaSchema, replicaOperation } from "./replica-state.ts";
  * timeout (two consecutive timeouts can still exhaust it). A single edge, so
  * failover speed is not at stake. Never roll the Worker back to a shorter TTL
  * while an edge that trusts this one is running: stop the edge first. */
-export const EDGE_LEASE_TTL_MS = 30000;
+// Two minutes: a single edge rides through upstream network drops of up to
+// about 110 s without restarting (alpha.18's 30 s did not). The cost is that a
+// crashed or killed edge's successor waits up to this long for the old lease.
+export const EDGE_LEASE_TTL_MS = 120000;
 
 export type ServicePrincipal = {
   id: string;

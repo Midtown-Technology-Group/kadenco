@@ -78,9 +78,13 @@ authority changes remain separate decisions.
 ## Recovery maintenance
 
 Lease TTL compatibility: an edge trusts the lease TTL its Worker reports. Never
-restore a Worker that grants a shorter lease (for example alpha.17's 10 s after
-alpha.18's 30 s) while an edge that trusts the longer TTL is running: stop the
+restore a Worker that grants a shorter lease (for example alpha.18's 30 s after
+alpha.19's 120 s) while an edge that trusts the longer TTL is running: stop the
 edge first, then restore the Worker, then start the matching edge.
+
+A killed or crashed edge holds the central lease until its TTL runs out, so its
+successor waits up to 120 s (alpha.19) before it binds and reports healthy.
+Allow for that in supervisor startup and promotion readiness waits.
 
 Before stopping the managed edge, retain its exact task definition and pause its
 automatic revival. Verify exact process ancestry/creation identity and closed
