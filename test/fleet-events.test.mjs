@@ -648,3 +648,49 @@ test("a failure after skipped passes keeps the newest successful timestamps", as
   f.advance(48000); // t48 + 301 s
   assert.equal(host().coverage_freshness, "stale");
 });
+
+test("a host that keeps failing or keeps paging is not rewritten every pass", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  await f.bridge.fleetEvents.observe();
+  await f.bridge.deliver();
+  let writes = 0;
+  const put = f.store.put.bind(f.store);
+  f.store.put = (kind, id, value) => {
+    if (kind === "fleet_scan" && value.host === "a") writes++;
+    return put(kind, id, value);
+  };
+  const host = () =>
+    f.bridge.fleetEvents.status("eddie").subscriptions[0].hosts.find((h) => h.host === "a");
+  // Sustained failure: the transition is written, later failures are not.
+  f.advance(1000);
+  f.outage(true);
+  await f.bridge.fleetEvents.observe();
+  assert.equal(writes, 1, "failure start is written at once");
+  for (let i = 0; i < 3; i++) {
+    f.advance(12000);
+    await f.bridge.fleetEvents.observe();
+  }
+  assert.equal(writes, 1, "repeated failures wait for the heartbeat");
+  assert.equal(host().consecutive_failures, 4, "status still shows the current count");
+  f.advance(25000); // 61 s since the failure was written
+  await f.bridge.fleetEvents.observe();
+  assert.equal(writes, 2, "the heartbeat persists the count");
+  f.outage(false);
+  // Paging: the in-memory cursor advances every pass without a write per page.
+  const pages = [];
+  f.bridge.fleetReads.inventory = async (_o, p) => {
+    if (p.host === "a") pages.push(p.cursor ?? null);
+    return { threads: [], next_cursor: p.host === "a" ? `page-${pages.length}` : null };
+  };
+  f.advance(1000);
+  await f.bridge.fleetEvents.observe(); // recovery + scanning starts: written
+  writes = 0;
+  for (let i = 0; i < 3; i++) {
+    f.advance(12000);
+    await f.bridge.fleetEvents.observe();
+  }
+  assert.deepEqual(pages, [null, "page-1", "page-2", "page-3"], "each pass reads the next page");
+  assert.equal(writes, 0, "page-to-page cursor moves wait for the heartbeat");
+  assert.equal(host().scanning, true);
+});
