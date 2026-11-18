@@ -710,3 +710,35 @@ test("a success exactly at a pending attempt's start time counts as recovery", a
   f.advance(JOURNEY_STUCK_MS + 1000);
   assert.notEqual(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
 });
+
+test("a later retryable failure cannot hide an earlier terminal one; a later ack recovers", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  const [sub] = f.store.all("subscription");
+  const base = f.bridge.now() - 60000;
+  const central = (id, status, http, ms, seq) =>
+    f.store.put("delivery", id, {
+      id,
+      subId: sub.id,
+      status,
+      central_id: "c" + id,
+      httpStatus: http,
+      centralResultAt: ms,
+      centralResultSeq: seq,
+      event: { name: "t3.eddie.requested", timestamp: new Date(ms).toISOString(), data: {} },
+    });
+  central("A", "acknowledged", 204, base, 1);
+  central("B", "stopped", 410, base + 1000, 2);
+  // C: still retrying locally after a 500 (pending, recent, not stuck).
+  f.store.put("delivery", "C", {
+    id: "C",
+    subId: sub.id,
+    status: "pending",
+    event: { name: "t3.eddie.requested", timestamp: new Date(base + 2000).toISOString(), data: {} },
+  });
+  f.store.audit("webhook.delivery", "C", "pending:500");
+  assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
+  f.advance(STATUS_CACHE_MS);
+  central("D", "acknowledged", 204, f.bridge.now() - 1000, 3);
+  assert.notEqual(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
+});
