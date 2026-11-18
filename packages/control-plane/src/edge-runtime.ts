@@ -24,6 +24,8 @@ export type EdgeRuntimePorts = Omit<Parameters<typeof coordinatorForBridge>[1], 
   observationBinding: Parameters<typeof observeExisting>[1]["binding"];
   observationOwnerCall: Parameters<typeof observeExisting>[1]["ownerCall"];
   leaseFailure?: (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => void;
+  /** Central Worker/DO identity read by bootstrap before the runtime starts. */
+  centralStatus?: { release_version?: unknown; epoch?: unknown };
   checkpointFailure?: (
     reason:
       | "transport_uncertain"
@@ -58,6 +60,23 @@ export async function createEdgeRuntime(
   let closed = false;
   let renewal: Promise<void> | undefined;
   const leaseErrors = new WeakSet<object>();
+  // Evidence for the read-only /status endpoint; never consulted for authority.
+  // `seq` orders renewal outcomes exactly, even within one millisecond.
+  let evidenceSeq = 0;
+  const leaseEvidence: {
+    renewedAt: number | null;
+    renewedSeq: number;
+    expires: number | null;
+    failure: { reason: string; at: number; seq: number } | null;
+    // Last terminal refusal, kept apart so a later transient error cannot mask it.
+    terminal: { reason: string; at: number; seq: number } | null;
+  } = { renewedAt: null, renewedSeq: 0, expires: null, failure: null, terminal: null };
+  const now = () => (ports.now ?? Date.now)();
+  const leaseFailure = (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => {
+    leaseEvidence.failure = { reason, at: now(), seq: ++evidenceSeq };
+    if (reason !== "transport_uncertain") leaseEvidence.terminal = leaseEvidence.failure;
+    ports.leaseFailure?.(reason);
+  };
   const refreshLease = () => {
     if (closed) return Promise.reject(Error("edge_runtime_closed"));
     return (renewal ??= (async () => {
@@ -67,7 +86,7 @@ export async function createEdgeRuntime(
         ...(generation === undefined ? {} : { generation }),
       });
       if (lease.reason !== undefined) {
-        ports.leaseFailure?.(lease.reason === "fenced" ? "fenced" : "refused");
+        leaseFailure(lease.reason === "fenced" ? "fenced" : "refused");
         throw Error("edge_lease_unavailable");
       }
       if (
@@ -79,15 +98,20 @@ export async function createEdgeRuntime(
         Number(lease.expires) <= (ports.now ?? Date.now)() ||
         (generation !== undefined && lease.generation !== generation)
       ) {
-        ports.leaseFailure?.("invalid_lease");
+        leaseFailure("invalid_lease");
         throw Error("edge_lease_unavailable");
       }
       generation = Number(lease.generation);
+      leaseEvidence.renewedAt = now();
+      leaseEvidence.renewedSeq = ++evidenceSeq;
+      leaseEvidence.expires = Number(lease.expires);
     })()
       .catch((error) => {
         if (error !== null && typeof error === "object") leaseErrors.add(error);
         if (error instanceof Error && error.message === "central_transport_uncertain")
-          ports.leaseFailure?.("transport_uncertain");
+          leaseFailure("transport_uncertain");
+        else if (!(error instanceof Error && error.message === "edge_lease_unavailable"))
+          leaseEvidence.failure = { reason: "renewal_error", at: now(), seq: ++evidenceSeq };
         throw error;
       })
       .finally(() => {
@@ -96,6 +120,46 @@ export async function createEdgeRuntime(
   };
   // Refuse before creating listeners or opening an attempt journal.
   await refreshLease();
+  const central = {
+    release_version:
+      typeof ports.centralStatus?.release_version === "string"
+        ? ports.centralStatus.release_version
+        : null,
+    epoch: Number.isSafeInteger(ports.centralStatus?.epoch)
+      ? Number(ports.centralStatus!.epoch)
+      : null,
+    observed_at: new Date(now()).toISOString(),
+  };
+  bridge.runtimeStatus = () => {
+    const { renewedAt, renewedSeq, expires, failure, terminal } = leaseEvidence;
+    const failedLast = failure !== null && failure.seq > renewedSeq;
+    const terminalLast = terminal !== null && terminal.seq > renewedSeq;
+    const shown = terminalLast ? terminal : failure;
+    // Expiry is loss even while a renewal is still pending with no failure yet.
+    const expired = expires !== null && now() >= expires;
+    const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
+    return {
+      mode: "central_edge",
+      central,
+      lease: {
+        // A fenced/refused generation is never reacquired by this process; a
+        // transport failure is "renewal_failing" until the lease expiry passes.
+        state:
+          closed || terminalLast || expired
+            ? "lost"
+            : failedLast
+              ? "renewal_failing"
+              : renewedAt !== null
+                ? "held"
+                : "unknown",
+        generation: generation ?? null,
+        last_renewed_at: iso(renewedAt),
+        expires_at: iso(expires),
+        // Report the terminal refusal while it is still in force.
+        last_failure: shown ? { reason: shown.reason, at: new Date(shown.at).toISOString() } : null,
+      },
+    };
+  };
   const journal = new SqliteJournal(ports.journalPath, ports.key);
   let routes: ReturnType<typeof composeEdgeRoutes>;
   let replica: Awaited<ReturnType<typeof openStoreReplica>>;

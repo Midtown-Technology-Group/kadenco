@@ -31,6 +31,7 @@ import {
   conversationArgs,
 } from "./exchange.mjs";
 import { readReasons } from "./read-errors.mjs";
+import { statusReport } from "./status.mjs";
 import {
   resolveArgs,
   continueArgs,
@@ -877,6 +878,36 @@ export function httpServer(bridge) {
     if (req.url === "/healthz" && req.method === "GET") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end('{"status":"up","version":"0.11.0"}');
+      return;
+    }
+    if (req.url === "/status" && req.method === "GET") {
+      // Read-only: no audit or other writes, even for denials.
+      let owner, policy;
+      try {
+        policy = bridge.policy();
+        owner = principalFor(req.headers.authorization, policy);
+      } catch {
+        owner = undefined;
+      }
+      if (!owner) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end('{"reason":"authentication_required"}');
+        return;
+      }
+      try {
+        const report = statusReport(bridge, owner, policy);
+        if (!report) {
+          res.writeHead(403, { "content-type": "application/json" });
+          res.end('{"reason":"operator_status_only"}');
+          return;
+        }
+        const body = JSON.stringify(report);
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        res.end(body);
+      } catch {
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end('{"reason":"status_unavailable"}');
+      }
       return;
     }
     if (req.url !== "/mcp") {

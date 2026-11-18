@@ -33,6 +33,10 @@ Collaboration remains opt-in and disabled by default. The current identity verif
 
 Experimental GitHub source release. The private package flag deliberately prevents npm publication; install from source. Project code is AGPL-3.0-or-later, selected by the owner. Project: https://github.com/Midtown-Technology-Group/kadenco . No real fleet credentials, runtime files, private Git history or deployment evidence are included. EXPORT-MANIFEST.json is a historical record of the initial extraction, not a manifest for later revisions. Use the exact Git commit and lockfile for current source provenance.
 
+See [operational status](docs/status.md) for the authenticated `GET /status`
+endpoint and the `npm run status` acceptance check; it is the source of truth for
+what is deployed and which journeys currently work.
+
 See [fleet visibility and recovery](docs/fleet-visibility.md) for retained scan freshness, degraded reads, coverage notification coalescing and worker timing diagnostics.
 
 See [delivery evidence and scoped request diagnostics](docs/observability-goal.md) for the read-only event history, attribution boundaries, retention limits and public-project scout dispositions.

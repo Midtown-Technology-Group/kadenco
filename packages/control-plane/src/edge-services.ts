@@ -314,13 +314,21 @@ export async function reconcileCallbackReceipts(
     )
       throw Error("central_receipt_invalid");
     await ports.refreshLease();
-    const current = bridge.store.get("delivery", d.id);
-    if (current?.status !== "centralized" || current.central_id !== d.central_id) continue;
-    bridge.store.put("delivery", d.id, {
-      ...current,
-      status: receipt.state,
-      attempts: receipt.attempts,
-      httpStatus: receipt.http_status,
+    // Re-check and update in one transaction. The central result time travels
+    // with the replicated record, so /status evidence survives a replica rebuild
+    // and reflects when the outcome happened, not when it was reconciled.
+    bridge.store.transaction(() => {
+      const current = bridge.store.get("delivery", d.id);
+      if (current?.status !== "centralized" || current.central_id !== d.central_id) return;
+      bridge.store.put("delivery", d.id, {
+        ...current,
+        status: receipt.state,
+        attempts: receipt.attempts,
+        httpStatus: receipt.http_status,
+        centralResultAt: Number.isSafeInteger(receipt.result_at) ? receipt.result_at : null,
+        // Central audit order breaks same-millisecond ties between outcomes.
+        centralResultSeq: Number.isSafeInteger(receipt.result_seq) ? receipt.result_seq : null,
+      });
     });
   }
   return rows.length === 100 ? (rows.at(-1)!.id as string) : undefined;

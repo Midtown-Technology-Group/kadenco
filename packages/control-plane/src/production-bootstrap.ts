@@ -232,6 +232,7 @@ export async function createProductionRuntime(bridge: Bridge, input: BootstrapCo
     ownerCall,
     executorCall,
     leaseFailure: config.leaseFailure,
+    centralStatus: status,
     checkpointFailure: config.checkpointFailure,
     observationOwnerCall: (op, p) => ownerCall(config.observationOwner, op, p),
   });

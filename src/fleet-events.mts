@@ -83,6 +83,7 @@ export class FleetEvents {
         event,
         attempts: 0,
         nextAt: b.now(),
+        queuedAt: b.now(),
         status: "pending",
       })
     )

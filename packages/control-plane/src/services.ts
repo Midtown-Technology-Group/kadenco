@@ -358,11 +358,25 @@ export function serviceOperation(
         agent_completed: false,
       };
     }
+    // When (and in which audit order) the terminal outcome happened. Only for
+    // terminal states; the repeated partial-index predicate lets SQLite use
+    // audit_delivery_operations instead of scanning the audit table.
+    const terminal = ["acknowledged", "stopped", "revoked"].includes(r.state);
+    const result = terminal
+      ? sql
+          .exec<{ at: number; seq: number }>(
+            "SELECT at,seq FROM audit WHERE subject=? AND action IN ('outbox_claim','outbox_begin','outbox_result','outbox_stop') AND action IN ('outbox_result','outbox_stop') ORDER BY seq DESC LIMIT 1",
+            id,
+          )
+          .toArray()[0]
+      : undefined;
     return {
       id,
       state: r.state,
       attempts: r.attempts,
       http_status: r.http_status,
+      result_at: result ? result.at : null,
+      result_seq: result ? result.seq : null,
       delivery_acknowledged: r.state === "acknowledged",
       agent_completed: false,
     };

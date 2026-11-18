@@ -1,11 +1,9 @@
 # Central state port: reviewed boundary and staged implementation
 
-Status: source candidate only. Production remains alpha.6 on the existing
-laptop-owned sidecar. No central service, new principal, credential, subscription,
-agent, native task or migration was provisioned. Existing callback/signing identity,
-monitoring/passive inbox, target grants/expiry and encrypted state are untouched.
-The owner handoff acknowledgement is retained privately with exact native
-message/run evidence, separately from this implementation.
+Status: historical design record, written before the central edge was promoted.
+Do not read deployment state from this document. The running install reports its
+own build, runtime mode, lease state and journey evidence at the authenticated
+`GET /status` endpoint (see [operational status](status.md)).
 
 ## Decision
 

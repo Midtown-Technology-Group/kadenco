@@ -93,6 +93,7 @@ try {
     "caller-mcp.mjs",
     "caller.mjs",
     "pi-eddie.mjs",
+    "status-check.mjs",
     "worker-provenance.mjs",
   ])
     cpSync(join(root, "scripts", file), join(stage, "scripts", file));
@@ -108,7 +109,7 @@ try {
   cpSync(join(root, "package-lock.json"), join(stage, "npm-shrinkwrap.json"));
   const staged = {
     ...pkg,
-    scripts: { start: "node dist/main.mjs" },
+    scripts: { start: "node dist/main.mjs", status: "node scripts/status-check.mjs" },
     files: [
       "dist",
       "packages/control-plane/dist",

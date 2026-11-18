@@ -237,6 +237,7 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
   const config = JSON.parse((await import("node:fs")).readFileSync(configPath, "utf8"));
   writeFileSync(configPath, JSON.stringify({ ...config, port }));
   let denied = false,
+    transportFails = false,
     observations = 0,
     deliveries = 0;
   const generations: unknown[] = [];
@@ -247,6 +248,7 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     revision = 0,
     fixtureChange = 0;
   let changeFixture: (() => void) | undefined;
+  let runtimeStatus: (() => { mode: string; lease: Record<string, unknown> }) | undefined;
   const ports: EdgeRuntimePorts = {
     epoch: 1,
     executor: "fixture-executor",
@@ -257,6 +259,7 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     async executorCall(op, p) {
       if (op === "edge_lease") {
         generations.push((p as { generation?: number }).generation);
+        if (transportFails) throw Error("central_transport_uncertain");
         if (denied) return { reason: "fenced" };
         return {
           holder: "fixture-executor",
@@ -322,10 +325,16 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
           deliveries++;
         };
         bridge.fleetEvents.observe = async () => {};
-        return createEdgeRuntime(bridge, ports);
+        return createEdgeRuntime(bridge, ports).then((runtime) => {
+          runtimeStatus = bridge.runtimeStatus as typeof runtimeStatus;
+          return runtime;
+        });
       },
     });
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
+    assert.equal(runtimeStatus!().mode, "central_edge");
+    assert.equal(runtimeStatus!().lease.state, "held");
+    assert.equal(runtimeStatus!().lease.generation, 9);
     assert.equal(observations, 1);
     assert.equal(deliveries, 0);
     const renewals = generations.length;
@@ -351,9 +360,22 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     loseLeaseDuringCheckpoint = false;
     denied = false;
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 200);
+    assert.equal(runtimeStatus!().lease.state, "held", "a later successful renewal is held again");
     denied = true;
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);
     assert.equal(leaseFailures.at(-1), "fenced");
+    const lost = runtimeStatus!().lease;
+    assert.equal(lost.state, "lost");
+    assert.equal((lost.last_failure as { reason: string }).reason, "fenced");
+    // A later transient error must not mask the terminal refusal.
+    transportFails = true;
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);
+    assert.equal(runtimeStatus!().lease.state, "lost");
+    assert.equal((runtimeStatus!().lease.last_failure as { reason: string }).reason, "fenced");
+    transportFails = false;
+    // /status bypasses the lease gate: without a bearer it is refused for
+    // authentication (401), not hidden behind the lost lease (503).
+    assert.equal((await fetch(`http://127.0.0.1:${port}/status`)).status, 401);
     assert.equal(generations[0], undefined);
     assert.ok(generations.slice(1).every((g) => g === 9));
     await sidecar.shutdown();
@@ -1810,11 +1832,16 @@ test("central callback receipts repair local views without sending, regressions 
   let calls = 0,
     mode = "pending",
     drift = false;
+  let transactions = 0;
   const bridge = {
     store: {
       all: () => [...rows.values()],
       get: (_k: string, id: string) => rows.get(id),
       put: (_k: string, id: string, v: any) => rows.set(id, v),
+      transaction: (fn: () => unknown) => {
+        transactions++;
+        return fn();
+      },
     },
   } as any;
   const ports = {
@@ -1829,6 +1856,7 @@ test("central callback receipts repair local views without sending, regressions 
         state: mode,
         attempts: 1,
         http_status: mode === "acknowledged" ? 200 : null,
+        result_at: mode === "acknowledged" ? 1_700_000_000_000 : null,
         delivery_acknowledged: mode === "acknowledged",
         agent_completed: false,
       };
@@ -1845,6 +1873,11 @@ test("central callback receipts repair local views without sending, regressions 
   await reconcileCallbackReceipts(bridge, ports);
   assert.equal(rows.get("000").status, "revoked");
   assert.equal(rows.get("001").status, "acknowledged");
+  // The central result time travels with the replicated record (for /status);
+  // a drifted row is left exactly as it was.
+  assert.equal(rows.get("001").centralResultAt, 1_700_000_000_000);
+  assert.equal(rows.get("000").centralResultAt, undefined);
+  assert.ok(transactions >= 100, "each re-check and update is one transaction");
   const stable = structuredClone(rows.get("001"));
   mode = "pending";
   drift = false;
