@@ -5,6 +5,8 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.17
+
 - Fleet monitoring now requires only the principal's current read scope
   (`readHosts`, with project limits): `t3.fleet.activity` discovery and
   subscription, `get_fleet_event_status`, pending-question observation and
