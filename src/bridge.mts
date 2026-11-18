@@ -41,6 +41,9 @@ export class Bridge {
     limit: number,
   ) => Promise<Record<string, unknown>>;
   declare relayDiagnosticAccess?: (owner: string) => Promise<void>;
+  /** Set by a runtime composition (for example the central edge) to report its
+   * mode and lease evidence through the read-only /status endpoint. */
+  declare runtimeStatus?: () => import("./status.mjs").RuntimeStatus;
 
   constructor({
     store,
@@ -441,6 +444,7 @@ export class Bridge {
               event: outgoing,
               attempts: 0,
               nextAt: this.now(),
+              queuedAt: this.now(),
               status: "pending",
             });
           }
@@ -491,7 +495,12 @@ export class Bridge {
       const refreshed = this.store.get("subscription", d.subId);
       authorized = authorized && subscriptionActive(refreshed, this.now());
       if (!authorized) {
-        this.store.put("delivery", d.id, { ...d, status: "revoked" });
+        // Terminal and timed, atomically: /status sees the revocation as a
+        // failure. A separate action keeps webhook.delivery history to HTTP results.
+        this.store.transaction(() => {
+          this.store.put("delivery", d.id, { ...d, status: "revoked" });
+          this.store.audit("webhook.delivery.revoked", d.id, "revoked:0");
+        });
         continue;
       }
       const attempts = d.attempts + 1;
@@ -513,8 +522,12 @@ export class Bridge {
           : attempts >= 6 || (status >= 300 && status < 500 && ![408, 429].includes(status))
             ? "stopped"
             : "pending";
-      this.store.put("delivery", d.id, { ...sending, status: state, httpStatus: status });
-      this.store.audit("webhook.delivery", d.id, `${state}:${status}`);
+      // State and its timed audit evidence commit together, so a crash between
+      // them cannot leave a stopped delivery with no failure evidence.
+      this.store.transaction(() => {
+        this.store.put("delivery", d.id, { ...sending, status: state, httpStatus: status });
+        this.store.audit("webhook.delivery", d.id, `${state}:${status}`);
+      });
       const diagnosticHost = s.host ?? d.event.data?.host;
       if (typeof diagnosticHost === "string") {
         try {

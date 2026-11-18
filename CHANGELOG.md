@@ -5,6 +5,14 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+- Add authenticated, read-only `GET /status`: build identity, runtime mode, edge
+  lease state (held / renewal_failing / lost with the last failure reason), the
+  last verified ask-Eddie and event-delivery round trips with freshness and the
+  stage a stuck attempt reached, plus per-host last observation. It stays
+  reachable while the edge lease is lost. `npm run status` checks an installed
+  runtime and exits non-zero unless every journey has fresh evidence. Startup
+  logs the real package version instead of a hard-coded one.
+
 - Bind edge leases to process instances so a standby sharing an executor cannot
   steal a live generation. Preserve legacy leases during the schema upgrade and
   retain generation fencing across process takeover and lost-claim responses.

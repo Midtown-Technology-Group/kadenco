@@ -41,6 +41,7 @@
     "typecheck": "tsrs -p tsconfig.json --noEmit --fast && tsc -p tsconfig.json --noEmit",
     "release:check": "node scripts/release-check.mjs",
     "audit:gate": "node scripts/audit-gate.mjs",
+    "status": "node scripts/status-check.mjs",
     "secret-scan": "node scripts/secret-gate.mjs",
     "pre-pr": "npm run secret-scan"
   },
