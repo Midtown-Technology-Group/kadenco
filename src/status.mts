@@ -88,16 +88,21 @@ function askEddieJourney(bridge: Bridge, owner: string, now: number) {
       .filter(
         (d) => d.event?.name === "t3.eddie.requested" && d.event.data?.request_id === r.request_id,
       );
-  const complete = mine.filter((r) => r.acknowledgedAt !== undefined);
-  const last = complete.at(-1);
+  // The last completion is the newest acknowledgement, not the newest question.
+  const last = mine
+    .filter((r) => r.acknowledgedAt !== undefined)
+    .reduce((m, r) => (!m || r.acknowledgedAt > m.acknowledgedAt ? r : m), undefined);
   const latest = mine.at(-1);
   const latestStage = latest ? exchangeStage(latest, deliveriesFor(latest)) : null;
-  const unfinishedSince = latest && latestStage !== "acknowledged" ? latest.createdAt : null;
-  const stuck =
-    unfinishedSince !== null &&
-    now - unfinishedSince > JOURNEY_STUCK_MS &&
-    (!last || last.acknowledgedAt <= unfinishedSince) &&
-    latest.expiresAt > unfinishedSince;
+  // Any unfinished request (including one that expired unanswered) older than
+  // the stuck window, with no completion acknowledged after it was asked, keeps
+  // the journey failing even when newer requests arrive.
+  const stuck = mine.some(
+    (r) =>
+      r.acknowledgedAt === undefined &&
+      now - r.createdAt > JOURNEY_STUCK_MS &&
+      (!last || last.acknowledgedAt <= r.createdAt),
+  );
   return {
     state: !mine.length
       ? "unverified"
@@ -138,19 +143,20 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
   const mine = bridge.store.all("delivery").filter((d) => subs.has(d.subId));
   // Delivery records keep only their latest state; the audit log timestamps each
   // attempt. One bounded newest-first query keeps this cheap on the event loop.
-  const ids = new Set(mine.map((d) => d.id));
   let lastAck: { at: string; id: string } | null = null;
   let lastFailure: { at: string; outcome: string } | null = null;
   for (const row of bridge.store.recentDeliveryOutcomes(
+    mine.map((d) => d.id),
     new Date(now - 7 * 86400000).toISOString(),
   )) {
-    if (!ids.has(row.subject)) continue;
     if (String(row.outcome).startsWith("acknowledged:"))
       lastAck ??= { at: row.at, id: row.subject };
     else lastFailure ??= { at: row.at, outcome: String(row.outcome) };
     if (lastAck && lastFailure) break;
   }
-  const pending = mine.filter((d) => ["pending", "claimed", "sending"].includes(d.status));
+  const pending = mine.filter((d) =>
+    ["pending", "claimed", "sending", "centralized"].includes(d.status),
+  );
   const oldestPending = pending.reduce(
     (m, d) => Math.min(m, Date.parse(d.event?.timestamp) || Infinity),
     Infinity,

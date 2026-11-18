@@ -37,7 +37,13 @@ if (response.status !== 200) {
   console.error(`status-check: ${url} answered HTTP ${response.status}`);
   process.exit(2);
 }
-const s = await response.json();
+let s;
+try {
+  s = await response.json();
+} catch {
+  console.error(`status-check: ${url} returned an incomplete or invalid status body`);
+  process.exit(2);
+}
 if (json) console.log(JSON.stringify(s, null, 2));
 else {
   const lease = s.runtime?.lease ?? {};

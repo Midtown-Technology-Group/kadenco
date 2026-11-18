@@ -20,9 +20,16 @@ deliveries for its own subscriptions.
 | `journeys.event_delivery` | Last 2xx webhook acknowledgement and last failed attempt. A 2xx proves receipt by the callback endpoint, not agent execution                                                                                |
 | `hosts`                   | The newest stored diagnostic per readable host                                                                                                                                                              |
 
-A journey is `verified` when its last complete round trip is under 24 hours old,
-`stale` when older, `failing` when an attempt newer than the last success has been
-unfinished for 15 minutes, and `unverified` when there is no evidence at all.
+Journey states, evaluated in this order:
+
+- `failing`: an attempt with no later success has been unfinished for more than
+  15 minutes (any unanswered or expired ask-Eddie request; a pending or
+  centrally queued delivery), or the newest delivery outcome is a failure and
+  nothing is still pending.
+- `verified`: the last complete round trip finished within 24 hours.
+- `stale`: there is a complete round trip, but it is older than 24 hours.
+- `unverified`: no complete round trip yet. Recent pending attempts are reported
+  in `latest` / `pending` but are not yet proof that the journey works.
 
 ## Acceptance check
 

@@ -123,6 +123,7 @@ function fixture(t) {
   };
   return {
     bridge,
+    store,
     tokens,
     subscription,
     roundTrip,
@@ -271,4 +272,101 @@ test("status-check script reports the summary and exit code for an installed lis
   r = await run(undefined, f.tokens.eddie + "\n");
   assert.equal(r.status, 0);
   assert.match(r.stdout, /^overall\s+ok/m);
+});
+
+test("an older stuck request stays failing after newer requests arrive", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  await f.roundTrip();
+  f.advance(1000);
+  const ask = (question) =>
+    f.bridge.exchanges.ask("caller", {
+      request_id: randomUUID(),
+      run_id: "run-a",
+      question,
+      ttl_ms: 3600000,
+    });
+  await ask("A: never answered");
+  f.advance(JOURNEY_STUCK_MS + 1000);
+  await ask("B: just asked");
+  const s = statusReport(f.bridge, "eddie");
+  assert.equal(s.journeys.ask_eddie.state, "failing");
+  assert.equal(s.journeys.ask_eddie.latest.stage_reached, "asked");
+  // A completion acknowledged after A was asked clears it.
+  await f.roundTrip();
+  assert.equal(statusReport(f.bridge, "eddie").journeys.ask_eddie.state, "verified");
+});
+
+test("last verified is the newest acknowledgement, not the newest question", async (t) => {
+  const f = fixture(t);
+  const first = randomUUID(),
+    second = randomUUID();
+  for (const request_id of [first, second])
+    await f.bridge.exchanges.ask("caller", {
+      request_id,
+      run_id: "run-a",
+      question: request_id,
+      ttl_ms: 3600000,
+    });
+  const finish = async (request_id) => {
+    await f.bridge.exchanges.get("eddie", { request_id }, { reviewer: true });
+    const r = await f.bridge.exchanges.reply("eddie", { request_id, reply: "OK" });
+    await f.bridge.exchanges.acknowledge("caller", {
+      request_id,
+      run_id: "run-a",
+      reply_sha256: r.reply_sha256,
+    });
+  };
+  await finish(second);
+  f.advance(1000);
+  await finish(first);
+  assert.equal(statusReport(f.bridge, "eddie").journeys.ask_eddie.last_verified.request_id, first);
+});
+
+test("centrally reconciled delivery outcomes count, and other owners cannot crowd them out", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  await f.bridge.exchanges.ask("caller", {
+    request_id: randomUUID(),
+    run_id: "run-a",
+    question: "central",
+    ttl_ms: 3600000,
+  });
+  const [delivery] = f.store.all("delivery");
+  // Central edge: the local record is centralized, then a receipt reconciles it.
+  f.store.put("delivery", delivery.id, { ...delivery, status: "centralized" });
+  assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.pending, 1);
+  f.store.put("delivery", delivery.id, { ...delivery, status: "acknowledged" });
+  f.store.audit("webhook.delivery.central", delivery.id, "acknowledged:204");
+  // 6000 newer outcomes for someone else's deliveries must not hide ours.
+  f.store.transaction(() => {
+    for (let i = 0; i < 6000; i++) f.store.audit("webhook.delivery", `foreign:${i}`, "stopped:500");
+  });
+  const s = statusReport(f.bridge, "eddie");
+  assert.equal(s.journeys.event_delivery.state, "verified");
+  assert.equal(s.journeys.event_delivery.last_failure, null);
+});
+
+test("status-check exits 2 when a 200 response body is incomplete or invalid", async (t) => {
+  const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end('{"overall":');
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => new Promise((r) => server.close(r)));
+  const status = await new Promise((resolve) => {
+    const child = spawn(process.execPath, ["scripts/status-check.mjs"], {
+      env: {
+        ...process.env,
+        KADENCO_STATUS_URL: `http://127.0.0.1:${server.address().port}/status`,
+        KADENCO_STATUS_TOKEN: "fixture",
+      },
+      windowsHide: true,
+    });
+    child.stdin.end();
+    child.on("close", resolve);
+  });
+  assert.equal(status, 2);
 });

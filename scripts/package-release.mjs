@@ -109,7 +109,7 @@ try {
   cpSync(join(root, "package-lock.json"), join(stage, "npm-shrinkwrap.json"));
   const staged = {
     ...pkg,
-    scripts: { start: "node dist/main.mjs" },
+    scripts: { start: "node dist/main.mjs", status: "node scripts/status-check.mjs" },
     files: [
       "dist",
       "packages/control-plane/dist",
