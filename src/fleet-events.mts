@@ -31,6 +31,23 @@ export class FleetEvents {
   constructor(public bridge: Bridge) {}
   private observation: Promise<void> | undefined;
   private catchUp = false;
+  // Timestamps from passes whose write was skipped (see COVERAGE_HEARTBEAT_MS).
+  // In memory only: merged into the next written record and its coverage event,
+  // and overlaid in status, so reported ages stay exact between heartbeats.
+  private unwritten = new Map<
+    string,
+    { at: string; lastCompleteAt?: string; lastSuccessfulReadAt?: string }
+  >();
+  /** The stored coverage record with any newer unwritten pass timestamps. */
+  private scan(id: string) {
+    const record = this.bridge.store.get("fleet_scan", id),
+      newer = this.unwritten.get(id);
+    if (!record || !newer) return record;
+    const merged = { ...record };
+    for (const k of ["at", "lastCompleteAt", "lastSuccessfulReadAt"] as const)
+      if (newer[k] && (!merged[k] || newer[k] > merged[k])) merged[k] = newer[k];
+    return merged;
+  }
   // Monitoring is read authority (#55): a principal sees events for hosts and
   // projects in its current read scope, independent of any command grant.
   // Commands keep their own grant check immediately before any effect, so
@@ -131,7 +148,7 @@ export class FleetEvents {
         subscription_id: s.id,
         expires_at: subscriptionExpiry(s),
         hosts: hosts.map((host) => {
-          const record = b.store.get("fleet_scan", hash([s.id, host]));
+          const record = this.scan(hash([s.id, host]));
           return {
             host,
             state: record?.state ?? "not_checked",
@@ -181,8 +198,20 @@ export class FleetEvents {
       !!previous.lastCompleteAt === !!next.lastCompleteAt &&
       !!previous.lastSuccessfulReadAt === !!next.lastSuccessfulReadAt &&
       b.now() - Date.parse(previous.at) < COVERAGE_HEARTBEAT_MS
-    )
+    ) {
+      this.unwritten.set(id, {
+        at: next.at,
+        lastCompleteAt: next.lastCompleteAt,
+        lastSuccessfulReadAt: next.lastSuccessfulReadAt,
+      });
       return;
+    }
+    // A write (for example a failure right after skipped successful passes)
+    // keeps the newest successful timestamps, not the last persisted ones.
+    const newer = this.unwritten.get(id);
+    this.unwritten.delete(id);
+    for (const k of ["lastCompleteAt", "lastSuccessfulReadAt"] as const)
+      if (newer?.[k] && (!next[k] || newer[k] > next[k])) next[k] = newer[k];
     b.store.transaction(() => {
       if (previous?.state !== state || previous?.reason !== next.reason) {
         next.revision = (previous?.revision ?? 0) + 1;
