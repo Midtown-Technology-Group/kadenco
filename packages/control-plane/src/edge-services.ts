@@ -326,6 +326,8 @@ export async function reconcileCallbackReceipts(
         attempts: receipt.attempts,
         httpStatus: receipt.http_status,
         centralResultAt: Number.isSafeInteger(receipt.result_at) ? receipt.result_at : null,
+        // Central audit order breaks same-millisecond ties between outcomes.
+        centralResultSeq: Number.isSafeInteger(receipt.result_seq) ? receipt.result_seq : null,
       });
     });
   }
