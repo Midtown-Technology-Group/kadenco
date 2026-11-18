@@ -81,10 +81,23 @@ export function safeArchiveListing(entries, details) {
   )
     throw Error("release_unsafe_archive");
 }
+/**
+ * Environment for a child command. Windows PowerShell 5.1 started from
+ * PowerShell 7 inherits pwsh's PSModulePath and loads 7.x modules, which breaks
+ * its own cmdlets (the operator's local readiness checks always failed, so a
+ * deployment never verified). Let powershell.exe rebuild its default path.
+ */
+export function childEnv(command, env = process.env) {
+  if (!/(^|[\\/])powershell(\.exe)?$/i.test(command)) return env;
+  return Object.fromEntries(
+    Object.entries(env).filter(([k]) => k.toUpperCase() !== "PSMODULEPATH"),
+  );
+}
 function run(command, args, cwd, input) {
   const r = spawnSync(command, args, {
     cwd,
     input,
+    env: childEnv(command),
     encoding: "utf8",
     windowsHide: true,
     timeout: 180000,
@@ -267,7 +280,10 @@ export function githubPorts(plan, root, directory) {
           const name = stage.slice(6);
           if (!files[name]) throw Error("unsupported_release_asset");
           return release.assets.some((a) => a.name === name)
-            ? { done: true, receipt: { release: release.id, name, ...files[name] } }
+            ? {
+                done: true,
+                receipt: { release: release.id, name, ...files[name] },
+              }
             : { done: false };
         }
         if (release.assets.length !== Object.keys(files).length)
