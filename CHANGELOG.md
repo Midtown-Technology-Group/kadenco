@@ -5,11 +5,15 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
-- Fleet monitoring (`t3.fleet.activity`, coverage status, event history) now
-  requires only the principal's current read scope (`readHosts`, with project
-  limits). It no longer disappears when a command grant expires. Commands keep
-  their own expiring host/provider grant, checked immediately before any
-  effect; monitoring never authorizes execution (#55, owner-approved).
+- Fleet monitoring now requires only the principal's current read scope
+  (`readHosts`, with project limits): `t3.fleet.activity` discovery and
+  subscription, `get_fleet_event_status`, pending-question observation and
+  delivery, and event history (host-level `coverage_changed` history is readable
+  by any reader of that host; thread events keep the project check). It no
+  longer disappears when a command grant expires. Commands, answers and
+  continuations keep their own expiring host/provider grant, checked
+  immediately before any effect; monitoring never authorizes execution
+  (#55, owner-approved).
 - Recover the central edge from lease loss without operator action (#57). A
   startup claim fenced by a predecessor's unexpired lease is retried with the
   same instance for up to 30 s instead of failing into the supervisor restart

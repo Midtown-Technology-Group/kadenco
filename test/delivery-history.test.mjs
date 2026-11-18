@@ -270,3 +270,51 @@ test("MCP exposes read-only history and scoped request diagnostics through the e
   );
   assert.equal(b.store.all("command").length, 0);
 });
+
+test("project-limited readers can read host-level coverage history but not foreign thread events (#55)", async (t) => {
+  const b = fixture();
+  t.after(() => b.store.close());
+  const fleetSub = "fleet";
+  b.store.put("subscription", fleetSub, {
+    id: fleetSub,
+    owner: "owner",
+    name: "t3.fleet.activity",
+    scope: "authorized_fleet",
+    active: true,
+    expires: null,
+    nonExpiring: true,
+    url: "https://callbacks.example.com/fleet",
+    secret: "SECRET",
+  });
+  const put = (eventId, data) =>
+    b.store.put("delivery", fleetSub + ":" + eventId, {
+      id: fleetSub + ":" + eventId,
+      subId: fleetSub,
+      status: "pending",
+      attempts: 0,
+      nextAt: Date.now(),
+      event: { eventId, name: "t3.fleet.activity", data },
+    });
+  const coverage = "evt_" + "c".repeat(64),
+    thread = "evt_" + "d".repeat(64);
+  put(coverage, { host: "a", kind: "coverage_changed", state: "available" });
+  put(thread, { host: "a", kind: "task_finished", project_id: "other", thread_id: "t" });
+  const grants = [];
+  b.fleetReads = {
+    grant(owner, host, project) {
+      if (owner !== "owner" || host !== "a" || (project !== undefined && project !== "p"))
+        throw Object.assign(Error("forbidden"), { reason: "forbidden" });
+      return { grant: { host: "a", projectIds: ["p"] } };
+    },
+  };
+  b.fleetEvents = { grant: (...a) => grants.push(a) };
+  const history = await deliveryHistory(b, "owner", {
+    subscription_id: fleetSub,
+    event_id: coverage,
+  });
+  assert.ok(history);
+  await assert.rejects(
+    deliveryHistory(b, "owner", { subscription_id: fleetSub, event_id: thread }),
+    /forbidden/,
+  );
+});

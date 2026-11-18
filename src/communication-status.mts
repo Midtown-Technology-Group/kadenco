@@ -57,9 +57,10 @@ export async function communicationStatus(bridge, owner, input) {
           : lanes.some((s) => state(s) === "expired")
             ? "expired"
             : "inactive",
-        aggregate_event_subscription:
-          !reason &&
-          subscriptions.some((s) => s.name === "t3.fleet.activity" && state(s) === "active"),
+        // Monitoring follows read scope (#55); command denial stays in command_scope_reason.
+        aggregate_event_subscription: subscriptions.some(
+          (s) => s.name === "t3.fleet.activity" && state(s) === "active",
+        ),
         subscriptions: lanes.map((s) => ({
           subscription_id: s.id,
           state: state(s),

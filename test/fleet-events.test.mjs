@@ -42,7 +42,8 @@ function fixture(t) {
     runs: [{ runId: "r", status: "completed", completedAt: new Date(now + 1000).toISOString() }],
   };
   const calls = [],
-    questions = [];
+    questions = [],
+    requestOptions = [];
   const bridge = new Bridge({
     store,
     policy: () => policy,
@@ -65,7 +66,8 @@ function fixture(t) {
         throw Object.assign(Error("forbidden"), { reason: "forbidden" });
       return { grant };
     },
-    requests: async (_o, p) => ({
+    requests: async (_o, p, options = {}) => ({
+      ...(requestOptions.push(options), {}),
       project_id: "p",
       requests: questions.filter(
         (q) => !p.native_request_id || q.native_request_id === p.native_request_id,
@@ -111,6 +113,7 @@ function fixture(t) {
     data,
     calls,
     questions,
+    requestOptions,
     p,
     posts,
     grant,
@@ -568,4 +571,18 @@ test("hosts outside the current read scope are excluded and project scope still 
   f.policy.principals[0].readHosts = [{ host: "b" }];
   assert.deepEqual(f.bridge.fleetEvents.hosts("eddie"), ["b"]);
   assert.throws(() => f.bridge.fleetEvents.grant("eddie", "a"), /forbidden/);
+});
+
+test("pending questions are observed and delivered under read scope after command expiry (#55)", async (t) => {
+  const f = fixture(t);
+  f.data.thread.pendingRequestCount = 1;
+  f.questions.push({ native_request_id: "q", run_id: "r", live_answer_allowed: false });
+  await f.bridge.subscribe("eddie", f.p);
+  f.revoke(true); // the command grant is gone; read scope remains
+  await f.bridge.fleetEvents.observe();
+  const q = f.store.all("delivery").filter((d) => d.event.data.kind === "input_requested");
+  assert.equal(q.length, 1);
+  await f.bridge.deliver();
+  assert.equal(f.store.get("delivery", q[0].id).status, "acknowledged");
+  assert.ok(f.requestOptions.length && f.requestOptions.every((o) => o.readScoped === true));
 });

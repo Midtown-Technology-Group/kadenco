@@ -714,10 +714,14 @@ test("MCP 2.0 event discovery and subscriptions expose only the exact authorized
     return response.json();
   };
   assert.deepEqual((await rpc("caller", "events/list")).result.events, []);
-  assert.deepEqual((await rpc("reader", "events/list")).result.events, []);
+  // A read-scoped principal is offered aggregate fleet monitoring only (#55).
+  assert.deepEqual(
+    (await rpc("reader", "events/list")).result.events.map((e) => e.name),
+    ["t3.fleet.activity"],
+  );
   const list = await rpc("eddie", "events/list");
-  assert.equal(list.result.events[0].name, "t3.eddie.requested");
-  assert.deepEqual(list.result.events[0].inputSchema.required, ["inbox_id"]);
+  const inbox = list.result.events.find((e) => e.name === "t3.eddie.requested");
+  assert.deepEqual(inbox.inputSchema.required, ["inbox_id"]);
   assert.ok((await rpc("other", "events/subscribe", f.p)).error);
   assert.ok(
     (

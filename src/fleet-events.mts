@@ -242,12 +242,14 @@ export class FleetEvents {
       );
     }
     let cursor;
-    if (data.thread.pendingRequestCount > 0)
+    // Pending questions are read under read scope (#55); without a native read
+    // route (no command broker configured) they are simply not observed.
+    if (data.thread.pendingRequestCount > 0 && b.commands)
       do {
         const page = await b.commands.requests(
           sub.owner,
           { host, thread_id: t.threadId, ...(cursor ? { after_request_id: cursor } : {}) },
-          { forLane: true },
+          { readScoped: true },
         );
         if (page.project_id !== t.projectId)
           throw Object.assign(Error("identity_mismatch"), { reason: "identity_mismatch" });
@@ -438,10 +440,12 @@ export class FleetEvents {
         throw fail();
       this.grant(sub.owner, d.host, d.project_id, d.provider_instance_id);
       if (d.kind === "input_requested") {
+        if (!b.commands)
+          throw Object.assign(Error("source_unavailable"), { reason: "source_unavailable" });
         const page = await b.commands.requests(
           sub.owner,
           { host: d.host, thread_id: d.thread_id, native_request_id: d.native_request_id },
-          { forLane: true },
+          { readScoped: true },
         );
         if (
           page.project_id !== d.project_id ||
