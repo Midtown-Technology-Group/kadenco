@@ -2408,7 +2408,8 @@ test("a transient Worker forwarding fault is not lease loss", async () => {
     const generation = f.lease().generation;
     faults = 1;
     // Whichever renewal (heartbeat or request) meets the fault, it is transient.
-    while (!f.failures.includes("transport_uncertain")) {
+    for (let i = 0; !f.failures.includes("transport_uncertain"); i++) {
+      assert.ok(i < 200, "the injected fault was observed");
       await fetch(`http://127.0.0.1:${f.port}/healthz`);
       await new Promise((r) => setTimeout(r, 20));
     }

@@ -52,6 +52,26 @@ export async function resolveCallback(host, resolve = lookup, timeoutMs = 10000)
   }
 }
 
+/** Queue the request body only once TLS is established, re-running the effect
+ * guard at that moment: nothing (headers or body) is written to the socket
+ * before the final check, so a lease lost during the handshake sends nothing. */
+export function sendWhenSecure(req, body, guard: () => void, refuse: (error: unknown) => void) {
+  req.once("socket", (socket) => {
+    const send = () => {
+      try {
+        guard();
+      } catch (error) {
+        refuse(error);
+        req.destroy(error);
+        return;
+      }
+      req.end(body);
+    };
+    if (socket.encrypted && !socket.connecting && socket.authorized !== undefined) send();
+    else socket.once("secureConnect", send);
+  });
+}
+
 // Resolve again on EVERY connection; pin the validated address through TLS lookup.
 // No redirects, proxies, private destinations, or unbounded response bodies.
 export async function postWebhook(
@@ -95,8 +115,11 @@ export async function postWebhook(
         );
       },
     );
-    req.on("error", () => reject(new Error("callback_transport_failed")));
-    req.end(body);
+    let refused: unknown;
+    req.on("error", () => reject(refused ?? new Error("callback_transport_failed")));
+    sendWhenSecure(req, body, beforeRequest, (error) => {
+      refused = error;
+    });
   });
 }
 
