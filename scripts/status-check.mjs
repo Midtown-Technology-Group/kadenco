@@ -56,17 +56,21 @@ const expected = (lease, states) =>
         ? "ok"
         : "unverified";
 const journeyStates = [s?.journeys?.ask_eddie?.state, s?.journeys?.event_delivery?.state];
-const optionalText = (v) => v === null || v === undefined || typeof v === "string";
+// Present and string-or-null; nested objects are checked only when present.
+const text = (v) => v === null || typeof v === "string";
+const nested = (obj, key) => obj === undefined || obj === null || text(obj[key]);
 const leaseFits = (mode, lease) =>
   (mode === "standalone" && lease === "not_applicable") ||
   (mode === "central_edge" && lease !== "not_applicable");
 if (
   s?.schema !== 1 ||
   !leaseFits(s.runtime?.mode, s.runtime?.lease?.state) ||
-  !optionalText(s.build?.package_version) ||
-  !optionalText(s.build?.source_commit) ||
-  !optionalText(s.runtime?.lease?.last_failure?.reason) ||
-  !optionalText(s.runtime?.central?.release_version) ||
+  typeof s.build !== "object" ||
+  s.build === null ||
+  !text(s.build.package_version) ||
+  !text(s.build.source_commit) ||
+  !nested(s.runtime?.lease?.last_failure, "reason") ||
+  !nested(s.runtime?.central, "release_version") ||
   !journeyStates.every((x) => JOURNEY.includes(x)) ||
   !LEASE.includes(s.runtime?.lease?.state) ||
   !Array.isArray(s.hosts) ||

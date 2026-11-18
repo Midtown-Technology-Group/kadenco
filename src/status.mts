@@ -241,9 +241,15 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
     (lastAck === null ||
       lastFailure.ms > lastAck.ms ||
       (lastFailure.ms === lastAck.ms && lastFailure.order > lastAck.order));
-  // A terminal failure (stopped/revoked) stays failing until a later success;
-  // unrelated pending work only grants a grace period to retryable failures.
-  const terminalFailure = failedLast && /^(stopped|revoked):/.test(lastFailure.outcome);
+  // A terminal failure (stopped/revoked) stays failing until a later success,
+  // compared on its own so later retryable failures or unrelated pending work
+  // cannot hide it; retryable failures only get the pending grace period.
+  const lastTerminal = outcomes.findLast((o) => !o.ok && /^(stopped|revoked):/.test(o.outcome));
+  const terminalFailure =
+    lastTerminal !== undefined &&
+    (lastAck === null ||
+      lastTerminal.ms > lastAck.ms ||
+      (lastTerminal.ms === lastAck.ms && lastTerminal.order > lastAck.order));
   return {
     state: !mine.length
       ? "unverified"

@@ -497,7 +497,12 @@ export class Bridge {
       const refreshed = this.store.get("subscription", d.subId);
       authorized = authorized && subscriptionActive(refreshed, this.now());
       if (!authorized) {
-        this.store.put("delivery", d.id, { ...d, status: "revoked" });
+        // Terminal and timed, atomically: /status sees the revocation as a
+        // failure. A separate action keeps webhook.delivery history to HTTP results.
+        this.store.transaction(() => {
+          this.store.put("delivery", d.id, { ...d, status: "revoked" });
+          this.store.audit("webhook.delivery.revoked", d.id, "revoked:0");
+        });
         continue;
       }
       const attempts = d.attempts + 1;

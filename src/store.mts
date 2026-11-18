@@ -100,7 +100,7 @@ export class Store {
     if (!ids.length) return [];
     return this.db
       .prepare(
-        "SELECT seq,subject,at,outcome FROM audit WHERE action='webhook.delivery' AND at>=? AND subject IN (SELECT value FROM json_each(?)) ORDER BY seq DESC LIMIT ?",
+        "SELECT seq,subject,at,outcome FROM audit WHERE action IN ('webhook.delivery','webhook.delivery.revoked') AND at>=? AND subject IN (SELECT value FROM json_each(?)) ORDER BY seq DESC LIMIT ?",
       )
       .all(since, JSON.stringify(ids), limit) as {
       seq: number;

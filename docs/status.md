@@ -29,8 +29,9 @@ grants and active subscriptions are unchanged; the lease state is always current
 
 Journey states, evaluated in this order:
 
-- `failing`: an attempt with no later success has been unfinished for more than
-  15 minutes (any unanswered or expired ask-Eddie request; a pending or
+- `failing`: a terminal delivery outcome (`stopped`, `revoked`) with no later
+  acknowledgement, even while other deliveries are still pending; or an attempt
+  with no later success has been unfinished for more than 15 minutes (any unanswered or expired ask-Eddie request; a pending or
   centrally queued delivery), or the newest delivery outcome is a failure and
   nothing is still pending.
 - `verified`: the last complete round trip finished within 24 hours.
