@@ -241,10 +241,13 @@ function deliveryJourney(bridge: Bridge, owner: string, now: number) {
     (lastAck === null ||
       lastFailure.ms > lastAck.ms ||
       (lastFailure.ms === lastAck.ms && lastFailure.order > lastAck.order));
+  // A terminal failure (stopped/revoked) stays failing until a later success;
+  // unrelated pending work only grants a grace period to retryable failures.
+  const terminalFailure = failedLast && /^(stopped|revoked):/.test(lastFailure.outcome);
   return {
     state: !mine.length
       ? "unverified"
-      : stuck || (failedLast && !pending.length)
+      : stuck || terminalFailure || (failedLast && !pending.length)
         ? "failing"
         : fresh(now, ackMs)
           ? "verified"

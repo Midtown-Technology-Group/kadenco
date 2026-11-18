@@ -237,6 +237,7 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
   const config = JSON.parse((await import("node:fs")).readFileSync(configPath, "utf8"));
   writeFileSync(configPath, JSON.stringify({ ...config, port }));
   let denied = false,
+    transportFails = false,
     observations = 0,
     deliveries = 0;
   const generations: unknown[] = [];
@@ -258,6 +259,7 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     async executorCall(op, p) {
       if (op === "edge_lease") {
         generations.push((p as { generation?: number }).generation);
+        if (transportFails) throw Error("central_transport_uncertain");
         if (denied) return { reason: "fenced" };
         return {
           holder: "fixture-executor",
@@ -365,6 +367,12 @@ test("real sidecar boots the central runtime, fences HTTP and never runs local d
     const lost = runtimeStatus!().lease;
     assert.equal(lost.state, "lost");
     assert.equal((lost.last_failure as { reason: string }).reason, "fenced");
+    // A later transient error must not mask the terminal refusal.
+    transportFails = true;
+    assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status, 503);
+    assert.equal(runtimeStatus!().lease.state, "lost");
+    assert.equal((runtimeStatus!().lease.last_failure as { reason: string }).reason, "fenced");
+    transportFails = false;
     // /status bypasses the lease gate: without a bearer it is refused for
     // authentication (401), not hidden behind the lost lease (503).
     assert.equal((await fetch(`http://127.0.0.1:${port}/status`)).status, 401);

@@ -68,10 +68,13 @@ export async function createEdgeRuntime(
     renewedSeq: number;
     expires: number | null;
     failure: { reason: string; at: number; seq: number } | null;
-  } = { renewedAt: null, renewedSeq: 0, expires: null, failure: null };
+    // Last terminal refusal, kept apart so a later transient error cannot mask it.
+    terminal: { reason: string; at: number; seq: number } | null;
+  } = { renewedAt: null, renewedSeq: 0, expires: null, failure: null, terminal: null };
   const now = () => (ports.now ?? Date.now)();
   const leaseFailure = (reason: "transport_uncertain" | "fenced" | "refused" | "invalid_lease") => {
     leaseEvidence.failure = { reason, at: now(), seq: ++evidenceSeq };
+    if (reason !== "transport_uncertain") leaseEvidence.terminal = leaseEvidence.failure;
     ports.leaseFailure?.(reason);
   };
   const refreshLease = () => {
@@ -128,8 +131,10 @@ export async function createEdgeRuntime(
     observed_at: new Date(now()).toISOString(),
   };
   bridge.runtimeStatus = () => {
-    const { renewedAt, renewedSeq, expires, failure } = leaseEvidence;
+    const { renewedAt, renewedSeq, expires, failure, terminal } = leaseEvidence;
     const failedLast = failure !== null && failure.seq > renewedSeq;
+    const terminalLast = terminal !== null && terminal.seq > renewedSeq;
+    const shown = terminalLast ? terminal : failure;
     // Expiry is loss even while a renewal is still pending with no failure yet.
     const expired = expires !== null && now() >= expires;
     const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
@@ -140,9 +145,7 @@ export async function createEdgeRuntime(
         // A fenced/refused generation is never reacquired by this process; a
         // transport failure is "renewal_failing" until the lease expiry passes.
         state:
-          closed ||
-          (failedLast && ["fenced", "refused", "invalid_lease"].includes(failure.reason)) ||
-          expired
+          closed || terminalLast || expired
             ? "lost"
             : failedLast
               ? "renewal_failing"
@@ -152,9 +155,8 @@ export async function createEdgeRuntime(
         generation: generation ?? null,
         last_renewed_at: iso(renewedAt),
         expires_at: iso(expires),
-        last_failure: failure
-          ? { reason: failure.reason, at: new Date(failure.at).toISOString() }
-          : null,
+        // Report the terminal refusal while it is still in force.
+        last_failure: shown ? { reason: shown.reason, at: new Date(shown.at).toISOString() } : null,
       },
     };
   };

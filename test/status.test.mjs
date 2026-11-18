@@ -632,3 +632,27 @@ test("status-check exits 2 when a report contradicts itself or has malformed hos
   body = { ...ok, runtime: { mode: "central_edge", lease: { state: "held" } } };
   assert.equal(await run(), 0);
 });
+
+test("a terminal delivery failure is not hidden by unrelated pending work", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  const [sub] = f.store.all("subscription");
+  const base = f.bridge.now();
+  const put = (id, status, ts, extra = {}) =>
+    f.store.put("delivery", id, {
+      id,
+      subId: sub.id,
+      status,
+      event: { name: "t3.eddie.requested", timestamp: new Date(ts).toISOString(), data: {} },
+      ...extra,
+    });
+  put("A", "acknowledged", base, { central_id: "cA", httpStatus: 204, centralResultAt: base });
+  put("B", "stopped", base + 1000, {
+    central_id: "cB",
+    httpStatus: 410,
+    centralResultAt: base + 2000,
+  });
+  put("C", "pending", base + 3000);
+  f.advance(5000);
+  assert.equal(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
+});
