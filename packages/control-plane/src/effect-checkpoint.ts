@@ -10,7 +10,11 @@ export function checkpointNativeEffects(
 ) {
   const commands = bridge.commands,
     session = commands?.session,
-    backend = bridge.backend;
+    backend = bridge.backend,
+    previousGuard = commands?.effectGuard;
+  // Settings mutations use their own MCP client; they check this immediately
+  // before `configure`.
+  if (commands) commands.effectGuard = guard;
   if (commands && session)
     commands.session = (route, fn, options) =>
       session.call(
@@ -38,12 +42,15 @@ export function checkpointNativeEffects(
         return async (...args: Parameters<typeof backend.followup>) => {
           await checkpoint();
           guard();
-          return target.followup(...args);
+          // The backend re-checks immediately before its native send, after its
+          // own connect/read steps.
+          return target.followup(args[0], args[1], args[2], args[3], guard);
         };
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
   return () => {
+    if (commands) commands.effectGuard = previousGuard;
     if (commands && session) commands.session = session;
     bridge.backend = backend;
   };

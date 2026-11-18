@@ -101,9 +101,23 @@ export async function createEdgeRuntime(
     ports.leaseFailure?.(reason);
     if (reason !== "transport_uncertain") latchLoss();
   };
+  // One synchronous admission check for every central call and external effect:
+  // closed, latched loss, or (after startup) a lease past its expiry. Expiry is
+  // checked here, not only by the 2.5 s heartbeat sample.
+  const fence = () => {
+    if (closed) throw Error("edge_runtime_closed");
+    if (lossLatched) throw Error("edge_lease_unavailable");
+    if (started && expired()) {
+      latchLoss();
+      throw Error("edge_lease_unavailable");
+    }
+  };
   const refreshLease = () => {
-    if (closed) return Promise.reject(Error("edge_runtime_closed"));
-    if (lossLatched) return Promise.reject(Error("edge_lease_unavailable"));
+    try {
+      fence();
+    } catch (error) {
+      return Promise.reject(error);
+    }
     return (renewal ??= (async () => {
       const lease = await (ports.leaseCall ?? ports.executorCall)("edge_lease", {
         epoch: ports.epoch,
@@ -124,6 +138,13 @@ export async function createEdgeRuntime(
         (generation !== undefined && lease.generation !== generation)
       ) {
         leaseFailure("invalid_lease");
+        throw Error("edge_lease_unavailable");
+      }
+      // The transport may have taken a while: never publish a grant (or release
+      // waiting callers) after closure, latched loss, or the prior lease's expiry.
+      if (closed) throw Error("edge_runtime_closed");
+      if (lossLatched || (started && expired())) {
+        latchLoss();
         throw Error("edge_lease_unavailable");
       }
       generation = Number(lease.generation);
@@ -165,10 +186,29 @@ export async function createEdgeRuntime(
     }
   }
   started = true;
-  // Synchronous last check at external send points (native dispatch, webhook
-  // POST): no effect may start after loss is latched or the runtime closed.
+  // Every central call made from here on (coordinator, observation, delivery,
+  // receipts, replica) passes the same synchronous fence first; lease renewals
+  // are fenced inside refreshLease.
+  const fenced =
+    <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      fence();
+      return fn(...args);
+    };
+  ports = Object.freeze({
+    ...ports,
+    executorCall: fenced(ports.executorCall),
+    ownerCall: fenced(ports.ownerCall),
+    observationOwnerCall: fenced(ports.observationOwnerCall),
+  });
+  // Synchronous last check at external send points (native dispatch, followup,
+  // settings, webhook POST): the same fence, reported as lease unavailability.
   bridge.effectGuard = () => {
-    if (closed || lossLatched) throw Error("edge_lease_unavailable");
+    try {
+      fence();
+    } catch {
+      throw Error("edge_lease_unavailable");
+    }
   };
   const central = {
     release_version:

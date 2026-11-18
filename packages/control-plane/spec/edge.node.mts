@@ -2249,8 +2249,15 @@ test("native dispatch is refused at the send point once the effect guard trips",
         });
       },
     },
-    backend: { followup: async () => "followed" },
+    backend: {
+      followup: async (...a: unknown[]) => {
+        followArgs = a;
+        (a[4] as () => void)();
+        return "followed";
+      },
+    },
   } as any;
+  let followArgs: unknown[] = [];
   const restore = checkpointNativeEffects(
     bridge,
     async () => {},
@@ -2268,5 +2275,48 @@ test("native dispatch is refused at the send point once the effect guard trips",
   await assert.rejects(dispatch(), /edge_lease_unavailable/);
   assert.equal(authorized, 1, "the original authorization never ran after the guard tripped");
   await assert.rejects(bridge.backend.followup(), /edge_lease_unavailable/);
+  // The guard is also handed to the backend for its own last check before send.
+  blocked = false;
+  assert.equal(await bridge.backend.followup("s", "m", "r", "run"), "followed");
+  assert.equal(followArgs.length, 5);
+  assert.equal(typeof followArgs[4], "function");
   restore();
+});
+
+test("a late successful renewal after expiry releases nothing: waiters and effects refuse", async () => {
+  let clock = Date.now(),
+    hold = false,
+    release: (() => void) | undefined;
+  const grant = (p: Record<string, unknown>) => ({
+    holder: "fixture-executor",
+    instance: p.instance,
+    generation: 4,
+    expires: clock + 10000,
+  });
+  const f = await leaseFixture((_n, p) => grant(p));
+  let sidecar: { shutdown(): Promise<void> } | undefined;
+  try {
+    sidecar = await f.start({
+      now: () => clock,
+      async leaseCall(_op, p) {
+        if (!hold) return grant(p as Record<string, unknown>);
+        return new Promise((resolve) => {
+          release = () => resolve(grant(p as Record<string, unknown>));
+        });
+      },
+    });
+    assert.equal(f.lease().state, "held");
+    hold = true;
+    const waiting = fetch(`http://127.0.0.1:${f.port}/healthz`);
+    while (!release) await new Promise((r) => setTimeout(r, 10));
+    clock += 11000; // the prior lease expires while the renewal is in flight
+    assert.throws(() => f.effectGuard()(), /edge_lease_unavailable/, "expiry checked at admission");
+    release(); // central answers late with a perfectly valid grant
+    assert.equal((await waiting).status, 503, "the waiting caller is not released");
+    assert.equal(f.lease().state, "lost");
+    assert.equal(f.lost(), 1);
+  } finally {
+    await sidecar?.shutdown().catch(() => {});
+    f.cleanup();
+  }
 });

@@ -7,10 +7,15 @@ import { homedir } from "node:os";
 import { startupFailure, failureReporter } from "./startup-failure.mjs";
 import { exitController } from "./exit-controller.mjs";
 
-let sidecar, stateKey;
-// Signals and lease loss share one bounded exit; lease loss (75) wins.
+let sidecar, stateKey, starting;
+// Signals and lease loss share one bounded exit; lease loss (75) wins. Loss can
+// arrive while startup is still unwinding: wait for it to settle (bounded by
+// the controller's deadline) and close whatever sidecar it produced.
 const requestExit = exitController({
-  shutdown: () => sidecar?.shutdown(),
+  shutdown: async () => {
+    const started = sidecar ?? (await starting?.catch(() => undefined));
+    await started?.shutdown();
+  },
   zero: () => stateKey?.fill(0),
 });
 try {
@@ -50,7 +55,7 @@ try {
       import("../../../dist/local-client.mjs"),
     ]);
   process.env.T3_FLEET_DIR ??= join(homedir(), ".config", "mtg-t3-fleet");
-  sidecar = await startProductionSidecar({
+  sidecar = await (starting = startProductionSidecar({
     configPath: config.configPath,
     historicalStateDirectory: config.historicalStateDirectory,
     cacheStateDirectory: config.cacheStateDirectory,
@@ -79,7 +84,7 @@ try {
         backend = await withLocalFollowup(backend, policy.fleetHelperPath, policy.localClient);
       return backend;
     },
-  });
+  }));
   secrets = null;
   process.once("SIGTERM", () => void requestExit(0));
   process.once("SIGINT", () => void requestExit(0));

@@ -335,3 +335,21 @@ test("MCP settings failures preserve safe reasons and denied-operation audit", a
   assert.equal(rows.length, 4);
   assert.ok(rows.some((r) => r.outcome.includes("set_thread_speed_standard:request_id_conflict")));
 });
+
+test("an edge effect guard refuses the settings write before configure, as not attempted", async (t) => {
+  const f = fixture(t),
+    p = await args(f);
+  f.commands.effectGuard = () => {
+    throw Error("edge_lease_unavailable");
+  };
+  await assert.rejects(f.settings.standard("owner", p), /edge_lease_unavailable/);
+  assert.equal(f.writes, 0, "configure never ran");
+  delete f.commands.effectGuard;
+  const receipt = await f.settings.receipt("owner", {
+    host: "h",
+    thread_id: "t",
+    request_id: p.request_id,
+  });
+  assert.equal(receipt.state, "rejected");
+  assert.equal(receipt.submission_not_attempted, true);
+});

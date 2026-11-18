@@ -46,3 +46,28 @@ test("a rejected shutdown is reported without its text and still zeroes and exit
   assert.equal(h.zeroed(), 1);
   assert.deepEqual(h.reports, ["edge_shutdown_failed"]);
 });
+
+test("loss during startup waits for startup to settle and closes what it produced", async () => {
+  let resolveStart;
+  const starting = new Promise((r) => (resolveStart = r));
+  let closed = 0;
+  const exits = [];
+  const request = (
+    await import("../packages/control-plane/operator/exit-controller.mjs")
+  ).exitController({
+    shutdown: async () => {
+      const started = await starting;
+      await started?.shutdown();
+    },
+    zero: () => {},
+    exit: (code) => exits.push(code),
+    report: () => {},
+    timeoutMs: 1000,
+  });
+  const done = request(75);
+  assert.deepEqual(exits, [], "does not exit while startup is still unwinding");
+  resolveStart({ shutdown: async () => closed++ });
+  await done;
+  assert.equal(closed, 1);
+  assert.deepEqual(exits, [75]);
+});
