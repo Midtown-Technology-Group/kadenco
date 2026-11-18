@@ -322,6 +322,13 @@ export async function reconcileCallbackReceipts(
       attempts: receipt.attempts,
       httpStatus: receipt.http_status,
     });
+    // Separate action: local `webhook.delivery` history keeps its own format.
+    // /status reads both so centrally delivered events are visible evidence.
+    bridge.store.audit(
+      "webhook.delivery.central",
+      d.id,
+      `${receipt.state}:${receipt.http_status ?? 0}`,
+    );
   }
   return rows.length === 100 ? (rows.at(-1)!.id as string) : undefined;
 }

@@ -1824,11 +1824,13 @@ test("central callback receipts repair local views without sending, regressions 
   let calls = 0,
     mode = "pending",
     drift = false;
+  const audits: string[][] = [];
   const bridge = {
     store: {
       all: () => [...rows.values()],
       get: (_k: string, id: string) => rows.get(id),
       put: (_k: string, id: string, v: any) => rows.set(id, v),
+      audit: (...a: string[]) => audits.push(a),
     },
   } as any;
   const ports = {
@@ -1859,11 +1861,22 @@ test("central callback receipts repair local views without sending, regressions 
   await reconcileCallbackReceipts(bridge, ports);
   assert.equal(rows.get("000").status, "revoked");
   assert.equal(rows.get("001").status, "acknowledged");
+  // Each applied receipt leaves /status evidence; drifted rows record nothing.
+  assert.deepEqual(
+    audits.find((a) => a[1] === "001"),
+    ["webhook.delivery.central", "001", "acknowledged:200"],
+  );
+  assert.equal(
+    audits.some((a) => a[1] === "000"),
+    false,
+  );
+  assert.equal(audits.length, 99, "one page: 001-099 applied, 000 drifted");
   const stable = structuredClone(rows.get("001"));
   mode = "pending";
   drift = false;
   await reconcileCallbackReceipts(bridge, ports);
   assert.deepEqual(rows.get("001"), stable);
+  assert.equal(audits.length, 99, "already-reconciled rows are not re-audited");
   rows.clear();
   rows.set("one", { id: "one", status: "centralized", central_id: "central" });
   await assert.doesNotReject(

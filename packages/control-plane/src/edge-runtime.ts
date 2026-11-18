@@ -141,6 +141,8 @@ export async function createEdgeRuntime(
   bridge.runtimeStatus = () => {
     const { renewedAt, expires, failure } = leaseEvidence;
     const failedLast = failure !== null && (renewedAt === null || failure.at >= renewedAt);
+    // Expiry is loss even while a renewal is still pending with no failure yet.
+    const expired = expires !== null && now() >= expires;
     const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
     return {
       mode: "central_edge",
@@ -150,7 +152,7 @@ export async function createEdgeRuntime(
         state:
           closed ||
           (failedLast && ["fenced", "refused", "invalid_lease"].includes(failure.reason)) ||
-          (failedLast && expires !== null && now() >= expires)
+          expired
             ? "lost"
             : failedLast
               ? "renewal_failing"
