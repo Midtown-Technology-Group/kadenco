@@ -6,9 +6,11 @@ import {
   type NativeGrantScope,
 } from "./binding.ts";
 import { replicaSchema, replicaOperation } from "./replica-state.ts";
-/** Edge lease TTL. Long enough to ride out Durable Object latency spikes with
- * an 8 s renewal deadline and a 2.5 s heartbeat (two failed renewals in a row
- * no longer expire it); a single edge, so failover speed is not at stake. */
+/** Edge lease TTL. With an 8 s renewal deadline and a 2.5 s heartbeat it gives
+ * normal 2-3 s Durable Object replies ample room and absorbs an occasional
+ * timeout (two consecutive timeouts can still exhaust it). A single edge, so
+ * failover speed is not at stake. Never roll the Worker back to a shorter TTL
+ * while an edge that trusts this one is running: stop the edge first. */
 export const EDGE_LEASE_TTL_MS = 30000;
 
 export type ServicePrincipal = {
