@@ -601,6 +601,7 @@ test("status-check exits 2 when a report contradicts itself or has malformed hos
   const ok = {
     schema: 1,
     overall: "ok",
+    build: { package_version: "0.1.0-test", source_commit: null },
     runtime: { mode: "central_edge", lease: { state: "lost" } },
     journeys: { ask_eddie: { state: "verified" }, event_delivery: { state: "verified" } },
     hosts: [],
@@ -637,6 +638,8 @@ test("status-check exits 2 when a report contradicts itself or has malformed hos
     build: { source_commit: 42 },
   };
   assert.equal(await run(), 2, "malformed build identity");
+  body = { ...ok, runtime: { mode: "central_edge", lease: { state: "held" } }, build: undefined };
+  assert.equal(await run(), 2, "missing build identity");
   body = { ...ok, runtime: { mode: "central_edge", lease: { state: "held" } } };
   assert.equal(await run(), 0);
 });
@@ -741,4 +744,26 @@ test("a later retryable failure cannot hide an earlier terminal one; a later ack
   f.advance(STATUS_CACHE_MS);
   central("D", "acknowledged", 204, f.bridge.now() - 1000, 3);
   assert.notEqual(statusReport(f.bridge, "eddie").journeys.event_delivery.state, "failing");
+});
+
+test("a standalone revocation is a timed terminal failure, not a silent state change", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.subscription);
+  await f.roundTrip();
+  f.advance(1000);
+  await f.bridge.exchanges.ask("caller", {
+    request_id: randomUUID(),
+    run_id: "run-a",
+    question: "revoked mid-delivery",
+    ttl_ms: 3600000,
+  });
+  // The caller's binding is revoked before delivery: the row becomes revoked.
+  const caller = f.bridge.policy().principals.find((p) => p.id === "caller");
+  caller.eddieCaller.expiresAt = 0;
+  await f.bridge.deliver();
+  assert.ok(f.store.all("delivery").some((d) => d.status === "revoked"));
+  f.advance(STATUS_CACHE_MS);
+  const j = statusReport(f.bridge, "eddie").journeys.event_delivery;
+  assert.equal(j.state, "failing");
+  assert.match(j.last_failure.outcome, /^revoked:/);
 });
