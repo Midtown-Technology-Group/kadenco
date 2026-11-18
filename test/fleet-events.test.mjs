@@ -74,6 +74,15 @@ function fixture(t) {
     }),
   };
   bridge.fleetReads = {
+    // Mirrors FleetReader.grant: current readHosts and optional project scope.
+    grant: (owner, host, project) => {
+      const g = policy.principals
+        .find((x) => x.id === owner)
+        ?.readHosts?.find((x) => x.host === host);
+      if (!g || (project !== undefined && g.projectIds && !g.projectIds.includes(project)))
+        throw Object.assign(Error("forbidden"), { reason: "forbidden" });
+      return { route: { name: host }, grant: g };
+    },
     inventory: async (_o, p) => {
       calls.push(p);
       if (outage && p.host === "a") throw Error("secret source detail");
@@ -122,7 +131,7 @@ test("visibility diagnostics preserve timeout reasons, scan age, grant expiry an
   const a = status.subscriptions[0].hosts.find((h) => h.host === "a");
   assert.equal(a.command_grant_expires_at, "2026-11-19T00:00:00.000Z");
   assert.equal(a.last_complete_age_ms, 0);
-  assert.equal(a.monitoring_requires_live_command_grant, true);
+  assert.equal(a.monitoring_requires_live_command_grant, false);
   const delivery = f.store.diagnostics("a").find((r) => r.stage === "webhook");
   assert.equal(delivery.delivery_state, "acknowledged");
   assert.equal(delivery.http_status, 200);
@@ -163,7 +172,7 @@ test("one durable subscription covers existing and new threads; refresh/restart 
   assert.equal(f.store.all("command").length, 0);
   assert.equal(JSON.stringify(f.policy), policy);
 });
-test("scope, provider, project and owner are enforced at observation and delivery", async (t) => {
+test("read scope, project and owner are enforced at observation and delivery", async (t) => {
   const f = fixture(t);
   await assert.rejects(f.bridge.subscribe("other", f.p), /forbidden/);
   await f.bridge.subscribe("eddie", f.p);
@@ -176,7 +185,8 @@ test("scope, provider, project and owner are enforced at observation and deliver
     f.store.all("delivery").filter((d) => d.event.data.kind === "task_finished").length,
     1,
   );
-  f.revoke(true);
+  // Monitoring authority is read scope (#55): revoking it stops delivery.
+  f.policy.principals[0].readHosts = [];
   await f.bridge.deliver();
   assert.equal(f.posts.filter((e) => e.data).length, 0);
   assert.ok(f.store.all("delivery").every((d) => d.status === "revoked"));
@@ -251,11 +261,13 @@ test("unsubscribe, grant/provider change during reads and transient delivery fai
   const d = f.store.all("delivery").find((d) => d.event.data.kind === "task_finished");
   assert.equal(d.status, "pending");
   f.readFail(false);
-  f.grant.providerInstanceIds = [];
+  // Read-scope revocation (not a command-grant change) stops monitoring delivery.
+  const readHosts = f.policy.principals[0].readHosts;
+  f.policy.principals[0].readHosts = [];
   f.advance(30001);
   await f.bridge.deliver();
   assert.equal(f.store.get("delivery", d.id).status, "revoked");
-  f.grant.providerInstanceIds = ["opencode"];
+  f.policy.principals[0].readHosts = readHosts;
   f.bridge.unsubscribe("eddie", f.p);
   assert.equal(f.bridge.fleetEvents.status("eddie").subscriptions.length, 0);
 });
@@ -353,7 +365,7 @@ test("access failures remain unavailable despite retained coverage; revoked scop
     assert.equal(h.reason, reason);
     assert.ok(h.last_complete_at);
   }
-  f.revoke(true);
+  f.policy.principals[0].readHosts = [];
   assert.equal(f.bridge.fleetEvents.status("eddie").subscriptions[0].hosts.length, 0);
   await f.bridge.deliver();
   assert.equal(f.posts.filter((e) => e.data).length, 0);
@@ -404,8 +416,8 @@ test("thread authentication failure is not reduced to a generic partial read", a
 test("per-thread fleet authorization checks only the exact host and still rejects scope changes", (t) => {
   const f = fixture(t),
     calls = [],
-    grant = f.bridge.commands.grant;
-  f.bridge.commands.grant = (...a) => {
+    grant = f.bridge.fleetReads.grant;
+  f.bridge.fleetReads.grant = (...a) => {
     calls.push(a[1]);
     return grant(...a);
   };
@@ -528,4 +540,32 @@ test("host-local observation scans only its original host without changing subsc
   );
   assert.equal(f.store.all("subscription").length, 1);
   assert.ok(subscribed);
+});
+
+test("monitoring survives command-grant expiry; it never authorizes commands (#55)", async (t) => {
+  const f = fixture(t);
+  await f.bridge.subscribe("eddie", f.p);
+  f.revoke(true); // the separate permission to act expires or is revoked
+  assert.deepEqual(f.bridge.fleetEvents.hosts("eddie"), ["a", "b"]);
+  await f.bridge.fleetEvents.observe();
+  await f.bridge.deliver();
+  assert.ok(
+    f.posts.some((e) => e.data?.kind === "task_finished"),
+    "read-scoped monitoring still delivers",
+  );
+  assert.throws(() => f.bridge.commands.grant("eddie", "a"), /forbidden/, "commands stay denied");
+  const status = f.bridge.fleetEvents.status("eddie");
+  assert.equal(status.subscriptions[0].hosts[0].command_grant_expires_at, null);
+  assert.equal(status.subscriptions[0].hosts[0].monitoring_requires_live_command_grant, false);
+});
+
+test("hosts outside the current read scope are excluded and project scope still applies", async (t) => {
+  const f = fixture(t);
+  f.policy.principals[0].readHosts = [{ host: "a", projectIds: ["other"] }, { host: "b" }];
+  assert.deepEqual(f.bridge.fleetEvents.hosts("eddie"), ["a", "b"]);
+  assert.throws(() => f.bridge.fleetEvents.grant("eddie", "a", "p"), /forbidden/);
+  assert.ok(f.bridge.fleetEvents.grant("eddie", "b", "p"));
+  f.policy.principals[0].readHosts = [{ host: "b" }];
+  assert.deepEqual(f.bridge.fleetEvents.hosts("eddie"), ["b"]);
+  assert.throws(() => f.bridge.fleetEvents.grant("eddie", "a"), /forbidden/);
 });

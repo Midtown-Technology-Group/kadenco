@@ -15,36 +15,51 @@ export class FleetEvents {
   constructor(public bridge: Bridge) {}
   private observation: Promise<void> | undefined;
   private catchUp = false;
+  // Monitoring is read authority (#55): a principal sees events for hosts and
+  // projects in its current read scope, independent of any command grant.
+  // Commands keep their own grant check immediately before any effect, so
+  // monitoring still never authorizes execution.
   hosts(owner = undefined) {
     const b = this.bridge,
       p = b.policy().principals.find((p) => p.id === owner && p.enabled !== false);
-    if (!p || !b.fleetReads || !b.commands || p.eddieCaller || p.eddieHostCaller) throw fail();
+    if (!p || !b.fleetReads || p.eddieCaller || p.eddieHostCaller) throw fail();
     return (p.readHosts ?? [])
       .map((g) => g.host)
       .filter((host) => {
         try {
-          b.commands.grant(owner, host);
+          b.fleetReads.grant(owner, host);
           return true;
         } catch {
           return false;
         }
       });
   }
-  grant(owner, host, projectId = undefined, provider = undefined) {
+  // `provider` is accepted for call-site compatibility; read scope does not
+  // depend on the provider (command grants do, and are checked separately).
+  grant(owner, host, projectId = undefined, _provider = undefined) {
     const b = this.bridge,
       p = b.policy().principals.find((p) => p.id === owner && p.enabled !== false);
     if (
       !p ||
       !b.fleetReads ||
-      !b.commands ||
       p.eddieCaller ||
       p.eddieHostCaller ||
       !p.readHosts?.some((g) => g.host === host)
     )
       throw fail();
-    const { grant } = this.bridge.commands.grant(owner, host, projectId);
-    if (provider !== undefined && !grant.providerInstanceIds.includes(provider)) throw fail();
-    return grant;
+    try {
+      return b.fleetReads.grant(owner, host, projectId).grant;
+    } catch {
+      throw fail();
+    }
+  }
+  private commandGrantExpiry(owner, host) {
+    try {
+      const expires = this.bridge.commands?.grant(owner, host).grant.expiresAt;
+      return Number.isFinite(expires) ? new Date(expires).toISOString() : null;
+    } catch {
+      return null;
+    }
   }
   active(owner = undefined) {
     return this.bridge.store
@@ -121,16 +136,15 @@ export class FleetEvents {
             last_complete_age_ms: record?.lastCompleteAt
               ? Math.max(0, b.now() - Date.parse(record.lastCompleteAt))
               : null,
-            monitoring_requires_live_command_grant: true,
-            command_grant_expires_at: Number.isFinite(b.commands.grant(owner, host).grant.expiresAt)
-              ? new Date(b.commands.grant(owner, host).grant.expiresAt).toISOString()
-              : null,
+            monitoring_requires_live_command_grant: false,
+            // Informational: when the separate permission to act expires.
+            command_grant_expires_at: this.commandGrantExpiry(owner, host),
           };
         }),
       })),
       excluded_hosts: readable
         .filter((g) => !hosts.includes(g.host))
-        .map((g) => ({ host: g.host, reason: "live_command_scope_unavailable" })),
+        .map((g) => ({ host: g.host, reason: "read_scope_unavailable" })),
       execution_authority_changed: false,
       delivery_acknowledgement_is_agent_execution: false,
       consistency:

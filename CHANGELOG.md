@@ -5,6 +5,11 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+- Fleet monitoring (`t3.fleet.activity`, coverage status, event history) now
+  requires only the principal's current read scope (`readHosts`, with project
+  limits). It no longer disappears when a command grant expires. Commands keep
+  their own expiring host/provider grant, checked immediately before any
+  effect; monitoring never authorizes execution (#55, owner-approved).
 - Bind edge leases to process instances so a standby sharing an executor cannot
   steal a live generation. Preserve legacy leases during the schema upgrade and
   retain generation fencing across process takeover and lost-claim responses.
