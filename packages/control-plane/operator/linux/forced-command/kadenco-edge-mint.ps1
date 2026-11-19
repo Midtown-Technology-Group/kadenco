@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # kadenco-edge-mint: pairs with kadenco-edge-windows.sh. Runs every 5 minutes as
 # the T3 owner (user-level scheduled task, no elevation; Windows PowerShell 5.1
-# or 7). Issues a 15-minute eddie-t3-delivery T3 session for the Kadenco central
-# edge and copies T3's runtime metadata into $dir. Create $dir with inheritance
+# or 7). Issues two 15-minute eddie-t3-delivery T3 sessions (read; read+operate)
+# for the Kadenco central edge and copies T3's runtime metadata into $dir. Create $dir with inheritance
 # removed and access only for the owner, SYSTEM, Administrators and the edge's
 # local SSH account (read). Never logs the token.
 # --- configuration -----------------------------------------------------------
@@ -27,15 +27,19 @@ try {
   if (-not ($port -is [long] -or $port -is [int]) -or $port -lt 1 -or $port -gt 65535) { throw 'runtime port invalid' }
   Write-Atomic 'runtime.json' $runtime
 
-  $out = & $t3 auth session issue --base-dir $baseDir `
-    --scope orchestration:read --scope orchestration:operate --ttl 15m `
-    --subject eddie-t3-delivery --label 'Eddie T3 private delivery' --json 2>$null
-  if ($LASTEXITCODE) { throw "issue exit $LASTEXITCODE" }
-  $text = ($out | Out-String).Trim()
-  $issued = $text | ConvertFrom-Json
-  if (-not $issued.sessionId -or -not $issued.token -or $issued.subject -ne 'eddie-t3-delivery') { throw 'issue output invalid' }
-  Write-Atomic 'delivery.json' $text
-  Log "ok session=$($issued.sessionId) expires=$($issued.expiresAt) port=$port"
+  # One session per scope the edge requests, so a read-only request never
+  # receives operate authority.
+  foreach ($kind in @(@{ file = 'delivery-read.json'; scopes = @('--scope', 'orchestration:read') },
+                      @{ file = 'delivery.json'; scopes = @('--scope', 'orchestration:read', '--scope', 'orchestration:operate') })) {
+    $out = & $t3 auth session issue --base-dir $baseDir @($kind.scopes) --ttl 15m `
+      --subject eddie-t3-delivery --label 'Eddie T3 private delivery' --json 2>$null
+    if ($LASTEXITCODE) { throw "issue exit $LASTEXITCODE" }
+    $text = ($out | Out-String).Trim()
+    $issued = $text | ConvertFrom-Json
+    if (-not $issued.sessionId -or -not $issued.token -or $issued.subject -ne 'eddie-t3-delivery') { throw 'issue output invalid' }
+    Write-Atomic $kind.file $text
+  }
+  Log "ok expires=$($issued.expiresAt) port=$port"
 } catch {
   Log ('FAILED ' + ($_.Exception.Message -replace '[A-Za-z0-9_-]{40,}', '<redacted>'))
   exit 1

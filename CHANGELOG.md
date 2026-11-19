@@ -11,8 +11,12 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
   wait out the 120 s central lease), a root control script for status, verified
   stop/start, manifest-checked release install and config install, and the SSH
   forced commands that fleet hosts use to bound the edge's key (Linux, and
-  Windows through a pre-minted delivery session because Windows OpenSSH cannot
-  open key sessions for Entra ID accounts). Runbook:
+  Windows through pre-minted read and read+operate delivery sessions because
+  Windows OpenSSH cannot open key sessions for Entra ID accounts). The forced
+  commands accept only the edge's exact request strings and never evaluate them;
+  Linux revocation is limited to delivery sessions. The control script never
+  follows links in the service-writable directory, vets archives before
+  extraction and serializes changes. Runbook:
   `packages/control-plane/deployment/linux-edge.md`. No authorization changes.
 
 ## 0.1.0-alpha.25

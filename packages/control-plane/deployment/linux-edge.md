@@ -29,10 +29,13 @@ host route is projected into that policy as before.
 
 The supervisor reads three values (state key, executor bearer, owner MCP bearer)
 and the tunnel API key from a secret-store REST endpoint at every start, with a
-read-only API key. They reach `run-edge.mjs` once on private stdin, and the
-tunnel key and MCP authorization go into the tunnel client's environment. Nothing
-is written to disk, argv or logs. `edge.json` names the endpoint, key file,
-record identifiers and field labels.
+read-only API key. The endpoint must be HTTPS, or plain HTTP to a literal
+private or mesh address (for example over an encrypted overlay network), and
+redirects are refused, so the key cannot be forwarded elsewhere. The edge's
+values reach `run-edge.mjs` once on private stdin and are never written to disk,
+argv or logs. The tunnel client receives its API key and the MCP authorization
+in its environment (as on Windows); any process it starts would inherit them.
+`edge.json` names the endpoint, key file, record identifiers and field labels.
 
 ## Fleet host access
 
@@ -41,21 +44,25 @@ The edge's SSH key is authorized on every fleet host with
 possible) and `permitlisten="127.0.0.1:<caller port>"` for the reverse caller
 forward, and a forced command:
 
+Both wrappers compare the whole request string with the exact argument vectors
+the edge sends (`src/native-session.mts`) and never evaluate it, and refuse any
+request containing a newline or other control character.
+
 - **Linux hosts**: `forced-command/kadenco-edge-ssh LAUNCHER TOKEN_FILE BASE_DIR`.
-  Allows reading T3's runtime metadata, the existing fleet-read token, and
-  `auth session issue|revoke` for the `eddie-t3-delivery` subject with a
-  2-minute TTL, scopes `orchestration:read|operate`, the fixed label and base
-  directory. Everything else is refused.
+  Allows reading T3's runtime metadata, the existing fleet-read token, issuing a
+  2-minute `eddie-t3-delivery` session with exactly the read or read+operate
+  scopes the edge requests, and revoking a session only after `auth session
+  list` shows it is an `eddie-t3-delivery` session. Everything else is refused.
 - **Windows hosts** (OpenSSH Server with Git Bash as `DefaultShell`): Windows
   OpenSSH cannot open key-based sessions for Entra ID (AzureAD) accounts, so the
   key is authorized for a local service account with
   `forced-command/kadenco-edge-windows.sh`, and the owner runs
   `forced-command/kadenco-edge-mint.ps1` every 5 minutes as a user-level
-  scheduled task. The wrapper answers the edge's exact delivery request with the
-  pre-minted 15-minute session and treats revocation as a no-op. Trade-off: such
-  a session cannot be revoked per command, lives up to 15 minutes, and always
-  carries `orchestration:operate` (the edge still refuses dispatch on read-only
-  routes). Fill in only the configuration block of each template.
+  scheduled task. The task mints a read-only and a read+operate session; the
+  wrapper answers each of the edge's two delivery requests with the session of
+  the same scope and treats revocation as a no-op. Trade-off: such a session
+  cannot be revoked per command and lives up to 15 minutes. Fill in only the
+  configuration block of each template.
 
 If the edge host cannot reach a fleet host directly over the mesh, route that
 alias through another enrolled host with `ProxyJump`: add the jump target's
@@ -76,6 +83,21 @@ node /opt/kadenco/bin/kadenco-edge-ctl.mjs install-file SRC config|supervisor
 node /opt/kadenco/bin/kadenco-edge-ctl.mjs set-executor-expiry MS
 ```
 
+Every command except `status`, `manifest` and `get` holds a lock, so changes are
+serialized, and exits nonzero on refusal (including a `start` that does not reach
+ready). `status` counts the supervisor's `ready` only for systemd's current main
+process. Root never follows a link in the service-writable runtime directory:
+reads refuse symbolic links, writes go to a file root created exclusively and
+are renamed into place, and backups go to the root-only `/var/backups/kadenco`.
+Transfers are taken only from `/root/kadenco-xfer/kadenco-<32 hex>`.
+`install-release` accepts only regular files and directories under `NAME/`,
+extracts into a private staging directory, and verifies the manifest before
+publishing.
+
+`set-executor-expiry` is a startup gate: the supervisor refuses to start the
+edge after it. The running edge's executor expiry is `serviceExpiresAt` in
+`central-supervisor.json`, which renewal installs with `install-file`.
+
 **Restarts.** The edge does not release its central lease on exit; the lease
 expires 120 s later, and a successor started sooner retries inside its claim
 window. `stop` records the time and `start` waits until 130 s have passed, and
@@ -94,10 +116,10 @@ release with `set-release` and `start` again.
 
 **Policy renewal.** Follow [policy-renewal.md](policy-renewal.md). On a Linux
 edge, install the renewed `config.json` and `central-supervisor.json` with
-`install-file` and the new executor expiry with `set-executor-expiry` while the
+`install-file` and the new startup gate with `set-executor-expiry` while the
 edge is stopped, after `committed: true`. Host-caller credentials enforce their
 own `expiresAt` locally and must be extended to the new ceiling as well.
 
 **Rollback.** Every `set-release`, `install-file` and `set-executor-expiry`
-keeps a timestamped backup next to the file it replaces. Old release
+keeps a timestamped backup in `/var/backups/kadenco`. Old release
 directories stay until removed by the operator.
