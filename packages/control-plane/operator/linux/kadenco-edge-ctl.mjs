@@ -123,6 +123,15 @@ function checkPolicyWiring(supervisor = readJson(FILES.supervisor)) {
     fail("policy_path_mismatch");
 }
 
+/** Makes directory entries (a rename or link) durable. */
+function syncDir(dir) {
+  const fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
 /** Writes the whole buffer; writeSync may write fewer bytes than asked. */
 function writeAll(fd, data) {
   const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
@@ -150,6 +159,7 @@ function atomicWrite(path, text, owner, mode) {
     closeSync(fd);
   }
   renameSync(tmp, path);
+  syncDir(dirname(path));
 }
 /** Copies the current file into the root-only backup directory. */
 function backup(path) {
@@ -178,12 +188,16 @@ function backup(path) {
       );
       try {
         linkSync(tmp, target);
+        rmSync(tmp, { force: true });
+        // Durable before the caller replaces the active file.
+        syncDir(BACKUPS);
+        syncDir(dirname(BACKUPS));
         return target;
       } catch (e) {
         if (e.code !== "EEXIST") throw e;
       }
     }
-    fail("backup_name_unavailable");
+    throw Error("backup_name_unavailable");
   } finally {
     rmSync(tmp, { force: true });
   }
