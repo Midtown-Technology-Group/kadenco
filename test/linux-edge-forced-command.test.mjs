@@ -175,13 +175,18 @@ function windowsWrapper(f, account) {
   const path = join(f.root, "kadenco-edge-windows.sh");
   writeFileSync(path, filled);
   writeFileSync(join(minted, "runtime.json"), '{"port":3773}');
+  const in15 = new Date(Date.now() + 15 * 60000).toISOString();
   writeFileSync(
     join(minted, "delivery-read.json"),
-    '{"sessionId":"r1","scopes":["orchestration:read"]}',
+    JSON.stringify({ sessionId: "r1", scopes: ["orchestration:read"], expiresAt: in15 }, null, 2),
   );
   writeFileSync(
     join(minted, "delivery.json"),
-    '{"sessionId":"o1","scopes":["orchestration:read","orchestration:operate"]}',
+    JSON.stringify(
+      { sessionId: "o1", scopes: ["orchestration:read", "orchestration:operate"], expiresAt: in15 },
+      null,
+      2,
+    ),
   );
   return { path, minted };
 }
@@ -212,6 +217,17 @@ test(
         run([w.path], 'cat "$HOME/.t3/userdata/server-runtime.json"').stdout,
         '{"port":3773}',
       );
+
+      // A session that expires in under 4 minutes is not served, even from a new file.
+      writeFileSync(
+        join(w.minted, "delivery-read.json"),
+        JSON.stringify({
+          sessionId: "r2",
+          scopes: ["orchestration:read"],
+          expiresAt: new Date(Date.now() + 120000).toISOString(),
+        }),
+      );
+      assert.equal(run([w.path], issue(READ)).status, 1);
 
       // An old session is not served.
       const old = (Date.now() - 12 * 60000) / 1000;

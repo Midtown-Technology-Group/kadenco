@@ -44,8 +44,13 @@ fresh() { # file, max age seconds
   [ "$age" -ge -60 ] && [ "$age" -le "$2" ]
 }
 serve() { # minted session file
-  # Minted with a 15-minute TTL: at most 11 minutes old leaves 4 minutes.
+  # Minted with a 15-minute TTL: a file at most 11 minutes old is a backstop;
+  # the session's own expiresAt must leave at least 4 minutes.
   fresh "$1" 660 || { echo "kadenco-edge: no fresh delivery session; check the mint task" >&2; exit 1; }
+  expires=$(sed -n 's/.*"expiresAt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1)
+  end=$(date -d "$expires" +%s 2>/dev/null) || end=0
+  [ -n "$expires" ] && [ $((end - $(date +%s))) -ge 240 ] ||
+    { echo "kadenco-edge: delivery session expires too soon; check the mint task" >&2; exit 1; }
   exec cat "$1"
 }
 
