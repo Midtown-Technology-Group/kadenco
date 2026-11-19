@@ -20,6 +20,7 @@ if (JSON.parse(readFileSync(cfg.supervisorConfig, "utf8")).configPath !== cfg.co
   throw Error("policy_path_mismatch");
 const policy = JSON.parse(readFileSync(cfg.configPath, "utf8"));
 const port = policy.port ?? 41880;
+if (!Number.isInteger(port) || port < 1024 || port > 65535) throw Error("invalid_edge_port");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (event, fields = {}) =>
   console.log(JSON.stringify({ at: new Date().toISOString(), event, ...fields }));
