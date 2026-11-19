@@ -490,6 +490,79 @@ describe("authenticated operator policy renewal", () => {
       "forbidden",
     );
   });
+  it("never makes a fenced stored binding usable again", async () => {
+    const observation = (g: string, expires: number) => ({
+      project: "__authorized_host_observation__",
+      provider: "__observation__",
+      run: null,
+      grant: g.repeat(64),
+      revision: 1,
+      expires,
+    });
+    const subscribe = (id: string, b: object, configured: ControlPolicy) =>
+      call(
+        "subscribe_central",
+        {
+          epoch: 7,
+          id,
+          host: "remote",
+          thread_id: "thread",
+          binding: b,
+          expires: null,
+          name: "t3.thread.activity",
+          callback_reference: id,
+        },
+        configured,
+      );
+    expect((await subscribe("fenced", observation("b", soon), old)).body.stored).toBe(true);
+    // Tightening leaves the grant live but ends it before the stored binding.
+    const tightened = structuredClone(old);
+    tightened.principals[0]!.nativeGrants![1]!.expires = soon - day / 2;
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec(
+        "UPDATE auth_policy SET value=? WHERE id=1",
+        JSON.stringify(tightened),
+      );
+    });
+    const extended = structuredClone(tightened);
+    extended.revision++;
+    extended.principals[0]!.expiresAt = later;
+    extended.principals[0]!.nativeGrants![1]!.expires = later;
+    expect((await call("renew_configured_policy", input(extended), extended)).body.reason).toBe(
+      "forbidden",
+    );
+    // A retired fingerprint cannot come back: renew b -> d, then try d -> b.
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(old));
+      state.storage.sql.exec("DELETE FROM subscriptions");
+    });
+    expect((await subscribe("tracking", observation("b", soon), old)).body.stored).toBe(true);
+    expect((await subscribe("left", observation("b", soon - 1000), old)).body.stored).toBe(true);
+    const moved = structuredClone(old);
+    moved.revision++;
+    for (const a of moved.principals.slice(0, 2)) {
+      a.nativeGrants = [grant("local", "command", "a"), grant("remote", "observation", "d", later)];
+      a.expiresAt = later;
+    }
+    expect((await call("renew_configured_policy", input(moved), moved)).body.committed).toBe(true);
+    const back = structuredClone(moved);
+    back.revision++;
+    for (const a of back.principals.slice(0, 2))
+      a.nativeGrants = [grant("local", "command", "a"), grant("remote", "observation", "b", later)];
+    expect(
+      (
+        await call(
+          "renew_configured_policy",
+          {
+            request_id: "rollback-request",
+            expected_revision: 4,
+            expected_policy_sha256: enrollmentPolicyDigest(back),
+          },
+          back,
+        )
+      ).body.reason,
+    ).toBe("forbidden");
+  });
   it("permits dropping principals and keeping or shortening expiries", async () => {
     const p = next();
     p.principals.pop();

@@ -19,7 +19,8 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
   366 days from apply time; grants and thread budgets cannot outlast what they
   replace unless their principal is renewed. Renewal runs only while active,
   keeps the initiating owner live and binds its receipt to that owner's
-  credential. In the same transaction, standing subscriptions whose observation
+  credential. It is refused if it would make any stored binding (subscription,
+  command, host-link reference) usable again. In the same transaction, standing subscriptions whose observation
   binding tracks the replaced grant move to the renewed grant, so queued
   callbacks and receipts keep working after the edge restarts.
   `tighten_policy`, owner enrollment and `subscribe_central` are unchanged. `projectRenewalPolicy` builds the next

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { createHash } from "node:crypto";
-import type { NativeGrantScope } from "./binding";
+import { authorizeBinding, operationBinding, type NativeGrantScope } from "./binding";
 import {
   enrollmentPolicyDigest,
   type ControlPolicy,
@@ -70,6 +70,88 @@ function grantsRenewed(
     return false;
   };
   return next.every((_g, i) => assign(i, new Set()));
+}
+
+const COMMAND_KINDS = ["continue", "create", "answer", "settings_standard"];
+/** Renewal never makes a stored binding usable again. Every stored binding (a
+ * live subscription, a command, a host-link reference) that its owner cannot
+ * use under the current policy must stay unusable under the configured one,
+ * whatever the route: a fingerprint retired earlier, a grant tightened below
+ * the binding's expiry, an expired grant or principal. */
+function revivesStoredBinding(
+  sql: SqlStorage,
+  current: ControlPolicy,
+  configured: ControlPolicy,
+  now: number,
+) {
+  const revoked = new Set(
+    sql
+      .exec<{ id: string }>("SELECT id FROM revoked")
+      .toArray()
+      .map((r) => r.id),
+  );
+  const usable = (
+    policy: ControlPolicy,
+    owner: string | null,
+    host: string,
+    raw: string | null,
+    purpose: "observation" | "command" | undefined,
+  ) => {
+    const p = policy.principals.find((x) => x.id === owner && x.role === "owner");
+    if (!p || p.expiresAt <= now || revoked.has(p.id) || !p.hosts.includes(host)) return false;
+    try {
+      authorizeBinding(
+        operationBinding(raw ? JSON.parse(raw) : null),
+        p.scopes,
+        now,
+        purpose ? { host, purpose, grants: p.nativeGrants } : undefined,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const revived = (
+    owner: string | null,
+    host: string,
+    raw: string | null,
+    purpose: "observation" | "command" | undefined,
+  ) => !usable(current, owner, host, raw, purpose) && usable(configured, owner, host, raw, purpose);
+  const table = (name: string) =>
+    sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name=?", name).toArray()
+      .length > 0;
+  for (const r of sql
+    .exec<{ owner: string; host: string; binding: string; expires: number | null }>(
+      "SELECT owner,host,binding,expires FROM subscriptions WHERE active=1",
+    )
+    .toArray())
+    if (
+      (r.expires === null || r.expires > now) &&
+      revived(r.owner, r.host, r.binding, "observation")
+    )
+      return true;
+  for (const r of sql
+    .exec<{ originator: string | null; host: string; binding: string | null; kind: string }>(
+      "SELECT originator,host,binding,kind FROM commands",
+    )
+    .toArray())
+    if (
+      revived(
+        r.originator,
+        r.host,
+        r.binding,
+        COMMAND_KINDS.includes(r.kind) ? "command" : undefined,
+      )
+    )
+      return true;
+  if (table("host_link_refs"))
+    for (const r of sql
+      .exec<{ owner: string; host: string; binding: string }>(
+        "SELECT owner,host,binding FROM host_link_refs",
+      )
+      .toArray())
+      if (revived(r.owner, r.host, r.binding, "command")) return true;
+  return false;
 }
 
 /** The single observation grant a principal holds for `host`, if exactly one. */
@@ -284,6 +366,7 @@ export function policyRenewal(
     })
   )
     fail("forbidden");
+  if (revivesStoredBinding(sql, current, configured, now)) fail("forbidden");
   const receipt = {
     request_id: request,
     revision: configured.revision,

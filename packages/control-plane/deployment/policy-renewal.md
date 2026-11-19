@@ -32,6 +32,12 @@ refused unless, for every principal in the configured policy:
   expired (renewal does not revive). Migration principals keep their
   separate one-time reauthorization path.
 
+Renewal never makes a stored binding usable again. If a live subscription,
+command or host-link reference cannot be used by its owner under the current
+policy (a fingerprint retired earlier, a grant tightened below the binding's
+expiry, an expired grant or owner) but could be under the configured one, the
+renewal is refused. Unsubscribe or otherwise retire such records first.
+
 Principals can be dropped, but the initiating owner must stay live so it can
 reconcile its receipt. The fleet must not change. Renewal runs only while the
 control plane is `active`: staging may hold an uploaded recovery import and a
