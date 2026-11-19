@@ -131,9 +131,30 @@ function atomicWrite(path, text, owner, mode) {
 /** Copies the current file into the root-only backup directory. */
 function backup(path) {
   mkdirSync(BACKUPS, { recursive: true, mode: 0o700 });
-  const target = join(BACKUPS, `${basename(path)}.${stamp()}.${randomBytes(3).toString("hex")}`);
-  atomicWrite(target, readSafe(path), [0, 0], 0o600);
-  return target;
+  const content = readSafe(path);
+  // Created exclusively under its final name: an existing backup is never replaced.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const target = join(BACKUPS, `${basename(path)}.${stamp()}.${randomBytes(6).toString("hex")}`);
+    let fd;
+    try {
+      fd = openSync(
+        target,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        0o600,
+      );
+    } catch (e) {
+      if (e.code === "EEXIST") continue;
+      throw e;
+    }
+    try {
+      writeSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    return target;
+  }
+  fail("backup_name_unavailable");
 }
 /** A transfer file: a fixed-pattern name directly in the root-only directory. */
 function transferPath(p) {
