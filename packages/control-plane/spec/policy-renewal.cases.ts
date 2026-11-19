@@ -61,7 +61,8 @@ function next(): ControlPolicy {
   const p = structuredClone(old);
   p.revision++;
   for (const a of p.principals.slice(0, 2)) {
-    a.hosts = ["local"];
+    // The owner drops a host; the executor stays fleet-wide (see host links).
+    a.hosts = a.role === "executor" ? ["local", "remote"] : ["local"];
     a.nativeGrants = [grant("local", "command", "c", later)];
     a.expiresAt = later;
   }
@@ -625,6 +626,66 @@ describe("authenticated operator policy renewal", () => {
     expect((await call("renew_configured_policy", input(moved), moved)).body.reason).toBe(
       "forbidden",
     );
+  });
+  it("never turns a fleet-wide executor into a host-bound one", async () => {
+    const p = next();
+    p.principals[1]!.hosts = ["local"];
+    expect((await call("renew_configured_policy", input(p), p)).body.reason).toBe("forbidden");
+  });
+  it("another owner gaining the renewed fingerprint does not block a renewal", async () => {
+    const withSecond = structuredClone(old);
+    withSecond.principals.push({
+      ...structuredClone(old.principals[0]!),
+      id: "owner2",
+      tokenSha256: sha("synthetic-owner2"),
+      hosts: ["remote"],
+      nativeGrants: [grant("remote", "observation", "e")],
+    });
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec(
+        "UPDATE auth_policy SET value=? WHERE id=1",
+        JSON.stringify(withSecond),
+      );
+    });
+    const binding = {
+      project: "__authorized_host_observation__",
+      provider: "__observation__",
+      run: null,
+      grant: "b".repeat(64),
+      revision: 1,
+      expires: soon,
+    };
+    expect(
+      (
+        await call(
+          "subscribe_central",
+          {
+            epoch: 7,
+            id: "standing",
+            host: "remote",
+            thread_id: "thread",
+            binding,
+            expires: null,
+            name: "t3.thread.activity",
+            callback_reference: "standing",
+          },
+          withSecond,
+        )
+      ).body.stored,
+    ).toBe(true);
+    // A route change moves every principal's remote observation grant to "d".
+    const moved = structuredClone(withSecond);
+    moved.revision++;
+    for (const a of moved.principals.filter((x) => x.role !== "migration")) {
+      a.expiresAt = later;
+      a.nativeGrants = a.nativeGrants!.map((g) =>
+        g.host === "remote" ? grant("remote", "observation", "d", later) : { ...g, expires: later },
+      );
+    }
+    expect((await call("renew_configured_policy", input(moved), moved)).body).toMatchObject({
+      committed: true,
+      rebound_subscriptions: 1,
+    });
   });
   it("permits dropping principals and keeping or shortening expiries", async () => {
     const p = next();

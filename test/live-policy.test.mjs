@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, renameSync, rmSync, utimesSync } from "node:fs";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -13,7 +13,11 @@ function fixture(t) {
   const state = join(dir, "state");
   mkdirSync(state);
   const path = join(dir, "policy.json");
-  const write = (port, target = path) =>
+  // Each write gets a distinct modification time, as writes that are not
+  // within one filesystem timestamp tick do (Windows ticks every ~15 ms; edits
+  // inside one tick are bounded by the policy's max age instead).
+  let tick = Date.now() / 1000;
+  const write = (port, target = path) => {
     writeFileSync(
       target,
       JSON.stringify({
@@ -25,6 +29,9 @@ function fixture(t) {
         sessions: [],
       }),
     );
+    tick += 1;
+    utimesSync(target, tick, tick);
+  };
   write(41001);
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return { dir, path, write };

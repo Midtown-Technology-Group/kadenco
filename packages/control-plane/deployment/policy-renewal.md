@@ -27,14 +27,16 @@ refused unless, for every principal in the configured policy:
   beside the fingerprint it replaces or borrow another grant's scope or expiry,
   and a retained fingerprint can only renew its own predecessor. The fingerprint
   may differ;
+- a fleet-wide executor stays fleet-wide (host links admit only executors bound
+  to a single host, so narrowing to one host would grant link access);
 - only an owner or executor expiry moves later, to at most 366 days from apply
   time, never for a revoked principal and never for one that has already
   expired (renewal does not revive). Migration principals keep their
   separate one-time reauthorization path.
 
 Renewal never makes a stored binding usable again. If a live subscription
-(as rebound), command or host-link reference cannot be used by an owner or
-executor under the current policy (a fingerprint retired earlier, a grant tightened below the binding's
+(as rebound), command or host-link reference cannot be used by its recorded
+owner or by an executor under the current policy (a fingerprint retired earlier, a grant tightened below the binding's
 expiry, an expired grant or principal) but could be under the configured one, the
 renewal is refused. Unsubscribe or otherwise retire such records first.
 

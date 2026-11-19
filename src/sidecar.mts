@@ -83,12 +83,15 @@ export function livePolicy(
       const s = fstatSync(fd, { bigint: true });
       const identity = [s.size, s.mtimeNs, s.ctimeNs, s.ino, s.dev].join(":");
       const now = monotonic();
-      if (parsed?.identity !== identity || !(now - parsed.at < maxAgeMs))
+      if (parsed?.identity !== identity || !(now - parsed.at < maxAgeMs)) {
+        // A failed read forgets the old value, so no later file can match it.
+        parsed = undefined;
         parsed = {
           identity,
           at: now,
           value: configSchema.parse(JSON.parse(readFileSync(fd, "utf8"))),
         };
+      }
     } finally {
       closeSync(fd);
     }

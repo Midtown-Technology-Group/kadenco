@@ -7,6 +7,10 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## 0.1.0-alpha.25
 
+- `livePolicy` forgets its cached value when a read fails to parse, and its
+  test no longer assumes every write changes the file's timestamp (Windows
+  file times tick about every 15 ms).
+
 - Add an owner-only central policy renewal (`policy_renewal_challenge`,
   `renew_configured_policy`, `policy_renewal_receipt`). Every central principal
   has an expiry and the durable policy could only be tightened, so the service

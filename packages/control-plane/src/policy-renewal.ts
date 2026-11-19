@@ -78,8 +78,9 @@ const COMMAND_KINDS = ["continue", "create", "answer", "settings_standard"];
  * host-link reference), no owner or executor that cannot use it under the
  * current policy may use it under the configured one, whatever the route: a
  * fingerprint retired earlier, a grant tightened below the binding's expiry, an
- * expired grant or principal. Owners and executors are both checked because
- * claims, receipts, cursors and host links authorize the executor too. */
+ * expired grant or principal. The record's owner and every executor are
+ * checked: claims, receipts, cursors and host links authorize the executor too,
+ * while other owners cannot use another owner's records. */
 function revivesStoredBinding(
   sql: SqlStorage,
   current: ControlPolicy,
@@ -93,10 +94,11 @@ function revivesStoredBinding(
       .toArray()
       .map((r) => r.id),
   );
-  const ids = [
+  // Who can use a stored binding: its recorded owner, and any executor.
+  const executors = [
     ...new Set(
       [...current.principals, ...configured.principals]
-        .filter((p) => p.role === "owner" || p.role === "executor")
+        .filter((p) => p.role === "executor")
         .map((p) => p.id),
     ),
   ];
@@ -122,12 +124,13 @@ function revivesStoredBinding(
     }
   };
   const revived = (
+    owner: string | null,
     host: string,
     before: string | null,
     after: string | null,
     purpose: "observation" | "command" | undefined,
   ) =>
-    ids.some(
+    [...(owner === null ? [] : [owner]), ...executors].some(
       (id) =>
         !usable(current, id, host, before, purpose) && usable(configured, id, host, after, purpose),
     );
@@ -135,29 +138,37 @@ function revivesStoredBinding(
     sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name=?", name).toArray()
       .length > 0;
   for (const r of sql
-    .exec<{ id: string; host: string; binding: string; expires: number | null }>(
-      "SELECT id,host,binding,expires FROM subscriptions WHERE active=1",
+    .exec<{ id: string; owner: string; host: string; binding: string; expires: number | null }>(
+      "SELECT id,owner,host,binding,expires FROM subscriptions WHERE active=1",
     )
     .toArray())
     if (
       (r.expires === null || r.expires > now) &&
-      revived(r.host, r.binding, rebinds.get(r.id)?.binding ?? r.binding, "observation")
+      revived(r.owner, r.host, r.binding, rebinds.get(r.id)?.binding ?? r.binding, "observation")
     )
       return true;
   for (const r of sql
-    .exec<{ host: string; binding: string | null; kind: string }>(
-      "SELECT host,binding,kind FROM commands",
+    .exec<{ originator: string | null; host: string; binding: string | null; kind: string }>(
+      "SELECT originator,host,binding,kind FROM commands",
     )
     .toArray())
     if (
-      revived(r.host, r.binding, r.binding, COMMAND_KINDS.includes(r.kind) ? "command" : undefined)
+      revived(
+        r.originator,
+        r.host,
+        r.binding,
+        r.binding,
+        COMMAND_KINDS.includes(r.kind) ? "command" : undefined,
+      )
     )
       return true;
   if (table("host_link_refs"))
     for (const r of sql
-      .exec<{ host: string; binding: string }>("SELECT host,binding FROM host_link_refs")
+      .exec<{ owner: string; host: string; binding: string }>(
+        "SELECT owner,host,binding FROM host_link_refs",
+      )
       .toArray())
-      if (revived(r.host, r.binding, r.binding, "command")) return true;
+      if (revived(r.owner, r.host, r.binding, r.binding, "command")) return true;
   return false;
 }
 
@@ -265,6 +276,8 @@ function renewable(n: ControlPrincipal, prior: ControlPrincipal, now: number, ce
       ? n.maxPerDay === undefined
       : prior.maxPerDay === null ||
         (n.maxPerDay !== undefined && n.maxPerDay !== null && n.maxPerDay <= prior.maxPerDay)) &&
+    // Host links admit only single-host executors: renewal cannot create one.
+    (n.role !== "executor" || (n.hosts.length === 1) === (prior.hosts.length === 1)) &&
     // Migration principals keep their own one-time reauthorization path.
     (!extended || (n.role !== "migration" && n.migrationAuthority !== true)) &&
     // Never revive: only a principal that is still live can be extended, so an
