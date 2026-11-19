@@ -63,7 +63,10 @@ request containing a newline or other control character.
   wrapper answers each of the edge's two delivery requests with the session of
   the same scope and treats revocation as a no-op. Trade-off: such a session
   cannot be revoked per command and lives up to 15 minutes. Fill in only the
-  configuration block of each template.
+  configuration block of each template. Before scheduling the task, create the
+  mint output directory with inheritance removed and access only for the owner,
+  SYSTEM, Administrators and the service account (read); the task creates its
+  log directory itself and refuses to run without the output directory.
 
 If the edge host cannot reach a fleet host directly over the mesh, route that
 alias through another enrolled host with `ProxyJump`: add the jump target's
@@ -117,11 +120,13 @@ claims on its first attempt. A planned restart therefore takes about 2.5 minutes
 private promotion script. For a Linux edge it must, in order: verify the
 qualified installation; refuse native binaries (`.node`, `.exe`, `.dll`, `.so`,
 `.dylib`), because releases are qualified on another platform; archive it and
-compute the manifest (SHA-256 over sorted `path\0sha256` lines, as `ctl
-manifest`); `install-release` (extracts to a staging directory, verifies the
+compute the manifest (SHA-256 over `path\0sha256` lines joined by newlines, in
+the order of a depth-first walk that visits each directory's entries sorted by
+name, exactly as `ctl manifest`); `install-release` (extracts to a staging directory, verifies the
 manifest, then moves into place, with no service impact); deploy the Worker; `stop`;
-`set-release`; `start`. If the start does not reach ready, restore the previous
-release with `set-release` and `start` again.
+`set-release`; `start`. If the start does not reach ready, `stop` first (the unit may
+still be running the new release), then `set-release` the previous release and
+`start` again.
 
 **Policy renewal.** Follow [policy-renewal.md](policy-renewal.md). On a Linux
 edge, install the renewed `config.json` and `central-supervisor.json` with

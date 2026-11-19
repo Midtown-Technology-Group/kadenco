@@ -23,7 +23,10 @@ const ctl = new URL(
   "../packages/control-plane/operator/linux/kadenco-edge-ctl.mjs",
   import.meta.url,
 ).pathname;
-const skip = process.platform === "win32" ? "the control script targets a Linux host" : false;
+const skip =
+  process.platform === "linux"
+    ? false
+    : "the edge host and its fleet hosts are Linux (GNU stat, tar)";
 const NAME = "kadenco-0.1.0-alpha.99-abcdef0";
 
 function host() {

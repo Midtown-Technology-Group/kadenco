@@ -20,7 +20,10 @@ function Write-Atomic([string]$name, [string]$text) {
   [IO.File]::WriteAllText($tmp, $text, (New-Object Text.UTF8Encoding($false)))
   Move-Item -Force -LiteralPath $tmp -Destination $path
 }
+New-Item -ItemType Directory -Force (Split-Path -Parent $log) | Out-Null
 try {
+  # The output directory carries the restricted ACL; it is created at setup.
+  if (-not (Test-Path -LiteralPath $dir -PathType Container)) { throw 'mint directory missing; see linux-edge.md' }
   if ((Get-Item $log -ErrorAction SilentlyContinue).Length -gt 1MB) { Move-Item -Force $log "$log.1" }
   $runtime = [IO.File]::ReadAllText($runtimeFile)
   $port = ($runtime | ConvertFrom-Json).port

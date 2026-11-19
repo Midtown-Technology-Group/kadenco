@@ -18,7 +18,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const dir = new URL("../packages/control-plane/operator/linux/forced-command/", import.meta.url);
-const skip = process.platform === "win32" ? "forced commands run under a POSIX sh" : false;
+const skip =
+  process.platform === "linux"
+    ? false
+    : "the edge host and its fleet hosts are Linux (GNU stat, tar)";
 
 // The exact argument vectors src/native-session.mts sends (each word single-quoted).
 const READ = ["--scope", "orchestration:read"];
