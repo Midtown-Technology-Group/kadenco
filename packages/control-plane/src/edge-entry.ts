@@ -9,6 +9,7 @@ export { encryptHostPayload, hostPayloadIdentity } from "./host-payload.ts";
 export {
   createProductionRuntime,
   projectControlPolicy,
+  projectRenewalPolicy,
   projectVerificationPolicy,
 } from "./production-bootstrap.ts";
 export { existingBindings } from "./existing-bindings.ts";

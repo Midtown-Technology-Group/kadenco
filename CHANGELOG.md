@@ -5,6 +5,21 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.25
+
+- Add an owner-only central policy renewal (`policy_renewal_challenge`,
+  `renew_configured_policy`, `policy_renewal_receipt`). Every central principal
+  has an expiry and the durable policy could only be tightened, so the service
+  stopped for good at its ceiling, and moving the edge to new routes produced
+  native grant fingerprints that central refused. Renewal adopts the
+  operator-deployed `AUTH_POLICY` as the next revision only when it keeps every
+  principal's identity, role and custody, adds no principal, host, scope or
+  budget, and renews native grants only for existing host/purpose pairs. Owner
+  and executor expiries may move up to 366 days from apply time. `tighten_policy`
+  and owner enrollment are unchanged. `projectRenewalPolicy` builds the next
+  revision offline from the current policy and the edge's local policy. See
+  `packages/control-plane/deployment/policy-renewal.md`.
+
 ## 0.1.0-alpha.24
 
 - Defer routine fleet coverage updates to the 60 s heartbeat (#73). After

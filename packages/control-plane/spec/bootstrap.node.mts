@@ -6,7 +6,11 @@ import { nativeFixture } from "./native-fixture.mts";
 import { existingBindings } from "../src/existing-bindings.ts";
 import { eventTarget } from "../src/event-target.ts";
 import { existingCallback } from "../src/edge-services.ts";
-import { projectControlPolicy, projectVerificationPolicy } from "../src/production-bootstrap.ts";
+import {
+  projectControlPolicy,
+  projectRenewalPolicy,
+  projectVerificationPolicy,
+} from "../src/production-bootstrap.ts";
 import { cachePolicyGuard, startProductionSidecar } from "../src/production-startup.ts";
 const hash = (x: unknown) => createHash("sha256").update(JSON.stringify(x)).digest("hex");
 
@@ -400,6 +404,80 @@ test("task completion derives the original authorized session target and refuses
   } finally {
     await f.close();
   }
+});
+
+test("renewal projection re-derives grants and expiry for configured principals only", () => {
+  const f = nativeFixture();
+  const config = {
+    fleet: "fixture",
+    origin: "https://fixture.invalid",
+    epoch: 7,
+    executor: "fixture-edge",
+    executorToken: "test-only-executor-credential-at-least-32-bytes",
+    ownerTokens: new Map([["owner", "fixture-owner"]]),
+    observationOwner: "owner",
+    serviceExpiresAt: f.now + 300000,
+    key: f.key,
+    journalPath: "/fixture-attempts.db",
+  };
+  return (async () => {
+    try {
+      const base = projectControlPolicy(f.policy, config);
+      const scope = {
+        project: "p",
+        provider: "codex",
+        run: null,
+        grant: "e".repeat(64),
+        revision: 1,
+        expires: f.now + 1000,
+      };
+      const current = {
+        ...base,
+        revision: 4,
+        principals: [
+          ...base.principals.map((p) =>
+            p.id === "owner" ? { ...p, scopes: [scope], expiresAt: f.now + 1000 } : p,
+          ),
+          {
+            id: "migration",
+            role: "migration" as const,
+            migrationAuthority: true,
+            tokenSha256: "f".repeat(64),
+            hosts: [],
+            maxPerDay: 0,
+            expiresAt: 1,
+          },
+        ],
+      };
+      const renewed = projectRenewalPolicy(current, f.policy, {
+        ...config,
+        serviceExpiresAt: f.now + 900000,
+      });
+      assert.equal(renewed.revision, 5);
+      assert.equal(renewed.fleet, "fixture");
+      const owner = renewed.principals.find((p) => p.id === "owner")!;
+      assert.equal(owner.expiresAt, f.now + 900000);
+      assert.deepEqual(owner.scopes, [scope], "existing scopes are kept");
+      assert.ok(owner.nativeGrants!.every((g) => g.expires <= f.now + 900000));
+      assert.deepEqual(
+        renewed.principals.find((p) => p.id === "migration"),
+        current.principals.at(-1),
+        "unconfigured principals are unchanged",
+      );
+      assert.equal(JSON.stringify(renewed).includes("fixture-owner"), false);
+      assert.throws(
+        () =>
+          projectRenewalPolicy(
+            { ...current, principals: current.principals.filter((p) => p.id !== "fixture-edge") },
+            f.policy,
+            config,
+          ),
+        /renewal_identity_mismatch/,
+      );
+    } finally {
+      await f.close();
+    }
+  })();
 });
 
 test("control policy projection binds original credentials, separates executor and verifies dedicated scopes", async () => {

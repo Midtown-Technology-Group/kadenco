@@ -26,6 +26,7 @@ for (const name of [
   "prepareManagedRecovery",
   "activateManagedSource",
   "projectControlPolicy",
+  "projectRenewalPolicy",
   "captureRecovery",
   "verifyRecovery",
   "encodePolicy",

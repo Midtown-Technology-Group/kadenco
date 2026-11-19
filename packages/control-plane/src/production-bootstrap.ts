@@ -9,6 +9,7 @@ import { centralTransport } from "./transport.ts";
 import { projectNativeGrant } from "./grant-projection.ts";
 import { existingBindings } from "./existing-bindings.ts";
 import { diagnosticIdentity } from "../../../dist/diagnostics.mjs";
+import type { ControlPolicy } from "./owner-enrollment.ts";
 export type BootstrapConfig = {
   fleet: string;
   origin: string;
@@ -134,6 +135,34 @@ export function projectControlPolicy(policy: Policy, config: BootstrapConfig) {
         expiresAt: config.serviceExpiresAt,
       },
     ],
+  };
+}
+/** Offline: the next revision of the CURRENT central policy (from the owner's
+ * `policy_renewal_challenge`) for `renew_configured_policy`. The configured
+ * owners' and executor's hosts and native grants are re-projected from the
+ * validated local policy, and their expiry becomes `config.serviceExpiresAt`.
+ * Every other field, and every other principal, is kept exactly as it is. The
+ * Worker re-checks that the result only renews; this makes no credential. */
+export function projectRenewalPolicy(
+  current: ControlPolicy,
+  policy: Policy,
+  config: BootstrapConfig,
+): ControlPolicy {
+  const projected = projectControlPolicy(policy, config);
+  for (const n of projected.principals) {
+    const old = current.principals.find((p) => p.id === n.id);
+    if (!old || old.tokenSha256 !== n.tokenSha256 || old.role !== n.role)
+      throw Error("renewal_identity_mismatch");
+  }
+  return {
+    ...current,
+    revision: current.revision + 1,
+    principals: current.principals.map((old) => {
+      const n = projected.principals.find((p) => p.id === old.id);
+      return n
+        ? { ...old, hosts: n.hosts, nativeGrants: n.nativeGrants, expiresAt: n.expiresAt }
+        : old;
+    }),
   };
 }
 /** Exact verification scopes are derived through the original dedicated-session
