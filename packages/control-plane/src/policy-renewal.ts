@@ -37,7 +37,12 @@ const renewsGrant = (next: NativeGrantScope, prior: NativeGrantScope) =>
  * principal and, unless that principal's own expiry is being extended, no later
  * than that same predecessor. A successor therefore never sits beside the
  * fingerprint it replaces, nor borrows another grant's scope or expiry. */
-function grantsRenewed(n: ControlPrincipal, prior: ControlPrincipal, extended: boolean) {
+function grantsRenewed(
+  n: ControlPrincipal,
+  prior: ControlPrincipal,
+  extended: boolean,
+  now: number,
+) {
   const next = n.nativeGrants ?? [],
     old = prior.nativeGrants ?? [];
   // A retained fingerprint is pinned to its own predecessor; only a new
@@ -47,6 +52,8 @@ function grantsRenewed(n: ControlPrincipal, prior: ControlPrincipal, extended: b
   const fits = (g: NativeGrantScope, x: NativeGrantScope) =>
     (!retained(g) || x.grant === g.grant) &&
     renewsGrant(g, x) &&
+    // Never revive: an expired grant has no successor.
+    (x.expires > now || g.expires <= x.expires) &&
     (extended || g.expires <= x.expires);
   if (next.some((g) => !n.hosts.includes(g.host) || g.expires > n.expiresAt)) return false;
   // Bipartite matching (augmenting paths); at most 40 grants per principal.
@@ -167,7 +174,7 @@ function renewable(n: ControlPrincipal, prior: ControlPrincipal, now: number, ce
     (n.scopes ?? []).every((scope) =>
       (prior.scopes ?? []).some((old) => JSON.stringify(old) === JSON.stringify(scope)),
     ) &&
-    grantsRenewed(n, prior, extended) &&
+    grantsRenewed(n, prior, extended, now) &&
     budgetsKept &&
     budgetsKnown &&
     (prior.maxPerDay === undefined

@@ -22,7 +22,8 @@ refused unless, for every principal in the configured policy:
 - each native grant replaces its own distinct prior grant (a one-to-one
   matching): same host and purpose, the same or narrower projects and providers,
   and an expiry no later than its principal and, unless that principal's expiry
-  is being extended, no later than that same predecessor. A successor cannot sit
+  is being extended, no later than that same predecessor. An expired grant has
+  no successor that outlasts it. A successor cannot sit
   beside the fingerprint it replaces or borrow another grant's scope or expiry,
   and a retained fingerprint can only renew its own predecessor. The fingerprint
   may differ;

@@ -473,6 +473,23 @@ describe("authenticated operator policy renewal", () => {
       "forbidden",
     );
   });
+  it("never revives an expired grant of a live principal", async () => {
+    const tightened = structuredClone(old);
+    tightened.principals[0]!.nativeGrants![1]!.expires = Date.now() - 1000;
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec(
+        "UPDATE auth_policy SET value=? WHERE id=1",
+        JSON.stringify(tightened),
+      );
+    });
+    const revived = structuredClone(tightened);
+    revived.revision++;
+    revived.principals[0]!.expiresAt = later;
+    revived.principals[0]!.nativeGrants![1]!.expires = later;
+    expect((await call("renew_configured_policy", input(revived), revived)).body.reason).toBe(
+      "forbidden",
+    );
+  });
   it("permits dropping principals and keeping or shortening expiries", async () => {
     const p = next();
     p.principals.pop();
