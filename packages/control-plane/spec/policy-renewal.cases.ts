@@ -687,6 +687,36 @@ describe("authenticated operator policy renewal", () => {
       rebound_subscriptions: 1,
     });
   });
+  it("compares operation scopes by field, not by key order", async () => {
+    const scope = {
+      project: "p",
+      provider: "codex",
+      run: null,
+      grant: "e".repeat(64),
+      revision: 1,
+      expires: soon,
+    };
+    const scoped = structuredClone(old);
+    scoped.principals[0]!.scopes = [scope];
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(scoped));
+    });
+    const reordered = structuredClone(scoped);
+    reordered.revision++;
+    reordered.principals[0]!.scopes = [
+      {
+        expires: soon,
+        revision: 1,
+        grant: "e".repeat(64),
+        run: null,
+        provider: "codex",
+        project: "p",
+      },
+    ];
+    expect(
+      (await call("renew_configured_policy", input(reordered), reordered)).body.committed,
+    ).toBe(true);
+  });
   it("permits dropping principals and keeping or shortening expiries", async () => {
     const p = next();
     p.principals.pop();

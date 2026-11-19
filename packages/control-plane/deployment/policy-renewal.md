@@ -72,8 +72,13 @@ ones (several observation grants for one host) are left alone and fail closed.
    executor's grants are rebuilt from those owners. It refuses while an owner
    holds a live dedicated verification scope: those stay capped at the old
    ceiling while the restarted edge would bind at the new one, so let them expire
-   or re-prepare them first. A scope that runs to the owner's own expiry leaves no
-   renewal window: that owner cannot be renewed through this path. Verification-
+   or remove them first: the deployed central policy must hold no live
+   verification scope for any configured owner or executor. Re-preparing a
+   verification request re-derives the same live scope, so only omitting that
+   request (and deploying the result) or waiting for the scope to expire clears
+   it. A scope that runs to the owner's own expiry leaves no renewal window: that
+   owner cannot be renewed through this path. An owner that has already expired
+   may be left out of `ownerTokens`; it is dropped from the proposal. Verification-
    only hosts are kept. It re-projects the owners' and
    executor's grants from the local policy,
    sets their expiry to `bootstrap.serviceExpiresAt` and leaves everything else
@@ -108,8 +113,10 @@ ones (several observation grants for one host) are left alone and fail closed.
 
 6. Only after a confirmed commit (the renewal or its receipt returns
    `committed: true`), install the staged local policy and the new
-   `serviceExpiresAt`, then start the edge. If the outcome stays unknown, keep
-   the edge stopped and reconcile; never start it on the renewed bindings
+   `serviceExpiresAt`, then start the edge. If the receipt shows no commit and
+   the fence still holds (same revision and deployed digest), retry the renewal
+   with the same request UUID. Until a commit is confirmed, keep the edge stopped
+   and the old local policy installed; never start it on the renewed bindings
    against an unrenewed policy.
 
 Command records keep the binding they were authorized under; renewal does not

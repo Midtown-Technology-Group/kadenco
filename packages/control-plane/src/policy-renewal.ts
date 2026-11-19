@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { createHash } from "node:crypto";
-import { authorizeBinding, operationBinding, type NativeGrantScope } from "./binding";
+import {
+  authorizeBinding,
+  operationBinding,
+  type NativeGrantScope,
+  type OperationBinding,
+} from "./binding";
 import {
   enrollmentPolicyDigest,
   type ControlPolicy,
@@ -72,6 +77,14 @@ function grantsRenewed(
   return next.every((_g, i) => assign(i, new Set()));
 }
 
+/** Field-by-field, so key order in the deployed policy does not matter. */
+const sameScope = (a: OperationBinding, b: OperationBinding) =>
+  a.project === b.project &&
+  a.provider === b.provider &&
+  a.run === b.run &&
+  a.grant === b.grant &&
+  a.revision === b.revision &&
+  a.expires === b.expires;
 const COMMAND_KINDS = ["continue", "create", "answer", "settings_standard"];
 /** Renewal never makes a stored binding usable again. For every stored binding
  * (a live subscription, as it will be after the rebind below; a command; a
@@ -266,9 +279,7 @@ function renewable(n: ControlPrincipal, prior: ControlPrincipal, now: number, ce
     (n.migrationAuthority !== true || prior.migrationAuthority === true) &&
     (n.stateCustodian !== true || prior.stateCustodian === true) &&
     n.hosts.every((h) => prior.hosts.includes(h)) &&
-    (n.scopes ?? []).every((scope) =>
-      (prior.scopes ?? []).some((old) => JSON.stringify(old) === JSON.stringify(scope)),
-    ) &&
+    (n.scopes ?? []).every((scope) => (prior.scopes ?? []).some((old) => sameScope(old, scope))) &&
     grantsRenewed(n, prior, extended, now) &&
     budgetsKept &&
     budgetsKnown &&
