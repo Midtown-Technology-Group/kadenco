@@ -23,8 +23,9 @@ refused unless, for every principal in the configured policy:
   matching): same host and purpose, the same or narrower projects and providers,
   and an expiry no later than its principal and, unless that principal's expiry
   is being extended, no later than that same predecessor. A successor cannot sit
-  beside the fingerprint it replaces or borrow another grant's scope or expiry.
-  The fingerprint may differ;
+  beside the fingerprint it replaces or borrow another grant's scope or expiry,
+  and a retained fingerprint can only renew its own predecessor. The fingerprint
+  may differ;
 - only an owner or executor expiry moves later, to at most 366 days from apply
   time, and never for a revoked principal. Migration principals keep their
   separate one-time reauthorization path.
@@ -45,8 +46,9 @@ fingerprint, revision and expiry) to that owner's only renewed observation grant
 for the host: new fingerprint, revision and expiry, everything else unchanged.
 That is exactly the binding the edge derives once it restarts with the renewed
 policy, so nothing has to be resubmitted. The receipt counts these as
-`rebound_subscriptions`. Expired, inactive or ambiguous bindings (several
-observation grants for one host) are left alone and fail closed.
+`rebound_subscriptions`. Nothing is revived: inactive or ended subscriptions,
+subscriptions whose owner is expired or revoked, expired bindings and ambiguous
+ones (several observation grants for one host) are left alone and fail closed.
 
 ## Procedure
 
@@ -57,7 +59,10 @@ observation grants for one host) are left alone and fail closed.
    change staged until step 6. Build the next revision offline with
    `projectRenewalPolicy(currentPolicy, localPolicy, bootstrap)` from the edge
    bundle. Every enrolled owner must be in `bootstrap.ownerTokens`, because the
-   executor's grants are rebuilt from those owners. It re-projects the owners' and
+   executor's grants are rebuilt from those owners. It refuses while an owner
+   holds a live dedicated verification scope: those stay capped at the old
+   ceiling while the restarted edge would bind at the new one, so let them expire
+   or re-prepare them first. Verification-only hosts are kept. It re-projects the owners' and
    executor's grants from the local policy,
    sets their expiry to `bootstrap.serviceExpiresAt` and leaves everything else
    unchanged. It needs the owner and executor bearers only to check their hashes;
@@ -67,8 +72,10 @@ observation grants for one host) are left alone and fail closed.
    token hashes, which renewal does not change.
 4. Stop the edge. While it runs on the old policy it derives the replaced
    bindings, which central refuses after renewal, so deliveries processed in
-   between would be quarantined. Commands reserved under a replaced command
-   grant are refused afterwards: renew when none is in flight.
+   between would be quarantined. Drain and reconcile commands first: a command
+   reserved under a replaced command grant is refused afterwards, and an edge
+   retry of the same request with a newly derived binding is an
+   `idempotency_conflict`.
 5. Challenge again. Require the same current revision and digest as step 1, the
    next revision as `configured_revision`, and `configured_policy_sha256` equal
    to the digest of the policy built in step 2. Persist those values with one
@@ -89,6 +96,13 @@ observation grants for one host) are left alone and fail closed.
 
 6. Install the staged local policy and the new `serviceExpiresAt`, then start the
    edge.
+
+Command records keep the binding they were authorized under; renewal does not
+rewrite history. `receipt` re-authorizes that binding against current grants, so
+after renewal a command bound to a replaced command grant can no longer be read
+through it, exactly as when its grant expires. Its outcome remains in the
+central record, the audit log and the edge's own records. This is why no command
+may be in flight: an uncertain command could not be reconciled afterwards.
 
 A renewal grants no new host, provider, project or role; it changes when access
 ends and which routes it is bound to.

@@ -334,9 +334,14 @@ describe("authenticated operator policy renewal", () => {
       ];
       a.expiresAt = later;
     }
-    // One binding tracks the grant (as the edge derives it); one ends earlier.
+    // One binding tracks the grant (as the edge derives it); one ends earlier;
+    // one tracks it but the subscription itself has already ended.
     expect((await subscription("tracking", binding("b", soon), old)).body.stored).toBe(true);
     expect((await subscription("shorter", binding("b", soon - 1000), old)).body.stored).toBe(true);
+    expect((await subscription("ended", binding("b", soon), old)).body.stored).toBe(true);
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE subscriptions SET expires=? WHERE id='ended'", Date.now() - 1);
+    });
     const before = await rows();
     const r = await call("renew_configured_policy", input(renewal), renewal);
     expect(r.body).toMatchObject({ committed: true, rebound_subscriptions: 1 });
@@ -347,6 +352,7 @@ describe("authenticated operator policy renewal", () => {
       binding: binding("d", later),
     });
     expect(after.shorter).toEqual(before.shorter);
+    expect(after.ended).toEqual(before.ended);
     // The restarted edge resubmits exactly the stored subscription: no conflict.
     expect((await subscription("tracking", binding("d", later), renewal)).body).toMatchObject({
       id: "tracking",
@@ -382,6 +388,31 @@ describe("authenticated operator policy renewal", () => {
     expect((await call("renew_configured_policy", input(borrowed), borrowed)).body.reason).toBe(
       "forbidden",
     );
+    // A retained fingerprint cannot take another grant's scope and expiry while
+    // a new fingerprint takes its place: prior b={x} until T1 and e={x,y} until
+    // T2; proposed b={x,y} until T2 (matches e) plus f={x} until T1 (matches b).
+    const three = structuredClone(old);
+    three.principals[0]!.nativeGrants = [
+      grant("local", "command", "a"),
+      scoped("b", "x", soon - day / 2),
+      { ...scoped("e", "x", soon), projects: ["x", "y"] },
+    ];
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(three));
+    });
+    const swapped = structuredClone(three);
+    swapped.revision++;
+    swapped.principals[0]!.nativeGrants = [
+      grant("local", "command", "a"),
+      { ...scoped("b", "x", soon), projects: ["x", "y"] },
+      scoped("f", "x", soon - day / 2),
+    ];
+    expect((await call("renew_configured_policy", input(swapped), swapped)).body.reason).toBe(
+      "forbidden",
+    );
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(two));
+    });
     // Each successor matched to its own predecessor is accepted.
     const replaced = structuredClone(two);
     replaced.revision++;

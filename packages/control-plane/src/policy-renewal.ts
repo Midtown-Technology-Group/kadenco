@@ -40,8 +40,14 @@ const renewsGrant = (next: NativeGrantScope, prior: NativeGrantScope) =>
 function grantsRenewed(n: ControlPrincipal, prior: ControlPrincipal, extended: boolean) {
   const next = n.nativeGrants ?? [],
     old = prior.nativeGrants ?? [];
+  // A retained fingerprint is pinned to its own predecessor; only a new
+  // fingerprint may replace some other grant.
+  const retained = (g: NativeGrantScope) =>
+    old.some((x) => x.grant === g.grant && x.host === g.host && x.purpose === g.purpose);
   const fits = (g: NativeGrantScope, x: NativeGrantScope) =>
-    renewsGrant(g, x) && (extended || g.expires <= x.expires);
+    (!retained(g) || x.grant === g.grant) &&
+    renewsGrant(g, x) &&
+    (extended || g.expires <= x.expires);
   if (next.some((g) => !n.hosts.includes(g.host) || g.expires > n.expiresAt)) return false;
   // Bipartite matching (augmenting paths); at most 40 grants per principal.
   const owner: (number | undefined)[] = Array.from({ length: old.length });
@@ -80,16 +86,27 @@ function rebindSubscriptions(
 ) {
   let count = 0;
   const rows = sql
-    .exec<{ id: string; owner: string; host: string; binding: string; value: string }>(
-      "SELECT id,owner,host,binding,value FROM subscriptions WHERE active=1",
-    )
+    .exec<{
+      id: string;
+      owner: string;
+      host: string;
+      binding: string;
+      value: string;
+      expires: number | null;
+    }>("SELECT id,owner,host,binding,value,expires FROM subscriptions WHERE active=1")
     .toArray();
   for (const row of rows) {
     const binding = JSON.parse(row.binding);
-    const before = soleObservation(
-        current.principals.find((p) => p.id === row.owner),
-        row.host,
-      ),
+    const owner = current.principals.find((p) => p.id === row.owner);
+    // Never revive: the subscription, its owner and its binding must all be live.
+    if (
+      (row.expires !== null && row.expires <= now) ||
+      !owner ||
+      owner.expiresAt <= now ||
+      sql.exec("SELECT id FROM revoked WHERE id=?", owner.id).toArray().length
+    )
+      continue;
+    const before = soleObservation(owner, row.host),
       after = soleObservation(
         configured.principals.find((p) => p.id === row.owner),
         row.host,

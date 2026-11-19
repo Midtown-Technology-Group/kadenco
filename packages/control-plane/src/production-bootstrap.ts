@@ -171,6 +171,11 @@ export function projectRenewalPolicy(
     const old = current.principals.find((p) => p.id === n.id);
     if (!old || old.tokenSha256 !== n.tokenSha256 || old.role !== n.role)
       throw Error("renewal_identity_mismatch");
+    // Dedicated verification scopes are capped at the old ceiling and are kept
+    // unchanged, while the restarted edge would bind them at the new one. Let
+    // them expire (or re-prepare them) first rather than break them silently.
+    if ((old.scopes ?? []).some((s) => s.expires > Date.now()))
+      throw Error("renewal_live_verification_scope");
   }
   return {
     ...current,
@@ -180,7 +185,11 @@ export function projectRenewalPolicy(
       return n
         ? {
             ...old,
-            hosts: n.hosts,
+            // Keep verification-only hosts (no native grants); drop hosts whose
+            // grants are no longer projected.
+            hosts: old.hosts.filter(
+              (h) => n.hosts.includes(h) || !(old.nativeGrants ?? []).some((g) => g.host === h),
+            ),
             nativeGrants: n.nativeGrants,
             expiresAt: n.expiresAt,
           }

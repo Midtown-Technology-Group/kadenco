@@ -448,7 +448,8 @@ test("renewal projection re-derives grants and expiry for configured principals 
         run: null,
         grant: "e".repeat(64),
         revision: 1,
-        expires: f.now + 1000,
+        // An expired dedicated verification scope is kept as it is.
+        expires: f.now - 1000,
       };
       const current = {
         ...base,
@@ -495,6 +496,38 @@ test("renewal projection re-derives grants and expiry for configured principals 
             config,
           ),
         /renewal_identity_mismatch/,
+      );
+      // A live verification scope would be bound at the new ceiling by the
+      // restarted edge but kept at the old one centrally: refused, not broken.
+      assert.throws(
+        () =>
+          projectRenewalPolicy(
+            {
+              ...current,
+              principals: current.principals.map((p) =>
+                p.id === "owner" ? { ...p, scopes: [{ ...scope, expires: f.now + 60000 }] } : p,
+              ),
+            },
+            f.policy,
+            config,
+          ),
+        /renewal_live_verification_scope/,
+      );
+      // Verification-only hosts (no native grants) are kept.
+      const verificationOnly = projectRenewalPolicy(
+        {
+          ...current,
+          principals: current.principals.map((p) =>
+            p.id === "owner" ? { ...p, hosts: [...p.hosts, "verification-host"] } : p,
+          ),
+        },
+        f.policy,
+        config,
+      );
+      assert.ok(
+        verificationOnly.principals
+          .find((p) => p.id === "owner")!
+          .hosts.includes("verification-host"),
       );
       // An enrolled owner left out of the projection input is refused, not narrowed.
       const second = base.principals.find((p) => p.id === "owner")!;
