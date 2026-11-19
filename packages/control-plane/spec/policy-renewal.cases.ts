@@ -563,6 +563,69 @@ describe("authenticated operator policy renewal", () => {
       ).body.reason,
     ).toBe("forbidden");
   });
+  it("never restores executor access to a binding fenced for the executor only", async () => {
+    const observation = (g: string, expires: number) => ({
+      project: "__authorized_host_observation__",
+      provider: "__observation__",
+      run: null,
+      grant: g.repeat(64),
+      revision: 1,
+      expires,
+    });
+    expect(
+      (
+        await call(
+          "subscribe_central",
+          {
+            epoch: 7,
+            id: "standing",
+            host: "remote",
+            thread_id: "thread",
+            binding: observation("b", soon),
+            expires: null,
+            name: "t3.thread.activity",
+            callback_reference: "standing",
+          },
+          old,
+        )
+      ).body.stored,
+    ).toBe(true);
+    // Only the executor's grant is tightened below the binding (still live).
+    const tightened = structuredClone(old);
+    tightened.principals[1]!.nativeGrants![1]!.expires = soon - day / 2;
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec(
+        "UPDATE auth_policy SET value=? WHERE id=1",
+        JSON.stringify(tightened),
+      );
+    });
+    // Extending the retained fingerprint for both principals.
+    const extended = structuredClone(tightened);
+    extended.revision++;
+    for (const a of extended.principals.slice(0, 2)) {
+      a.expiresAt = later;
+      a.nativeGrants = [
+        grant("local", "command", "a", later),
+        grant("remote", "observation", "b", later),
+      ];
+    }
+    expect((await call("renew_configured_policy", input(extended), extended)).body.reason).toBe(
+      "forbidden",
+    );
+    // Moving both to a new fingerprint would rebind the subscription for both.
+    const moved = structuredClone(tightened);
+    moved.revision++;
+    for (const a of moved.principals.slice(0, 2)) {
+      a.expiresAt = later;
+      a.nativeGrants = [
+        grant("local", "command", "a", later),
+        grant("remote", "observation", "d", later),
+      ];
+    }
+    expect((await call("renew_configured_policy", input(moved), moved)).body.reason).toBe(
+      "forbidden",
+    );
+  });
   it("permits dropping principals and keeping or shortening expiries", async () => {
     const p = next();
     p.principals.pop();

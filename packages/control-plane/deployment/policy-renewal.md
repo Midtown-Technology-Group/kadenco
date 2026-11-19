@@ -32,10 +32,10 @@ refused unless, for every principal in the configured policy:
   expired (renewal does not revive). Migration principals keep their
   separate one-time reauthorization path.
 
-Renewal never makes a stored binding usable again. If a live subscription,
-command or host-link reference cannot be used by its owner under the current
-policy (a fingerprint retired earlier, a grant tightened below the binding's
-expiry, an expired grant or owner) but could be under the configured one, the
+Renewal never makes a stored binding usable again. If a live subscription
+(as rebound), command or host-link reference cannot be used by an owner or
+executor under the current policy (a fingerprint retired earlier, a grant tightened below the binding's
+expiry, an expired grant or principal) but could be under the configured one, the
 renewal is refused. Unsubscribe or otherwise retire such records first.
 
 Principals can be dropped, but the initiating owner must stay live so it can
@@ -104,8 +104,11 @@ ones (several observation grants for one host) are left alone and fail closed.
    response, POST `/policy_renewal_receipt` with the same `request_id`; never
    retry with a new UUID.
 
-6. Install the staged local policy and the new `serviceExpiresAt`, then start the
-   edge.
+6. Only after a confirmed commit (the renewal or its receipt returns
+   `committed: true`), install the staged local policy and the new
+   `serviceExpiresAt`, then start the edge. If the outcome stays unknown, keep
+   the edge stopped and reconcile; never start it on the renewed bindings
+   against an unrenewed policy.
 
 Command records keep the binding they were authorized under; renewal does not
 rewrite history. `receipt` re-authorizes that binding against current grants, so

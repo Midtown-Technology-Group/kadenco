@@ -73,15 +73,18 @@ function grantsRenewed(
 }
 
 const COMMAND_KINDS = ["continue", "create", "answer", "settings_standard"];
-/** Renewal never makes a stored binding usable again. Every stored binding (a
- * live subscription, a command, a host-link reference) that its owner cannot
- * use under the current policy must stay unusable under the configured one,
- * whatever the route: a fingerprint retired earlier, a grant tightened below
- * the binding's expiry, an expired grant or principal. */
+/** Renewal never makes a stored binding usable again. For every stored binding
+ * (a live subscription, as it will be after the rebind below; a command; a
+ * host-link reference), no owner or executor that cannot use it under the
+ * current policy may use it under the configured one, whatever the route: a
+ * fingerprint retired earlier, a grant tightened below the binding's expiry, an
+ * expired grant or principal. Owners and executors are both checked because
+ * claims, receipts, cursors and host links authorize the executor too. */
 function revivesStoredBinding(
   sql: SqlStorage,
   current: ControlPolicy,
   configured: ControlPolicy,
+  rebinds: Map<string, { binding: string; value: string }>,
   now: number,
 ) {
   const revoked = new Set(
@@ -90,14 +93,21 @@ function revivesStoredBinding(
       .toArray()
       .map((r) => r.id),
   );
+  const ids = [
+    ...new Set(
+      [...current.principals, ...configured.principals]
+        .filter((p) => p.role === "owner" || p.role === "executor")
+        .map((p) => p.id),
+    ),
+  ];
   const usable = (
     policy: ControlPolicy,
-    owner: string | null,
+    id: string,
     host: string,
     raw: string | null,
     purpose: "observation" | "command" | undefined,
   ) => {
-    const p = policy.principals.find((x) => x.id === owner && x.role === "owner");
+    const p = policy.principals.find((x) => x.id === id);
     if (!p || p.expiresAt <= now || revoked.has(p.id) || !p.hosts.includes(host)) return false;
     try {
       authorizeBinding(
@@ -112,45 +122,42 @@ function revivesStoredBinding(
     }
   };
   const revived = (
-    owner: string | null,
     host: string,
-    raw: string | null,
+    before: string | null,
+    after: string | null,
     purpose: "observation" | "command" | undefined,
-  ) => !usable(current, owner, host, raw, purpose) && usable(configured, owner, host, raw, purpose);
+  ) =>
+    ids.some(
+      (id) =>
+        !usable(current, id, host, before, purpose) && usable(configured, id, host, after, purpose),
+    );
   const table = (name: string) =>
     sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name=?", name).toArray()
       .length > 0;
   for (const r of sql
-    .exec<{ owner: string; host: string; binding: string; expires: number | null }>(
-      "SELECT owner,host,binding,expires FROM subscriptions WHERE active=1",
+    .exec<{ id: string; host: string; binding: string; expires: number | null }>(
+      "SELECT id,host,binding,expires FROM subscriptions WHERE active=1",
     )
     .toArray())
     if (
       (r.expires === null || r.expires > now) &&
-      revived(r.owner, r.host, r.binding, "observation")
+      revived(r.host, r.binding, rebinds.get(r.id)?.binding ?? r.binding, "observation")
     )
       return true;
   for (const r of sql
-    .exec<{ originator: string | null; host: string; binding: string | null; kind: string }>(
-      "SELECT originator,host,binding,kind FROM commands",
+    .exec<{ host: string; binding: string | null; kind: string }>(
+      "SELECT host,binding,kind FROM commands",
     )
     .toArray())
     if (
-      revived(
-        r.originator,
-        r.host,
-        r.binding,
-        COMMAND_KINDS.includes(r.kind) ? "command" : undefined,
-      )
+      revived(r.host, r.binding, r.binding, COMMAND_KINDS.includes(r.kind) ? "command" : undefined)
     )
       return true;
   if (table("host_link_refs"))
     for (const r of sql
-      .exec<{ owner: string; host: string; binding: string }>(
-        "SELECT owner,host,binding FROM host_link_refs",
-      )
+      .exec<{ host: string; binding: string }>("SELECT host,binding FROM host_link_refs")
       .toArray())
-      if (revived(r.owner, r.host, r.binding, "command")) return true;
+      if (revived(r.host, r.binding, r.binding, "command")) return true;
   return false;
 }
 
@@ -166,14 +173,15 @@ const soleObservation = (p: ControlPrincipal | undefined, host: string) => {
  * fingerprint, revision and expiry) to that owner's sole renewed grant. This is
  * the binding the edge derives after it restarts with the renewed policy, so
  * queued callbacks, cursors and receipts keep authorizing without the edge
- * resubmitting anything. Anything ambiguous, expired or inactive is left as is. */
-function rebindSubscriptions(
+ * resubmitting anything. Anything ambiguous, expired or inactive is left as is.
+ * Computes the rewrites; the caller applies them after the revival guard. */
+function planRebinds(
   sql: SqlStorage,
   current: ControlPolicy,
   configured: ControlPolicy,
   now: number,
 ) {
-  let count = 0;
+  const plan = new Map<string, { binding: string; value: string }>();
   const rows = sql
     .exec<{
       id: string;
@@ -217,15 +225,9 @@ function rebindSubscriptions(
     };
     const value = JSON.parse(row.value);
     value.binding = next;
-    sql.exec(
-      "UPDATE subscriptions SET binding=?,value=? WHERE id=?",
-      JSON.stringify(next),
-      JSON.stringify(value),
-      row.id,
-    );
-    count++;
+    plan.set(row.id, { binding: JSON.stringify(next), value: JSON.stringify(value) });
   }
-  return count;
+  return plan;
 }
 
 /** Can `n` replace `prior` in a renewal? Identity, role and custody stay exactly
@@ -366,7 +368,8 @@ export function policyRenewal(
     })
   )
     fail("forbidden");
-  if (revivesStoredBinding(sql, current, configured, now)) fail("forbidden");
+  const rebinds = planRebinds(sql, current, configured, now);
+  if (revivesStoredBinding(sql, current, configured, rebinds, now)) fail("forbidden");
   const receipt = {
     request_id: request,
     revision: configured.revision,
@@ -376,7 +379,9 @@ export function policyRenewal(
     actor_sha256: actor.tokenSha256,
     rebound_subscriptions: 0,
   };
-  receipt.rebound_subscriptions = rebindSubscriptions(sql, current, configured, now);
+  for (const [id, r] of rebinds)
+    sql.exec("UPDATE subscriptions SET binding=?,value=? WHERE id=?", r.binding, r.value, id);
+  receipt.rebound_subscriptions = rebinds.size;
   sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(configured));
   sql.exec(
     "INSERT INTO audit(actor,action,subject,at) VALUES(?,?,?,?)",
