@@ -94,13 +94,26 @@ function readSafeBuffer(path, maxBytes = 64 << 20) {
     closeSync(fd);
   }
 }
+/** SHA-256 of a regular file read in chunks through a no-follow, non-blocking
+ * descriptor (release files have no size limit). */
+function hashSafe(path) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    if (!fstatSync(fd).isFile()) throw Error("not_regular_file");
+    const hash = createHash("sha256");
+    const buf = Buffer.alloc(1 << 20);
+    for (let n; (n = readSync(fd, buf, 0, buf.length, null)) > 0;) hash.update(buf.subarray(0, n));
+    return hash.digest("hex");
+  } finally {
+    closeSync(fd);
+  }
+}
 const readSafe = (path, maxBytes) => readSafeBuffer(path, maxBytes).toString("utf8");
 const readJson = (p, maxBytes) => JSON.parse(readSafe(p, maxBytes));
 /** The supervisor (edge.json) and run-edge (central-supervisor.json) must load
  * the very policy file this script manages; refuse to operate otherwise. */
-function checkPolicyWiring() {
+function checkPolicyWiring(supervisor = readJson(FILES.supervisor)) {
   const edge = readJson(EDGE);
-  const supervisor = readJson(FILES.supervisor);
   if (
     edge.configPath !== FILES.config ||
     edge.supervisorConfig !== FILES.supervisor ||
@@ -190,7 +203,7 @@ function manifest(dir) {
       if (s.isDirectory()) walk(p, r);
       else if (s.isFile())
         // Hash what was opened without following links, not what lstat saw.
-        lines.push(r + "\0" + createHash("sha256").update(readSafeBuffer(p)).digest("hex"));
+        lines.push(r + "\0" + hashSafe(p));
       else fail("release_special_file");
     }
   };
@@ -336,7 +349,7 @@ const kadencoProcesses = () => {
 const [cmd, ...args] = process.argv.slice(2);
 try {
   if (!["status", "manifest", "get"].includes(cmd)) lock();
-  if (["status", "start", "install-file"].includes(cmd)) checkPolicyWiring();
+  if (["status", "start"].includes(cmd)) checkPolicyWiring();
   if (cmd === "status") out(await status());
   else if (cmd === "stop") {
     const r = spawnSync("systemctl", ["stop", UNIT], { stdio: "ignore" });
@@ -438,7 +451,10 @@ try {
     const kind = args[1];
     if (!["config", "supervisor"].includes(kind)) fail("unknown_file");
     const text = readSafe(src);
-    JSON.parse(text);
+    const incoming = JSON.parse(text);
+    // Check the state this install would produce, so a bad supervisor file is
+    // refused before it lands and a good one can repair an installed mismatch.
+    checkPolicyWiring(kind === "supervisor" ? incoming : undefined);
     const saved = backup(FILES[kind]);
     atomicWrite(FILES[kind], text, [0, serviceAccount()[1]], 0o640);
     out({

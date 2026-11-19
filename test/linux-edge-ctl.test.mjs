@@ -218,6 +218,42 @@ test("install-file refuses when the edge would load a different policy file", { 
   }
 });
 
+test(
+  "install-file supervisor validates the incoming file and can repair a mismatch",
+  { skip },
+  () => {
+    const h = host();
+    const supervisor = join(h.etc, "central-supervisor.json");
+    const good = JSON.stringify({
+      configPath: join(h.etc, "config.json"),
+      bootstrap: { serviceExpiresAt: 2 },
+    });
+    const stale = JSON.stringify({
+      configPath: join(h.runtime, "config.json"),
+      bootstrap: { serviceExpiresAt: 2 },
+    });
+    try {
+      const before = readFileSync(supervisor, "utf8");
+      const refused = ctlRun(h, "install-file", transfer(h, stale), "supervisor");
+      assert.equal(refused.status, 1);
+      assert.equal(refused.json.reason, "policy_path_mismatch");
+      assert.equal(
+        readFileSync(supervisor, "utf8"),
+        before,
+        "a stale supervisor file must not land",
+      );
+
+      // An installed mismatch is repaired by installing a correct supervisor file.
+      writeFileSync(supervisor, stale);
+      const repaired = ctlRun(h, "install-file", transfer(h, good), "supervisor");
+      assert.equal(repaired.status, 0, repaired.stdout);
+      assert.equal(readFileSync(supervisor, "utf8"), good);
+    } finally {
+      rmSync(h.root, { recursive: true, force: true });
+    }
+  },
+);
+
 test("transfer paths outside the transfer directory are refused and left alone", { skip }, () => {
   const h = host();
   try {
