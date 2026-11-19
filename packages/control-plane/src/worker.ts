@@ -16,6 +16,7 @@ import { decodePolicy } from "./policy-transport";
 import { frozenReactivation } from "./frozen-reactivation";
 import { migrationReauthorization } from "./migration-reauthorization";
 import { ownerEnrollment, type ControlPrincipal, type ControlPolicy } from "./owner-enrollment";
+import { policyRenewal, RENEWAL_OPS } from "./policy-renewal";
 import { MAX_CONTROL_PRINCIPALS, MAX_NATIVE_GRANTS_PER_PRINCIPAL } from "./policy-limits";
 import packageInfo from "../../../package.json" with { type: "json" };
 type Principal = ControlPrincipal;
@@ -287,6 +288,18 @@ export class FleetState extends DurableObject<Env> {
     const state = this.state();
     const reauthorization = migrationReauthorization(this.sql(), a, this.currentPolicy(), op, p);
     if (reauthorization !== undefined) return reauthorization;
+    if (RENEWAL_OPS.includes(op)) {
+      // The deployed policy is parsed only for renewal operations.
+      const renewal = policyRenewal(
+        this.sql(),
+        a,
+        this.currentPolicy(),
+        policy(this.env.AUTH_POLICY),
+        op,
+        p,
+      );
+      if (renewal !== undefined) return renewal;
+    }
     const resumed = frozenReactivation(this.sql(), a, this.currentPolicy(), op, p, retirement);
     if (resumed !== undefined) return resumed;
     if (op === "activate" && !p.activation_id) fail("retirement_proof_required");

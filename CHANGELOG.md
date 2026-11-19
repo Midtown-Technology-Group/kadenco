@@ -5,6 +5,32 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.25
+
+- `livePolicy` forgets its cached value when a read fails to parse, and its
+  test no longer assumes every write changes the file's timestamp (Windows
+  file times tick about every 15 ms).
+
+- Add an owner-only central policy renewal (`policy_renewal_challenge`,
+  `renew_configured_policy`, `policy_renewal_receipt`). Every central principal
+  has an expiry and the durable policy could only be tightened, so the service
+  stopped for good at its ceiling, and moving the edge to new routes produced
+  native grant fingerprints that central refused. Renewal adopts the
+  operator-deployed `AUTH_POLICY` as the next revision only when it keeps every
+  principal's identity, role and custody, adds no principal, host, scope or
+  budget, and matches each renewed native grant to its own predecessor (same
+  host and purpose, no wider scope). Owner and executor expiries may move up to
+  366 days from apply time; grants and thread budgets cannot outlast what they
+  replace unless their principal is renewed. Renewal runs only while active,
+  keeps the initiating owner live and binds its receipt to that owner's
+  credential. It is refused if it would make any stored binding (subscription,
+  command, host-link reference) usable again. In the same transaction, standing subscriptions whose observation
+  binding tracks the replaced grant move to the renewed grant, so queued
+  callbacks and receipts keep working after the edge restarts.
+  `tighten_policy`, owner enrollment and `subscribe_central` are unchanged. `projectRenewalPolicy` builds the next
+  revision offline from the current policy and the edge's local policy. See
+  `packages/control-plane/deployment/policy-renewal.md`.
+
 ## 0.1.0-alpha.24
 
 - Defer routine fleet coverage updates to the 60 s heartbeat (#73). After

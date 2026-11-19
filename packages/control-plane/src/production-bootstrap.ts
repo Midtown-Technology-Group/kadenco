@@ -9,6 +9,7 @@ import { centralTransport } from "./transport.ts";
 import { projectNativeGrant } from "./grant-projection.ts";
 import { existingBindings } from "./existing-bindings.ts";
 import { diagnosticIdentity } from "../../../dist/diagnostics.mjs";
+import type { ControlPolicy } from "./owner-enrollment.ts";
 export type BootstrapConfig = {
   fleet: string;
   origin: string;
@@ -38,7 +39,12 @@ export function diagnosticHooks(
   return {
     deliveryHistory: async (owner: string, id: string, after: number, limit: number) => {
       bridge.effectGuard?.();
-      return ownerCall(owner, "outbox_history", { epoch, id, after_sequence: after, limit });
+      return ownerCall(owner, "outbox_history", {
+        epoch,
+        id,
+        after_sequence: after,
+        limit,
+      });
     },
     relayDiagnosticAccess: async (owner: string) => {
       bridge.effectGuard?.();
@@ -46,7 +52,9 @@ export function diagnosticHooks(
       if (current.reason === "forbidden")
         throw Object.assign(Error("forbidden"), { reason: "forbidden" });
       if (current.mode !== "active" || current.epoch !== epoch)
-        throw Object.assign(Error("source_unavailable"), { reason: "source_unavailable" });
+        throw Object.assign(Error("source_unavailable"), {
+          reason: "source_unavailable",
+        });
     },
   };
 }
@@ -101,7 +109,10 @@ export function projectControlPolicy(policy: Policy, config: BootstrapConfig) {
       if (g.codexExceptions?.some((e) => !g.providerInstanceIds.includes(e.providerInstanceId)))
         throw Error("legacy_provider_exception_mapping_required");
       const s = projectNativeGrant(policy, owner, g.host, "command");
-      grants.push({ ...s, expires: Math.min(s.expires, config.serviceExpiresAt) });
+      grants.push({
+        ...s,
+        expires: Math.min(s.expires, config.serviceExpiresAt),
+      });
     }
     const caps = new Set((p.commandHosts ?? []).map((g) => g.maxPerDay));
     if (caps.size > 1) throw Error("heterogeneous_host_budget_mapping_required");
@@ -134,6 +145,59 @@ export function projectControlPolicy(policy: Policy, config: BootstrapConfig) {
         expiresAt: config.serviceExpiresAt,
       },
     ],
+  };
+}
+/** Offline: the next revision of the CURRENT central policy (from the owner's
+ * `policy_renewal_challenge`) for `renew_configured_policy`. The configured
+ * owners' and executor's hosts and native grants are re-projected from the
+ * validated local policy, and their expiry becomes `config.serviceExpiresAt`.
+ * Every other field, and every other principal, is kept exactly as it is. The
+ * Worker re-checks that the result only renews; this makes no credential. */
+export function projectRenewalPolicy(
+  current: ControlPolicy,
+  policy: Policy,
+  config: BootstrapConfig,
+): ControlPolicy {
+  const projected = projectControlPolicy(policy, config);
+  // The executor's grants are rebuilt from the projected owners alone, so an
+  // enrolled owner left out would keep authority the executor can no longer
+  // claim. Retire an owner (even an expired one) with tighten_policy first; the
+  // operator's clock is never trusted to decide that an owner has expired.
+  const now = Date.now();
+  if (
+    current.principals.some(
+      (p) => p.role === "owner" && !projected.principals.some((n) => n.id === p.id),
+    )
+  )
+    throw Error("renewal_owner_omitted");
+  for (const n of projected.principals) {
+    const old = current.principals.find((p) => p.id === n.id);
+    if (!old || old.tokenSha256 !== n.tokenSha256 || old.role !== n.role)
+      throw Error("renewal_identity_mismatch");
+    // Dedicated verification scopes are capped at the old ceiling and are kept
+    // unchanged, while the restarted edge would bind them at the new one. Let
+    // them expire (or remove them with tighten_policy) first, not break them.
+    if ((old.scopes ?? []).some((s) => s.expires > now))
+      throw Error("renewal_live_verification_scope");
+  }
+  return {
+    ...current,
+    revision: current.revision + 1,
+    principals: current.principals.map((old) => {
+      const n = projected.principals.find((p) => p.id === old.id);
+      return n
+        ? {
+            ...old,
+            // Keep verification-only hosts (no native grants); drop hosts whose
+            // grants are no longer projected.
+            hosts: old.hosts.filter(
+              (h) => n.hosts.includes(h) || !(old.nativeGrants ?? []).some((g) => g.host === h),
+            ),
+            nativeGrants: n.nativeGrants,
+            expiresAt: n.expiresAt,
+          }
+        : old;
+    }),
   };
 }
 /** Exact verification scopes are derived through the original dedicated-session

@@ -6,7 +6,11 @@ import { nativeFixture } from "./native-fixture.mts";
 import { existingBindings } from "../src/existing-bindings.ts";
 import { eventTarget } from "../src/event-target.ts";
 import { existingCallback } from "../src/edge-services.ts";
-import { projectControlPolicy, projectVerificationPolicy } from "../src/production-bootstrap.ts";
+import {
+  projectControlPolicy,
+  projectRenewalPolicy,
+  projectVerificationPolicy,
+} from "../src/production-bootstrap.ts";
 import { cachePolicyGuard, startProductionSidecar } from "../src/production-startup.ts";
 const hash = (x: unknown) => createHash("sha256").update(JSON.stringify(x)).digest("hex");
 
@@ -139,7 +143,10 @@ test("supported startup refuses historical cache aliases, key mismatch and inact
     await assert.rejects(
       startProductionSidecar({
         ...input,
-        bootstrap: { ...input.bootstrap, journalPath: join(archive, "central-attempts.db") },
+        bootstrap: {
+          ...input.bootstrap,
+          journalPath: join(archive, "central-attempts.db"),
+        },
       }),
       /production_journal_directory_mismatch/,
     );
@@ -169,7 +176,11 @@ test("supported startup refuses historical cache aliases, key mismatch and inact
           ...input.bootstrap,
           fetch: (async (url: string | URL) => {
             ops.push(new URL(url).pathname);
-            return Response.json({ mode: "active", epoch: 1, release_version: "0.1.0-alpha.16" });
+            return Response.json({
+              mode: "active",
+              epoch: 1,
+              release_version: "0.1.0-alpha.16",
+            });
           }) as typeof fetch,
         },
       }),
@@ -224,7 +235,10 @@ test("original service bindings resolve exact context for all supported operatio
     });
     assert.match(creation.envelope.thread_id, /^[a-f0-9-]{36}$/);
     assert.equal(creation.envelope.run, null);
-    const before = await f.commands.settings.read("owner", { host: "host", thread_id: "thread" });
+    const before = await f.commands.settings.read("owner", {
+      host: "host",
+      thread_id: "thread",
+    });
     const settings = await b.bind("settings_standard", "owner", {
       host: "host",
       thread_id: "thread",
@@ -354,7 +368,11 @@ test("task completion derives the original authorized session target and refuses
       thread: "verification-thread",
     });
     assert.throws(
-      () => eventTarget(f.bridge, s, { ...event, data: { ...event.data, host: "another-host" } }),
+      () =>
+        eventTarget(f.bridge, s, {
+          ...event,
+          data: { ...event.data, host: "another-host" },
+        }),
       /identity_mismatch/,
     );
     f.store.put("subscription", s.id, s);
@@ -364,7 +382,12 @@ test("task completion derives the original authorized session target and refuses
     await assert.rejects(
       callback(s.id, {
         data: event,
-        scope: { owner: "owner", host: "host", thread: "verification-thread", name: s.name },
+        scope: {
+          owner: "owner",
+          host: "host",
+          thread: "verification-thread",
+          name: s.name,
+        },
       }),
       /forbidden/,
     );
@@ -400,6 +423,133 @@ test("task completion derives the original authorized session target and refuses
   } finally {
     await f.close();
   }
+});
+
+test("renewal projection re-derives grants and expiry for configured principals only", () => {
+  const f = nativeFixture();
+  const config = {
+    fleet: "fixture",
+    origin: "https://fixture.invalid",
+    epoch: 7,
+    executor: "fixture-edge",
+    executorToken: "test-only-executor-credential-at-least-32-bytes",
+    ownerTokens: new Map([["owner", "fixture-owner"]]),
+    observationOwner: "owner",
+    serviceExpiresAt: f.now + 300000,
+    key: f.key,
+    journalPath: "/fixture-attempts.db",
+  };
+  return (async () => {
+    try {
+      const base = projectControlPolicy(f.policy, config);
+      const scope = {
+        project: "p",
+        provider: "codex",
+        run: null,
+        grant: "e".repeat(64),
+        revision: 1,
+        // An expired dedicated verification scope is kept as it is.
+        expires: f.now - 1000,
+      };
+      const current = {
+        ...base,
+        revision: 4,
+        principals: [
+          ...base.principals.map((p) =>
+            p.id === "owner" ? { ...p, scopes: [scope], expiresAt: f.now + 1000 } : p,
+          ),
+          {
+            id: "migration",
+            role: "migration" as const,
+            migrationAuthority: true,
+            tokenSha256: "f".repeat(64),
+            hosts: [],
+            maxPerDay: 0,
+            expiresAt: 1,
+          },
+        ],
+      };
+      const renewed = projectRenewalPolicy(current, f.policy, {
+        ...config,
+        serviceExpiresAt: f.now + 900000,
+      });
+      assert.equal(renewed.revision, 5);
+      assert.equal(renewed.fleet, "fixture");
+      const owner = renewed.principals.find((p) => p.id === "owner")!;
+      assert.equal(owner.expiresAt, f.now + 900000);
+      assert.deepEqual(owner.scopes, [scope], "existing scopes are kept");
+      assert.ok(owner.nativeGrants!.every((g) => g.expires <= f.now + 900000));
+      assert.deepEqual(
+        renewed.principals.find((p) => p.id === "migration"),
+        current.principals.at(-1),
+        "unconfigured principals are unchanged",
+      );
+      assert.equal(JSON.stringify(renewed).includes("fixture-owner"), false);
+      assert.throws(
+        () =>
+          projectRenewalPolicy(
+            {
+              ...current,
+              principals: current.principals.filter((p) => p.id !== "fixture-edge"),
+            },
+            f.policy,
+            config,
+          ),
+        /renewal_identity_mismatch/,
+      );
+      // A live verification scope would be bound at the new ceiling by the
+      // restarted edge but kept at the old one centrally: refused, not broken.
+      assert.throws(
+        () =>
+          projectRenewalPolicy(
+            {
+              ...current,
+              principals: current.principals.map((p) =>
+                p.id === "owner" ? { ...p, scopes: [{ ...scope, expires: f.now + 60000 }] } : p,
+              ),
+            },
+            f.policy,
+            config,
+          ),
+        /renewal_live_verification_scope/,
+      );
+      // Verification-only hosts (no native grants) are kept.
+      const verificationOnly = projectRenewalPolicy(
+        {
+          ...current,
+          principals: current.principals.map((p) =>
+            p.id === "owner" ? { ...p, hosts: [...p.hosts, "verification-host"] } : p,
+          ),
+        },
+        f.policy,
+        config,
+      );
+      assert.ok(
+        verificationOnly.principals
+          .find((p) => p.id === "owner")!
+          .hosts.includes("verification-host"),
+      );
+      // An enrolled owner left out of the projection input is refused, not narrowed.
+      const second = base.principals.find((p) => p.id === "owner")!;
+      assert.throws(
+        () =>
+          projectRenewalPolicy(
+            {
+              ...current,
+              principals: [
+                ...current.principals,
+                { ...second, id: "owner-two", tokenSha256: "d".repeat(64) },
+              ],
+            },
+            f.policy,
+            config,
+          ),
+        /renewal_owner_omitted/,
+      );
+    } finally {
+      await f.close();
+    }
+  })();
 });
 
 test("control policy projection binds original credentials, separates executor and verifies dedicated scopes", async () => {
@@ -551,8 +701,12 @@ test("compiled production composition routes official MCP through central reserv
     f.dispatch("unknown");
     const uncertain = { ...p, request_id: randomUUID() };
     assert.equal(
-      value(await client.callTool({ name: "continue_thread", arguments: uncertain }))
-        .safe_to_resend,
+      value(
+        await client.callTool({
+          name: "continue_thread",
+          arguments: uncertain,
+        }),
+      ).safe_to_resend,
       false,
     );
     await client.callTool({ name: "continue_thread", arguments: uncertain });
@@ -579,18 +733,29 @@ test("compiled production composition routes official MCP through central reserv
     assert.equal(f.effects(), 2, "diagnostic read performs no additional native effect");
     const revoked = await fetchImpl("https://fixture.invalid/revoke", {
       method: "POST",
-      headers: { authorization: "Bearer fixture-owner", "content-type": "application/json" },
+      headers: {
+        authorization: "Bearer fixture-owner",
+        "content-type": "application/json",
+      },
       body: JSON.stringify({ principal_id: "owner" }),
     });
     assert.equal(revoked.status, 200);
     assert.equal(
-      (await client.callTool({ name: "get_relay_request_diagnostics", arguments: {} })).isError,
+      (
+        await client.callTool({
+          name: "get_relay_request_diagnostics",
+          arguments: {},
+        })
+      ).isError,
       true,
       "central revocation blocks diagnostics even before edge policy catches up",
     );
     f.policy.principals[0].enabled = false;
     await assert.rejects(
-      client.callTool({ name: "continue_thread", arguments: { ...p, request_id: randomUUID() } }),
+      client.callTool({
+        name: "continue_thread",
+        arguments: { ...p, request_id: randomUUID() },
+      }),
       (error: unknown) => (error as { data?: { status?: number } }).data?.status === 401,
     );
     assert.equal(f.effects(), 2);
