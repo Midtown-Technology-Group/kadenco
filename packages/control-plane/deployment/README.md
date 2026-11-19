@@ -70,3 +70,7 @@ independent acceptance. Changing a DO epoch cannot fence the installed alpha6
 executable. Callback URL/signing identity and all existing subscription/grant
 identities must survive unchanged; uncertain effects are reconciled, never
 replayed. No production activation implementation exists in this revision.
+
+To run the edge as a service on a Linux host (systemd unit, secret-store
+bootstrap, SSH forced commands for fleet hosts, release and renewal steps), see
+[linux-edge.md](linux-edge.md).

@@ -1,0 +1,31 @@
+[Unit]
+Description=Kadenco central edge (Eddie T3 bridge)
+Documentation=https://github.com/Midtown-Technology-Group/kadenco/blob/main/packages/control-plane/deployment/linux-edge.md
+After=network-online.target dnclient.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kadenco
+Group=kadenco
+Environment=HOME=/var/lib/kadenco
+WorkingDirectory=/var/lib/kadenco
+ExecStart=/usr/bin/node /opt/kadenco/kadenco-edge-supervisor.mjs /etc/kadenco/edge.json
+Restart=always
+# The edge never releases its central lease (120 s TTL) on exit; restarting
+# after it lapsed claims cleanly instead of racing the old lease.
+RestartSec=130
+KillMode=mixed
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/kadenco
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

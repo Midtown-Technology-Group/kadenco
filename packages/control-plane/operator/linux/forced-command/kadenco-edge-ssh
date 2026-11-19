@@ -1,0 +1,59 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Forced command for the Kadenco central edge's SSH key on a Linux T3 host.
+# Usage (authorized_keys command=): kadenco-edge-ssh LAUNCHER TOKEN_FILE BASE_DIR
+# Allows exactly what the edge runs over SSH on this host:
+#   - read T3 runtime metadata (port discovery);
+#   - read the enrolled fleet-read token (stat + cat);
+#   - issue a 2-minute eddie-t3-delivery session (read, or read+operate);
+#   - revoke a session, only if it is an eddie-t3-delivery session.
+# Requests are compared as whole strings against the exact argument vectors the
+# edge sends (src/native-session.mts quotes each word in single quotes). Nothing
+# from the request is evaluated by the shell. Port forwards are bounded by
+# permitopen/permitlisten in authorized_keys.
+set -fu
+launcher=$1 token=$2 basedir=$3
+cmd=${SSH_ORIGINAL_COMMAND-}
+deny() { echo "kadenco-edge-ssh: refused" >&2; exit 126; }
+# Quote exactly as the callers do: '...' with each embedded ' written as '\''.
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+# One line of printable characters only: no newline, carriage return or control.
+case $cmd in *[![:print:]]*|'') deny ;; esac
+
+if [ "$cmd" = 'cat "$HOME/.t3/userdata/server-runtime.json"' ]; then
+  exec cat "$HOME/.t3/userdata/server-runtime.json"
+fi
+if [ "$cmd" = "stat -c %Y $(q "$token") && cat $(q "$token")" ]; then
+  stat -c %Y "$token" && exec cat "$token"
+  exit 1
+fi
+
+head="$(q "$launcher") 'auth' 'session'"
+tail="'--ttl' '2m' '--subject' 'eddie-t3-delivery' '--label' 'Eddie T3 private delivery' '--json' '--base-dir' $(q "$basedir")"
+issue_read="$head 'issue' '--scope' 'orchestration:read' $tail"
+issue_operate="$head 'issue' '--scope' 'orchestration:read' '--scope' 'orchestration:operate' $tail"
+if [ "$cmd" = "$issue_read" ]; then
+  exec "$launcher" auth session issue --scope orchestration:read --ttl 2m \
+    --subject eddie-t3-delivery --label "Eddie T3 private delivery" --json --base-dir "$basedir"
+fi
+if [ "$cmd" = "$issue_operate" ]; then
+  exec "$launcher" auth session issue --scope orchestration:read --scope orchestration:operate --ttl 2m \
+    --subject eddie-t3-delivery --label "Eddie T3 private delivery" --json --base-dir "$basedir"
+fi
+
+prefix="$head 'revoke' '"
+suffix="' '--base-dir' $(q "$basedir")"
+case $cmd in "$prefix"*"$suffix") ;; *) deny ;; esac
+id=${cmd#"$prefix"}
+id=${id%"$suffix"}
+case $id in ''|*[!A-Za-z0-9_-]*) deny ;; esac
+[ "${#id}" -le 200 ] && [ "$cmd" = "$prefix$id$suffix" ] || deny
+# Revoke only the edge's own delivery sessions, never another client's.
+"$launcher" auth session list --json --base-dir "$basedir" 2>/dev/null |
+  KADENCO_SESSION_ID=$id node -e '
+    let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+      const all = JSON.parse(s), id = process.env.KADENCO_SESSION_ID;
+      const own = Array.isArray(all) && all.some((x) => x && x.sessionId === id && x.subject === "eddie-t3-delivery");
+      process.exit(own ? 0 : 1);
+    });' || deny
+exec "$launcher" auth session revoke "$id" --base-dir "$basedir"
