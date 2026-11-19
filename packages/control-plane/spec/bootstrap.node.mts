@@ -529,27 +529,6 @@ test("renewal projection re-derives grants and expiry for configured principals 
           .find((p) => p.id === "owner")!
           .hosts.includes("verification-host"),
       );
-      // An owner that has already expired may be left out: it is dropped.
-      const withExpired = projectRenewalPolicy(
-        {
-          ...current,
-          principals: [
-            ...current.principals,
-            {
-              ...base.principals.find((p) => p.id === "owner")!,
-              id: "owner-expired",
-              tokenSha256: "c".repeat(64),
-              expiresAt: f.now - 1000,
-            },
-          ],
-        },
-        f.policy,
-        config,
-      );
-      assert.equal(
-        withExpired.principals.some((p) => p.id === "owner-expired"),
-        false,
-      );
       // An enrolled owner left out of the projection input is refused, not narrowed.
       const second = base.principals.find((p) => p.id === "owner")!;
       assert.throws(

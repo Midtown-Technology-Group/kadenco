@@ -159,44 +159,45 @@ export function projectRenewalPolicy(
   config: BootstrapConfig,
 ): ControlPolicy {
   const projected = projectControlPolicy(policy, config);
-  // The executor's grants are rebuilt from the projected owners alone, so a live
-  // owner left out would keep authority the executor can no longer claim. An
-  // already expired owner left out is dropped from the proposal instead.
+  // The executor's grants are rebuilt from the projected owners alone, so an
+  // enrolled owner left out would keep authority the executor can no longer
+  // claim. Retire an owner (even an expired one) with tighten_policy first; the
+  // operator's clock is never trusted to decide that an owner has expired.
   const now = Date.now();
-  const omitted = current.principals.filter(
-    (p) => p.role === "owner" && !projected.principals.some((n) => n.id === p.id),
-  );
-  if (omitted.some((p) => p.expiresAt > now)) throw Error("renewal_owner_omitted");
+  if (
+    current.principals.some(
+      (p) => p.role === "owner" && !projected.principals.some((n) => n.id === p.id),
+    )
+  )
+    throw Error("renewal_owner_omitted");
   for (const n of projected.principals) {
     const old = current.principals.find((p) => p.id === n.id);
     if (!old || old.tokenSha256 !== n.tokenSha256 || old.role !== n.role)
       throw Error("renewal_identity_mismatch");
     // Dedicated verification scopes are capped at the old ceiling and are kept
     // unchanged, while the restarted edge would bind them at the new one. Let
-    // them expire (or re-prepare them) first rather than break them silently.
+    // them expire (or remove them with tighten_policy) first, not break them.
     if ((old.scopes ?? []).some((s) => s.expires > now))
       throw Error("renewal_live_verification_scope");
   }
   return {
     ...current,
     revision: current.revision + 1,
-    principals: current.principals
-      .filter((p) => !omitted.includes(p))
-      .map((old) => {
-        const n = projected.principals.find((p) => p.id === old.id);
-        return n
-          ? {
-              ...old,
-              // Keep verification-only hosts (no native grants); drop hosts whose
-              // grants are no longer projected.
-              hosts: old.hosts.filter(
-                (h) => n.hosts.includes(h) || !(old.nativeGrants ?? []).some((g) => g.host === h),
-              ),
-              nativeGrants: n.nativeGrants,
-              expiresAt: n.expiresAt,
-            }
-          : old;
-      }),
+    principals: current.principals.map((old) => {
+      const n = projected.principals.find((p) => p.id === old.id);
+      return n
+        ? {
+            ...old,
+            // Keep verification-only hosts (no native grants); drop hosts whose
+            // grants are no longer projected.
+            hosts: old.hosts.filter(
+              (h) => n.hosts.includes(h) || !(old.nativeGrants ?? []).some((g) => g.host === h),
+            ),
+            nativeGrants: n.nativeGrants,
+            expiresAt: n.expiresAt,
+          }
+        : old;
+    }),
   };
 }
 /** Exact verification scopes are derived through the original dedicated-session

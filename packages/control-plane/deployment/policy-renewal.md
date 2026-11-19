@@ -74,11 +74,12 @@ ones (several observation grants for one host) are left alone and fail closed.
    ceiling while the restarted edge would bind at the new one, so let them expire
    or remove them first: the deployed central policy must hold no live
    verification scope for any configured owner or executor. Re-preparing a
-   verification request re-derives the same live scope, so only omitting that
-   request (and deploying the result) or waiting for the scope to expire clears
-   it. A scope that runs to the owner's own expiry leaves no renewal window: that
-   owner cannot be renewed through this path. An owner that has already expired
-   may be left out of `ownerTokens`; it is dropped from the proposal. Verification-
+   verification request re-derives the same live scope, and deploying a policy
+   without it does not change the durable policy: remove it from the durable
+   policy with `tighten_policy`, or wait for it to expire. A scope that runs to
+   the owner's own expiry leaves no renewal window: that owner cannot be renewed
+   through this path. Every enrolled owner must be renewed together; retire an
+   owner (even an expired one) with `tighten_policy` before renewing the rest. Verification-
    only hosts are kept. It re-projects the owners' and
    executor's grants from the local policy,
    sets their expiry to `bootstrap.serviceExpiresAt` and leaves everything else
