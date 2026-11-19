@@ -19,12 +19,12 @@ refused unless, for every principal in the configured policy:
   no migration or state-custody authority;
 - its hosts, operation scopes and thread budgets (including their expiries) are
   the same or narrower, and its daily limit is the same or lower;
-- each native grant replaces a prior grant of the same host and purpose, one for
-  one (a host/purpose pair never gains grants, so a successor cannot sit beside
-  the fingerprint it replaces), with the same or narrower project and provider
-  scope. The fingerprint may differ. A grant expires no later than its
-  principal, and no later than the grant it replaces unless that principal's
-  expiry is being extended;
+- each native grant replaces its own distinct prior grant (a one-to-one
+  matching): same host and purpose, the same or narrower projects and providers,
+  and an expiry no later than its principal and, unless that principal's expiry
+  is being extended, no later than that same predecessor. A successor cannot sit
+  beside the fingerprint it replaces or borrow another grant's scope or expiry.
+  The fingerprint may differ;
 - only an owner or executor expiry moves later, to at most 366 days from apply
   time, and never for a revoked principal. Migration principals keep their
   separate one-time reauthorization path.
@@ -37,13 +37,16 @@ credential hash, not only its principal ID.
 
 ## Standing subscriptions
 
-A subscription stores the binding it was created with. After renewal the edge
-derives the same observation authority with a new expiry (and, after a route
-change, a new fingerprint). Its next `subscribe_central` for that subscription
-is a conflict; it then reads the snapshot and retries with `expected_expires`,
-which **rebinds** the subscription: the replacement binding must pass current
-authority and keep the same project, provider and run, and the subscription's
-identity, cursor and outbox history are kept. Every other field must still match.
+A subscription stores the observation binding it was created with, and queued
+callbacks, cursors and receipts are all authorized against it. In the same
+transaction as the policy write, renewal moves every active subscription whose
+binding tracks its owner's only observation grant for that host (same
+fingerprint, revision and expiry) to that owner's only renewed observation grant
+for the host: new fingerprint, revision and expiry, everything else unchanged.
+That is exactly the binding the edge derives once it restarts with the renewed
+policy, so nothing has to be resubmitted. The receipt counts these as
+`rebound_subscriptions`. Expired, inactive or ambiguous bindings (several
+observation grants for one host) are left alone and fail closed.
 
 ## Procedure
 
@@ -51,7 +54,7 @@ identity, cursor and outbox history are kept. Every other field must still match
    the current revision, the exact current policy (token hashes and grant
    metadata only) and the digests of the current and deployed policies.
 2. Update the edge's local policy for the new routes and expiries, keeping the
-   change staged until step 5. Build the next revision offline with
+   change staged until step 6. Build the next revision offline with
    `projectRenewalPolicy(currentPolicy, localPolicy, bootstrap)` from the edge
    bundle. Every enrolled owner must be in `bootstrap.ownerTokens`, because the
    executor's grants are rebuilt from those owners. It re-projects the owners' and
@@ -62,7 +65,11 @@ identity, cursor and outbox history are kept. Every other field must still match
 3. Deploy that policy as `AUTH_POLICY` (`encodePolicy`), through the normal
    release promotion's secrets file. Authentication uses the deployed policy's
    token hashes, which renewal does not change.
-4. Challenge again. Require the same current revision and digest as step 1, the
+4. Stop the edge. While it runs on the old policy it derives the replaced
+   bindings, which central refuses after renewal, so deliveries processed in
+   between would be quarantined. Commands reserved under a replaced command
+   grant are refused afterwards: renew when none is in flight.
+5. Challenge again. Require the same current revision and digest as step 1, the
    next revision as `configured_revision`, and `configured_policy_sha256` equal
    to the digest of the policy built in step 2. Persist those values with one
    request UUID before committing. Then POST `/renew_configured_policy`:
@@ -80,9 +87,8 @@ identity, cursor and outbox history are kept. Every other field must still match
    response, POST `/policy_renewal_receipt` with the same `request_id`; never
    retry with a new UUID.
 
-5. Install the staged local policy and the new `serviceExpiresAt`, then restart
-   the edge so its observation scopes take the new expiry. Commands whose
-   fingerprints changed fail closed between steps 4 and 5.
+6. Install the staged local policy and the new `serviceExpiresAt`, then start the
+   edge.
 
 A renewal grants no new host, provider, project or role; it changes when access
 ends and which routes it is bound to.

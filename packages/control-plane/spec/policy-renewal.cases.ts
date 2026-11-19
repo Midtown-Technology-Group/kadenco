@@ -290,7 +290,7 @@ describe("authenticated operator policy renewal", () => {
       true,
     );
   });
-  it("rebinds a standing subscription to the renewed grant, keeping its identity", async () => {
+  it("moves tracking subscriptions to the renewed grant inside the renewal", async () => {
     const binding = (g: string, expires: number) => ({
       project: "__authorized_host_observation__",
       provider: "__observation__",
@@ -299,21 +299,31 @@ describe("authenticated operator policy renewal", () => {
       revision: 1,
       expires,
     });
-    const subscription = (b: object, extra: object = {}, configured = next()) =>
+    const subscription = (id: string, b: object, configured: ControlPolicy) =>
       call(
         "subscribe_central",
         {
           epoch: 7,
-          id: "standing",
+          id,
           host: "remote",
           thread_id: "thread",
           binding: b,
           expires: null,
           name: "t3.thread.activity",
-          callback_reference: "standing",
-          ...extra,
+          callback_reference: id,
         },
         configured,
+      );
+    const rows = () =>
+      runInDurableObject(stub(), (_obj, state) =>
+        Object.fromEntries(
+          state.storage.sql
+            .exec<{ id: string; binding: string; value: string }>(
+              "SELECT id,binding,value FROM subscriptions",
+            )
+            .toArray()
+            .map((r) => [r.id, { binding: JSON.parse(r.binding), value: JSON.parse(r.value) }]),
+        ),
       );
     const renewal = structuredClone(old);
     renewal.revision++;
@@ -324,33 +334,65 @@ describe("authenticated operator policy renewal", () => {
       ];
       a.expiresAt = later;
     }
-    expect((await subscription(binding("b", soon), {}, old)).body).toMatchObject({ stored: true });
-    expect((await call("renew_configured_policy", input(renewal), renewal)).body.committed).toBe(
-      true,
-    );
-    // The old fingerprint is no longer authorized.
-    expect((await subscription(binding("b", soon), {}, renewal)).body.reason).toBe("forbidden");
-    // The edge's existing path: conflict, snapshot, then compare-and-swap.
-    const renewed = binding("d", later);
-    expect((await subscription(renewed, {}, renewal)).body.reason).toBe("idempotency_conflict");
-    expect(
-      (await subscription({ ...renewed, project: "other" }, { expected_expires: null }, renewal))
-        .body.reason,
-    ).toBe("idempotency_conflict");
-    expect((await subscription(renewed, { expected_expires: null }, renewal)).body).toMatchObject({
-      id: "standing",
+    // One binding tracks the grant (as the edge derives it); one ends earlier.
+    expect((await subscription("tracking", binding("b", soon), old)).body.stored).toBe(true);
+    expect((await subscription("shorter", binding("b", soon - 1000), old)).body.stored).toBe(true);
+    const before = await rows();
+    const r = await call("renew_configured_policy", input(renewal), renewal);
+    expect(r.body).toMatchObject({ committed: true, rebound_subscriptions: 1 });
+    const after = await rows();
+    expect(after.tracking!.binding).toEqual(binding("d", later));
+    expect(after.tracking!.value).toEqual({
+      ...before.tracking!.value,
+      binding: binding("d", later),
+    });
+    expect(after.shorter).toEqual(before.shorter);
+    // The restarted edge resubmits exactly the stored subscription: no conflict.
+    expect((await subscription("tracking", binding("d", later), renewal)).body).toMatchObject({
+      id: "tracking",
       stored: true,
     });
-    const rows = await runInDurableObject(stub(), (_obj, state) =>
-      state.storage.sql
-        .exec<{ binding: string; host: string; active: number }>(
-          "SELECT binding,host,active FROM subscriptions WHERE id='standing'",
-        )
-        .toArray(),
+    // The replaced fingerprint no longer authorizes anything.
+    expect((await subscription("tracking", binding("b", soon), renewal)).body.reason).toBe(
+      "forbidden",
     );
-    expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0]!.binding)).toEqual(renewed);
-    expect(rows[0]!.active).toBe(1);
+  });
+  it("matches each renewed grant to its own predecessor's scope and expiry", async () => {
+    const scoped = (g: string, project: string, expires: number) => ({
+      ...grant("remote", "observation", g, expires),
+      projects: [project],
+    });
+    const two = structuredClone(old);
+    two.principals[0]!.nativeGrants = [
+      grant("local", "command", "a"),
+      scoped("b", "x", soon - day / 2),
+      scoped("e", "y", soon),
+    ];
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(two));
+    });
+    // Keep A for x, add A' for x borrowing B's later expiry, drop B.
+    const borrowed = structuredClone(two);
+    borrowed.revision++;
+    borrowed.principals[0]!.nativeGrants = [
+      grant("local", "command", "a"),
+      scoped("b", "x", soon - day / 2),
+      scoped("f", "x", soon),
+    ];
+    expect((await call("renew_configured_policy", input(borrowed), borrowed)).body.reason).toBe(
+      "forbidden",
+    );
+    // Each successor matched to its own predecessor is accepted.
+    const replaced = structuredClone(two);
+    replaced.revision++;
+    replaced.principals[0]!.nativeGrants = [
+      grant("local", "command", "c"),
+      scoped("f", "x", soon - day / 2),
+      scoped("9", "y", soon),
+    ];
+    expect((await call("renew_configured_policy", input(replaced), replaced)).body.committed).toBe(
+      true,
+    );
   });
   it("never extends a thread budget, even with the principal expiry unchanged", async () => {
     const budgeted = structuredClone(old);

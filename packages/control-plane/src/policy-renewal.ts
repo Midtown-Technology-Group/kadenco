@@ -31,25 +31,95 @@ const renewsGrant = (next: NativeGrantScope, prior: NativeGrantScope) =>
   subset(next.projects, prior.projects) &&
   subset(next.providers, prior.providers);
 
-/** Each native grant replaces a prior grant of the same host and purpose, one
- * for one: a pair never holds more grants than before, so a successor cannot
- * sit beside the fingerprint it replaces. A grant expires no later than its
- * principal, and no later than the grants it replaces unless the principal's
- * own expiry is being extended. */
+/** Each native grant replaces its own distinct prior grant: an injective
+ * matching where every successor has the same host and purpose as its
+ * predecessor, no wider projects or providers, and expires no later than its
+ * principal and, unless that principal's own expiry is being extended, no later
+ * than that same predecessor. A successor therefore never sits beside the
+ * fingerprint it replaces, nor borrows another grant's scope or expiry. */
 function grantsRenewed(n: ControlPrincipal, prior: ControlPrincipal, extended: boolean) {
   const next = n.nativeGrants ?? [],
     old = prior.nativeGrants ?? [];
-  const pair = (g: NativeGrantScope) => g.host + "\u0000" + g.purpose;
-  return next.every((g) => {
-    const before = old.filter((x) => pair(x) === pair(g));
-    return (
-      n.hosts.includes(g.host) &&
-      g.expires <= n.expiresAt &&
-      (extended || g.expires <= Math.max(...before.map((x) => x.expires))) &&
-      before.some((x) => renewsGrant(g, x)) &&
-      next.filter((x) => pair(x) === pair(g)).length <= before.length
+  const fits = (g: NativeGrantScope, x: NativeGrantScope) =>
+    renewsGrant(g, x) && (extended || g.expires <= x.expires);
+  if (next.some((g) => !n.hosts.includes(g.host) || g.expires > n.expiresAt)) return false;
+  // Bipartite matching (augmenting paths); at most 40 grants per principal.
+  const owner: (number | undefined)[] = Array.from({ length: old.length });
+  const assign = (i: number, seen: Set<number>): boolean => {
+    for (let k = 0; k < old.length; k++) {
+      if (seen.has(k) || !fits(next[i]!, old[k]!)) continue;
+      seen.add(k);
+      if (owner[k] === undefined || assign(owner[k]!, seen)) {
+        owner[k] = i;
+        return true;
+      }
+    }
+    return false;
+  };
+  return next.every((_g, i) => assign(i, new Set()));
+}
+
+/** The single observation grant a principal holds for `host`, if exactly one. */
+const soleObservation = (p: ControlPrincipal | undefined, host: string) => {
+  const grants = (p?.nativeGrants ?? []).filter(
+    (g) => g.host === host && g.purpose === "observation",
+  );
+  return grants.length === 1 ? grants[0] : undefined;
+};
+/** Inside the renewal transaction, move each live standing subscription whose
+ * observation binding tracks its owner's sole grant for that host (same
+ * fingerprint, revision and expiry) to that owner's sole renewed grant. This is
+ * the binding the edge derives after it restarts with the renewed policy, so
+ * queued callbacks, cursors and receipts keep authorizing without the edge
+ * resubmitting anything. Anything ambiguous, expired or inactive is left as is. */
+function rebindSubscriptions(
+  sql: SqlStorage,
+  current: ControlPolicy,
+  configured: ControlPolicy,
+  now: number,
+) {
+  let count = 0;
+  const rows = sql
+    .exec<{ id: string; owner: string; host: string; binding: string; value: string }>(
+      "SELECT id,owner,host,binding,value FROM subscriptions WHERE active=1",
+    )
+    .toArray();
+  for (const row of rows) {
+    const binding = JSON.parse(row.binding);
+    const before = soleObservation(
+        current.principals.find((p) => p.id === row.owner),
+        row.host,
+      ),
+      after = soleObservation(
+        configured.principals.find((p) => p.id === row.owner),
+        row.host,
+      );
+    if (
+      !before ||
+      !after ||
+      binding.expires <= now ||
+      binding.grant !== before.grant ||
+      binding.revision !== before.revision ||
+      binding.expires !== before.expires
+    )
+      continue;
+    const next = {
+      ...binding,
+      grant: after.grant,
+      revision: after.revision,
+      expires: after.expires,
+    };
+    const value = JSON.parse(row.value);
+    value.binding = next;
+    sql.exec(
+      "UPDATE subscriptions SET binding=?,value=? WHERE id=?",
+      JSON.stringify(next),
+      JSON.stringify(value),
+      row.id,
     );
-  });
+    count++;
+  }
+  return count;
 }
 
 /** Can `n` replace `prior` in a renewal? Identity, role and custody stay exactly
@@ -195,7 +265,9 @@ export function policyRenewal(
     previous_policy_sha256: enrollmentPolicyDigest(current),
     input_sha256: input,
     actor_sha256: actor.tokenSha256,
+    rebound_subscriptions: 0,
   };
+  receipt.rebound_subscriptions = rebindSubscriptions(sql, current, configured, now);
   sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(configured));
   sql.exec(
     "INSERT INTO audit(actor,action,subject,at) VALUES(?,?,?,?)",

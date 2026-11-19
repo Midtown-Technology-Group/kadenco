@@ -101,12 +101,9 @@ export function serviceOperation(
     )
       bad("invalid_request");
     const old = sql
-      .exec<{
-        holder: string;
-        generation: number;
-        expires: number;
-        instance: string | null;
-      }>("SELECT * FROM edge_lease WHERE id=1")
+      .exec<{ holder: string; generation: number; expires: number; instance: string | null }>(
+        "SELECT * FROM edge_lease WHERE id=1",
+      )
       .toArray()[0];
     if (old && old.expires > now && (old.holder !== a.id || old.instance !== instance))
       bad("fenced");
@@ -179,12 +176,10 @@ export function serviceOperation(
       bad("invalid_request");
     const value = JSON.stringify(entry),
       old = sql
-        .exec<{
-          value: string;
-          owner: string;
-          expires: number | null;
-          active: number;
-        }>("SELECT value,owner,expires,active FROM subscriptions WHERE id=?", id)
+        .exec<{ value: string; owner: string; expires: number | null; active: number }>(
+          "SELECT value,owner,expires,active FROM subscriptions WHERE id=?",
+          id,
+        )
         .toArray()[0];
     if (old && old.owner !== a.id) bad("forbidden");
     if (old && !old.active) bad("forbidden");
@@ -194,28 +189,17 @@ export function serviceOperation(
         nextMeta = { ...entry };
       delete priorMeta.expires;
       delete nextMeta.expires;
-      // Rebind: after a policy renewal the same observation authority has a new
-      // grant fingerprint, revision or expiry. The replacement binding was just
-      // authorized against current grants; what is observed (project, provider,
-      // run) cannot change, and identity, cursor and outbox are kept.
-      const prior = previous.binding ?? {};
-      delete priorMeta.binding;
-      delete nextMeta.binding;
       if (
         p.expected_expires !== old.expires ||
         JSON.stringify(priorMeta) !== JSON.stringify(nextMeta) ||
-        prior.project !== binding.project ||
-        prior.provider !== binding.provider ||
-        prior.run !== binding.run ||
         (previous.lease_expires !== undefined &&
           (p.expires === null || Number(p.expires) > previous.lease_expires))
       )
         bad("idempotency_conflict");
       sql.exec(
-        "UPDATE subscriptions SET expires=?,value=?,binding=? WHERE id=?",
+        "UPDATE subscriptions SET expires=?,value=? WHERE id=?",
         p.expires as number | null,
         value,
-        JSON.stringify(binding),
         id,
       );
       return { id, stored: true, expires: p.expires };
@@ -294,10 +278,7 @@ export function serviceOperation(
       id = JSON.stringify([s.id, identity]);
     const nativeEvent = p.event as { eventId: string; name: string };
     if (!nativeEvent || nativeEvent.name !== JSON.parse(s.value).name) bad("invalid_request");
-    const event = JSON.stringify({
-      event_id: text(nativeEvent.eventId),
-      data: p.event,
-    });
+    const event = JSON.stringify({ event_id: text(nativeEvent.eventId), data: p.event });
     const prior = sql
       .exec<{ event: string }>("SELECT event FROM outbox WHERE id=?", id)
       .toArray()[0];
@@ -538,11 +519,7 @@ export function serviceOperation(
             ? "stopped"
             : "pending";
     sql.exec("UPDATE outbox SET state=?,http_status=?,lease=NULL WHERE id=?", state, status, id);
-    return {
-      state,
-      delivery_acknowledged: state === "acknowledged",
-      agent_completed: false,
-    };
+    return { state, delivery_acknowledged: state === "acknowledged", agent_completed: false };
   }
   return undefined;
 }

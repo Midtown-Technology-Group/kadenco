@@ -14,14 +14,15 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
   native grant fingerprints that central refused. Renewal adopts the
   operator-deployed `AUTH_POLICY` as the next revision only when it keeps every
   principal's identity, role and custody, adds no principal, host, scope or
-  budget, and renews native grants one for one per host/purpose pair. Owner and
-  executor expiries may move up to 366 days from apply time; grants and thread
-  budgets cannot outlast what they replace unless their principal is renewed.
-  Renewal runs only while active, keeps the initiating owner live and binds its
-  receipt to that owner's credential. `subscribe_central` can now rebind a
-  standing subscription to a renewed binding (same project, provider and run,
-  compare-and-swap on expiry), keeping its identity, cursor and outbox history.
-  `tighten_policy` and owner enrollment are unchanged. `projectRenewalPolicy` builds the next
+  budget, and matches each renewed native grant to its own predecessor (same
+  host and purpose, no wider scope). Owner and executor expiries may move up to
+  366 days from apply time; grants and thread budgets cannot outlast what they
+  replace unless their principal is renewed. Renewal runs only while active,
+  keeps the initiating owner live and binds its receipt to that owner's
+  credential. In the same transaction, standing subscriptions whose observation
+  binding tracks the replaced grant move to the renewed grant, so queued
+  callbacks and receipts keep working after the edge restarts.
+  `tighten_policy`, owner enrollment and `subscribe_central` are unchanged. `projectRenewalPolicy` builds the next
   revision offline from the current policy and the edge's local policy. See
   `packages/control-plane/deployment/policy-renewal.md`.
 
