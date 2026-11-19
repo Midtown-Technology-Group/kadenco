@@ -27,7 +27,8 @@ refused unless, for every principal in the configured policy:
   and a retained fingerprint can only renew its own predecessor. The fingerprint
   may differ;
 - only an owner or executor expiry moves later, to at most 366 days from apply
-  time, and never for a revoked principal. Migration principals keep their
+  time, never for a revoked principal and never for one that has already
+  expired (renewal does not revive). Migration principals keep their
   separate one-time reauthorization path.
 
 Principals can be dropped, but the initiating owner must stay live so it can
@@ -62,7 +63,9 @@ ones (several observation grants for one host) are left alone and fail closed.
    executor's grants are rebuilt from those owners. It refuses while an owner
    holds a live dedicated verification scope: those stay capped at the old
    ceiling while the restarted edge would bind at the new one, so let them expire
-   or re-prepare them first. Verification-only hosts are kept. It re-projects the owners' and
+   or re-prepare them first. A scope that runs to the owner's own expiry leaves no
+   renewal window: that owner cannot be renewed through this path. Verification-
+   only hosts are kept. It re-projects the owners' and
    executor's grants from the local policy,
    sets their expiry to `bootstrap.serviceExpiresAt` and leaves everything else
    unchanged. It needs the owner and executor bearers only to check their hashes;
@@ -100,8 +103,9 @@ ones (several observation grants for one host) are left alone and fail closed.
 Command records keep the binding they were authorized under; renewal does not
 rewrite history. `receipt` re-authorizes that binding against current grants, so
 after renewal a command bound to a replaced command grant can no longer be read
-through it, exactly as when its grant expires. Its outcome remains in the
-central record, the audit log and the edge's own records. This is why no command
+through it, exactly as when its grant expires. The outcome stays in the
+command's central row and the edge's own records; the audit log records only
+that a receipt was recorded. This is why no command
 may be in flight: an uncertain command could not be reconciled afterwards.
 
 A renewal grants no new host, provider, project or role; it changes when access

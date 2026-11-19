@@ -449,6 +449,30 @@ describe("authenticated operator policy renewal", () => {
     kept.principals[0]!.threadBudgets![0]!.maxPerDay = 1;
     expect((await call("renew_configured_policy", input(kept), kept)).body.committed).toBe(true);
   });
+  it("never revives an expired principal, even through another owner", async () => {
+    const tightened = structuredClone(old);
+    tightened.principals.push({
+      ...structuredClone(old.principals[0]!),
+      id: "owner2",
+      tokenSha256: sha("synthetic-owner2"),
+      expiresAt: Date.now() - 1000,
+      nativeGrants: [grant("remote", "observation", "b", Date.now() - 1000)],
+      hosts: ["remote"],
+    });
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec(
+        "UPDATE auth_policy SET value=? WHERE id=1",
+        JSON.stringify(tightened),
+      );
+    });
+    const revived = structuredClone(tightened);
+    revived.revision++;
+    revived.principals[3]!.expiresAt = later;
+    revived.principals[3]!.nativeGrants = [grant("remote", "observation", "b", later)];
+    expect((await call("renew_configured_policy", input(revived), revived)).body.reason).toBe(
+      "forbidden",
+    );
+  });
   it("permits dropping principals and keeping or shortening expiries", async () => {
     const p = next();
     p.principals.pop();

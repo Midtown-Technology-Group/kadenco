@@ -176,7 +176,9 @@ function renewable(n: ControlPrincipal, prior: ControlPrincipal, now: number, ce
         (n.maxPerDay !== undefined && n.maxPerDay !== null && n.maxPerDay <= prior.maxPerDay)) &&
     // Migration principals keep their own one-time reauthorization path.
     (!extended || (n.role !== "migration" && n.migrationAuthority !== true)) &&
-    (!extended || (n.expiresAt > now && n.expiresAt <= ceiling))
+    // Never revive: only a principal that is still live can be extended, so an
+    // expired owner's subscriptions and grants stay fail-closed.
+    (!extended || (prior.expiresAt > now && n.expiresAt > now && n.expiresAt <= ceiling))
   );
 }
 
