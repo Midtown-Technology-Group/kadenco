@@ -12,8 +12,13 @@ import { isIP } from "node:net";
 
 const CONFIG = process.argv[2] ?? "/etc/kadenco/edge.json";
 const cfg = JSON.parse(readFileSync(CONFIG, "utf8"));
-// The edge policy is operator-managed and read-only to the service.
-const policy = JSON.parse(readFileSync(cfg.configPath ?? join(cfg.runtime, "config.json"), "utf8"));
+// The edge policy is operator-managed and read-only to the service. The
+// supervisor and run-edge (through central-supervisor.json) must load the
+// same file, the one kadenco-edge-ctl.mjs manages.
+if (!cfg.configPath || !cfg.supervisorConfig) throw Error("policy_path_required");
+if (JSON.parse(readFileSync(cfg.supervisorConfig, "utf8")).configPath !== cfg.configPath)
+  throw Error("policy_path_mismatch");
+const policy = JSON.parse(readFileSync(cfg.configPath, "utf8"));
 const port = policy.port ?? 41880;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (event, fields = {}) =>

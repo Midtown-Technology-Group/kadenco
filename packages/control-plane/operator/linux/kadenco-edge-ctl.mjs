@@ -73,12 +73,15 @@ const serviceAccount = () =>
         Number(execFileSync("id", [f, "kadenco"], { encoding: "utf8" }).trim()),
       ));
 
-/** Reads a regular file without following a symbolic link at its final component. */
-function readSafeBuffer(path) {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+/** Reads a regular file without following a symbolic link at its final
+ * component. O_NONBLOCK keeps a planted FIFO from blocking the open; the
+ * descriptor is then checked to be a regular file of bounded size. */
+function readSafeBuffer(path, maxBytes = 64 << 20) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const s = fstatSync(fd);
     if (!s.isFile()) throw Error("not_regular_file");
+    if (s.size > maxBytes) throw Error("file_too_large");
     const buf = Buffer.alloc(s.size);
     let n = 0;
     while (n < s.size) {
@@ -91,8 +94,20 @@ function readSafeBuffer(path) {
     closeSync(fd);
   }
 }
-const readSafe = (path) => readSafeBuffer(path).toString("utf8");
-const readJson = (p) => JSON.parse(readSafe(p));
+const readSafe = (path, maxBytes) => readSafeBuffer(path, maxBytes).toString("utf8");
+const readJson = (p, maxBytes) => JSON.parse(readSafe(p, maxBytes));
+/** The supervisor (edge.json) and run-edge (central-supervisor.json) must load
+ * the very policy file this script manages; refuse to operate otherwise. */
+function checkPolicyWiring() {
+  const edge = readJson(EDGE);
+  const supervisor = readJson(FILES.supervisor);
+  if (
+    edge.configPath !== FILES.config ||
+    edge.supervisorConfig !== FILES.supervisor ||
+    supervisor.configPath !== FILES.config
+  )
+    fail("policy_path_mismatch");
+}
 
 /** Writes a new file exclusively (never through an existing name), sets its
  * owner and mode on the open descriptor, then renames it over the target. */
@@ -234,7 +249,9 @@ function unit() {
       .split("\n")
       .map((l) => l.split("=")),
   );
-  return { state: v.ActiveState ?? "unknown", mainPid: Number(v.MainPID ?? 0) };
+  const mainPid = /^[0-9]+$/.test(v.MainPID ?? "") ? Number(v.MainPID) : NaN;
+  if (!v.ActiveState || Number.isNaN(mainPid)) fail("unit_probe_unparsed");
+  return { state: v.ActiveState, mainPid };
 }
 function listening(ports) {
   const r = spawnSync("ss", ["-ltnH"], { encoding: "utf8" });
@@ -251,7 +268,8 @@ async function status() {
   const u = unit();
   let supervisor = null;
   try {
-    const s = readJson(join(RUNTIME, "service-status.json"));
+    // Service-written: bounded, non-blocking, never followed.
+    const s = readJson(join(RUNTIME, "service-status.json"), 64 << 10);
     supervisor = {
       // A ready record only counts for the unit's current main process.
       state: s.supervisorPid === u.mainPid ? s.state : "stale",
@@ -297,14 +315,24 @@ const kadencoProcesses = () => {
 const [cmd, ...args] = process.argv.slice(2);
 try {
   if (!["status", "manifest", "get"].includes(cmd)) lock();
+  if (["status", "start", "install-file"].includes(cmd)) checkPolicyWiring();
   if (cmd === "status") out(await status());
   else if (cmd === "stop") {
     const r = spawnSync("systemctl", ["stop", UNIT], { stdio: "ignore" });
     if (r.status !== 0) fail("edge_stop_failed");
     const ports = [edgePort(), 41881];
     const deadline = Date.now() + 60000;
-    const busy = () =>
-      unit().state === "active" || kadencoProcesses() || listening(ports).length > 0;
+    // Stopped means: a terminal unit state with no main process, no service
+    // process and no listener (a queued restart is "activating", not stopped).
+    const busy = () => {
+      const u = unit();
+      return (
+        !["inactive", "failed"].includes(u.state) ||
+        u.mainPid !== 0 ||
+        kadencoProcesses() ||
+        listening(ports).length > 0
+      );
+    };
     while (Date.now() < deadline && busy()) await sleep(500);
     if (busy()) fail("edge_stop_unverified");
     writeFileSync(STOPPED_AT, String(Date.now()));

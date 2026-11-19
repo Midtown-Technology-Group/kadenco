@@ -96,6 +96,13 @@ Transfers are taken only from `/root/kadenco-xfer/kadenco-<32 hex>`.
 extracts into a private staging directory, and verifies the manifest before
 publishing.
 
+`edge.json` must name both files (`configPath`, `supervisorConfig`) and
+`central-supervisor.json` must carry the same `configPath`: the supervisor
+refuses to start otherwise, and `status`, `start` and `install-file` refuse with
+`policy_path_mismatch`, so the edge, the supervisor and the control script always
+load the one policy file root manages. When moving an existing host to this
+layout, update all three files together while the edge is stopped.
+
 `set-executor-expiry` is a startup gate: the supervisor refuses to start the
 edge after it. The running edge's executor expiry is `serviceExpiresAt` in
 `central-supervisor.json`, which renewal installs with `install-file`.

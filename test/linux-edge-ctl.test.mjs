@@ -37,13 +37,22 @@ function host() {
   ])
     mkdirSync(join(root, d), { recursive: true });
   const runtime = join(root, "var/lib/kadenco/eddie-t3");
+  const etcDir = join(root, "etc/kadenco");
   writeFileSync(
-    join(root, "etc/kadenco/edge.json"),
-    JSON.stringify({ releasePath: join(root, "opt/kadenco/releases/old"), executorExpiresAt: 1 }),
+    join(etcDir, "edge.json"),
+    JSON.stringify({
+      releasePath: join(root, "opt/kadenco/releases/old"),
+      executorExpiresAt: 1,
+      configPath: join(etcDir, "config.json"),
+      supervisorConfig: join(etcDir, "central-supervisor.json"),
+    }),
   );
   const etc = join(root, "etc/kadenco");
   writeFileSync(join(etc, "config.json"), '{"port":41880}');
-  writeFileSync(join(etc, "central-supervisor.json"), '{"bootstrap":{"serviceExpiresAt":1}}');
+  writeFileSync(
+    join(etc, "central-supervisor.json"),
+    JSON.stringify({ configPath: join(etc, "config.json"), bootstrap: { serviceExpiresAt: 1 } }),
+  );
   const victim = join(root, "victim");
   writeFileSync(victim, "SECRET-CONTENT");
   return { root, runtime, etc, victim, xfer: join(root, "root/kadenco-xfer") };
@@ -165,6 +174,45 @@ test("operator files live outside the service-writable runtime directory", { ski
     assert.equal(readFileSync(join(h.etc, "config.json"), "utf8"), '{"port":41998}');
     assert.deepEqual(readdirSync(planted), ["config.json"]);
     assert.equal(readFileSync(join(planted, "config.json"), "utf8"), "PLANTED");
+  } finally {
+    rmSync(h.root, { recursive: true, force: true });
+  }
+});
+
+test("a planted FIFO fails fast instead of blocking root", { skip }, () => {
+  const h = host();
+  try {
+    rmSync(join(h.etc, "config.json"));
+    execFileSync("mkfifo", [join(h.etc, "config.json")]);
+    const started = Date.now();
+    const r = spawnSync(process.execPath, [ctl, "get", "config"], {
+      encoding: "utf8",
+      timeout: 10000,
+      env: { ...process.env, KADENCO_CTL_ROOT: h.root },
+    });
+    assert.equal(r.signal, null, "ctl blocked on the FIFO");
+    assert.equal(r.status, 1);
+    assert.ok(Date.now() - started < 10000);
+  } finally {
+    rmSync(h.root, { recursive: true, force: true });
+  }
+});
+
+test("install-file refuses when the edge would load a different policy file", { skip }, () => {
+  const h = host();
+  try {
+    const supervisor = join(h.etc, "central-supervisor.json");
+    writeFileSync(
+      supervisor,
+      JSON.stringify({
+        configPath: join(h.runtime, "config.json"),
+        bootstrap: { serviceExpiresAt: 1 },
+      }),
+    );
+    const r = ctlRun(h, "install-file", transfer(h, '{"port":41997}'), "config");
+    assert.equal(r.status, 1);
+    assert.equal(r.json.reason, "policy_path_mismatch");
+    assert.equal(readFileSync(join(h.etc, "config.json"), "utf8"), '{"port":41880}');
   } finally {
     rmSync(h.root, { recursive: true, force: true });
   }
