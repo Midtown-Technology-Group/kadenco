@@ -49,8 +49,11 @@ const UNIT = "kadenco-edge";
 const STOPPED_AT = P("/run/kadenco-edge-stopped-at");
 const LEASE_WAIT_MS = Number(process.env.KADENCO_CTL_LEASE_WAIT_MS ?? 130000);
 const FILES = {
-  config: join(RUNTIME, "config.json"),
-  supervisor: join(RUNTIME, "central-supervisor.json"),
+  // Operator-managed files live in the root-owned /etc/kadenco chain (the edge
+  // only reads them), so the service account cannot redirect root's writes by
+  // replacing a parent directory.
+  config: P("/etc/kadenco/config.json"),
+  supervisor: P("/etc/kadenco/central-supervisor.json"),
   edge: EDGE,
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -197,11 +200,9 @@ function vetArchive(tgz, name) {
 }
 
 function edgePort() {
-  try {
-    return readJson(FILES.config).port ?? 41880;
-  } catch {
-    return 41880;
-  }
+  const port = readJson(FILES.config).port ?? 41880;
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) fail("invalid_edge_port");
+  return port;
 }
 async function health(port) {
   const get = async (url) => {
@@ -215,7 +216,7 @@ async function health(port) {
   const h = await get(`http://127.0.0.1:${port}/healthz`);
   let edge = null;
   try {
-    edge = JSON.parse(h.body).status ?? null;
+    if (h.code === 200) edge = JSON.parse(h.body).status ?? null;
   } catch {}
   const t = await get("http://127.0.0.1:41881/readyz");
   return { edge, tunnel: t.code === 200 && t.body === "ready" ? "ready" : "not_ready" };
@@ -224,6 +225,7 @@ function unit() {
   const r = spawnSync("systemctl", ["show", UNIT, "-p", "ActiveState", "-p", "MainPID"], {
     encoding: "utf8",
   });
+  if (r.status !== 0) fail("unit_probe_failed");
   const v = Object.fromEntries(
     r.stdout
       .trim()
@@ -234,6 +236,7 @@ function unit() {
 }
 function listening(ports) {
   const r = spawnSync("ss", ["-ltnH"], { encoding: "utf8" });
+  if (r.status !== 0) fail("listener_probe_failed");
   return ports.filter((p) => r.stdout.split("\n").some((l) => new RegExp(`:${p}\\s`).test(l)));
 }
 async function status() {
@@ -263,14 +266,31 @@ async function status() {
     executorStartupGate: edge.executorExpiresAt,
     serviceExpiresAt: sup.bootstrap?.serviceExpiresAt,
     supervisor,
+    mainPid: u.mainPid,
     ...(await health(edgePort())),
   };
 }
-const ready = (s) =>
-  s?.service === "active" &&
-  s?.supervisor?.state === "ready" &&
-  s?.edge === "up" &&
-  s?.tunnel === "ready";
+// Ready only if, after the probes, the unit is still active under the same main
+// process whose ready record was read.
+const ready = (s) => {
+  if (
+    !(
+      s?.service === "active" &&
+      s?.supervisor?.state === "ready" &&
+      s?.edge === "up" &&
+      s?.tunnel === "ready"
+    )
+  )
+    return false;
+  const now = unit();
+  return now.state === "active" && now.mainPid === s.mainPid;
+};
+const kadencoProcesses = () => {
+  const r = spawnSync("pgrep", ["-u", "kadenco"], { encoding: "utf8" });
+  if (r.status === 1) return false; // no match
+  if (r.status !== 0) fail("process_probe_failed");
+  return true;
+};
 
 const [cmd, ...args] = process.argv.slice(2);
 try {
@@ -282,9 +302,7 @@ try {
     const ports = [edgePort(), 41881];
     const deadline = Date.now() + 60000;
     const busy = () =>
-      unit().state === "active" ||
-      spawnSync("pgrep", ["-u", "kadenco"], { encoding: "utf8" }).stdout.trim() !== "" ||
-      listening(ports).length > 0;
+      unit().state === "active" || kadencoProcesses() || listening(ports).length > 0;
     while (Date.now() < deadline && busy()) await sleep(500);
     if (busy()) fail("edge_stop_unverified");
     writeFileSync(STOPPED_AT, String(Date.now()));
@@ -305,8 +323,9 @@ try {
       s = await status();
       if (ready(s) || !["active", "activating"].includes(s.service)) break;
     }
-    out({ ...s, ok: ready(s) });
-    if (!ready(s)) process.exitCode = 1;
+    const ok = ready(s);
+    out({ ...s, ok });
+    if (!ok) process.exitCode = 1;
   } else if (cmd === "manifest") out({ ok: true, ...manifest(args[0]) });
   else if (cmd === "get") {
     if (!FILES[args[0]]) fail("unknown_file");
@@ -370,7 +389,7 @@ try {
     const text = readSafe(src);
     JSON.parse(text);
     const saved = backup(FILES[kind]);
-    atomicWrite(FILES[kind], text, serviceAccount(), 0o600);
+    atomicWrite(FILES[kind], text, [0, serviceAccount()[1]], 0o640);
     out({
       ok: true,
       installed: kind,

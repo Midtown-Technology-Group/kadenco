@@ -32,11 +32,12 @@ const TAIL = [
   "Eddie T3 private delivery",
   "--json",
 ];
-const q = (s) => `'${s}'`;
+// Quoted exactly like src/native-session.mts and the fleet transport.
+const q = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
 const words = (...w) => w.map(q).join(" ");
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "kadenco-edge-fc-"));
+  const root = mkdtempSync(join(tmpdir(), "kadenco-o'edge-fc-"));
   const marker = join(root, "launcher-ran");
   const pwned = join(root, "PWNED");
   const launcher = join(root, "run-t3.sh");
@@ -48,7 +49,7 @@ if [ "$3" = list ]; then
   echo '[{"sessionId":"edge-1","subject":"eddie-t3-delivery"},{"sessionId":"owner-1","subject":"owner"}]'
   exit 0
 fi
-printf '%s\\n' "$@" > '${marker}'
+printf '%s\\n' "$@" > "${marker}"
 echo launched
 `,
   );
@@ -156,11 +157,11 @@ function windowsWrapper(f, account) {
   mkdirSync(minted, { recursive: true });
   const template = readFileSync(new URL("kadenco-edge-windows.sh", dir), "utf8");
   const config = [
-    `account='${account}'`,
-    `launcher='${f.launcher}'`,
-    `basedir='${f.base}'`,
-    `token='${f.token}'`,
-    `minted='${minted}'`,
+    `account=${q(account)}`,
+    `launcher=${q(f.launcher)}`,
+    `basedir=${q(f.base)}`,
+    `token=${q(f.token)}`,
+    `minted=${q(minted)}`,
   ].join("\n");
   const filled = template.replace(
     /# --- configuration -+\n[\s\S]*?# --- end configuration -+\n/,

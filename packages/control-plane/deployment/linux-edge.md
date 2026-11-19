@@ -10,17 +10,18 @@ host route is projected into that policy as before.
 
 ## Layout
 
-| Path                                              | Owner, mode        | Contents                                                                                                        |
-| ------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `/opt/kadenco/kadenco-edge-supervisor.mjs`        | root, 0644         | supervisor (systemd `ExecStart`)                                                                                |
-| `/opt/kadenco/releases/kadenco-<version>-<sha7>/` | root, read-only    | qualified releases, one directory each                                                                          |
-| `/opt/kadenco/bin/kadenco-edge-ctl.mjs`           | root, 0750         | operator control (status, stop, start, release, files)                                                          |
-| `/opt/kadenco/tools/…/tunnel-client`              | root               | tunnel client binary for the MCP tunnel profile                                                                 |
-| `/etc/kadenco/edge.json`                          | root:kadenco, 0640 | supervisor configuration (no secrets)                                                                           |
-| `/etc/kadenco/keeper-api-key`                     | kadenco, 0400      | read-only secret-store API key                                                                                  |
-| `/var/lib/kadenco/eddie-t3/`                      | kadenco, 0700      | `config.json`, `central-supervisor.json`, `state/`, `state-central/`, tunnel profile, fleet helper              |
-| `/var/lib/kadenco/.ssh/`                          | kadenco, 0700      | edge SSH key, pinned `known_hosts`, one alias per fleet host                                                    |
-| `/var/lib/kadenco/.config/mtg-t3-fleet/`          | kadenco, 0700      | fleet helper `hosts.json` and session cache `tokens.json` (`{}` is valid; the helper refuses to run without it) |
+| Path                                                               | Owner, mode        | Contents                                                                                                                                                 |
+| ------------------------------------------------------------------ | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/opt/kadenco/kadenco-edge-supervisor.mjs`                         | root, 0644         | supervisor (systemd `ExecStart`)                                                                                                                         |
+| `/opt/kadenco/releases/kadenco-<version>-<sha7>/`                  | root, read-only    | qualified releases, one directory each                                                                                                                   |
+| `/opt/kadenco/bin/kadenco-edge-ctl.mjs`                            | root, 0750         | operator control (status, stop, start, release, files)                                                                                                   |
+| `/opt/kadenco/tools/…/tunnel-client`                               | root               | tunnel client binary for the MCP tunnel profile                                                                                                          |
+| `/etc/kadenco/edge.json`                                           | root:kadenco, 0640 | supervisor configuration (no secrets)                                                                                                                    |
+| `/etc/kadenco/config.json`, `/etc/kadenco/central-supervisor.json` | root:kadenco, 0640 | edge policy and supervisor bootstrap, operator-managed and read-only to the service; `edge.json` points to them with `configPath` and `supervisorConfig` |
+| `/etc/kadenco/keeper-api-key`                                      | kadenco, 0400      | read-only secret-store API key                                                                                                                           |
+| `/var/lib/kadenco/eddie-t3/`                                       | kadenco, 0700      | `state/`, `state-central/`, `service-status.json`, tunnel profile, fleet helper                                                                          |
+| `/var/lib/kadenco/.ssh/`                                           | kadenco, 0700      | edge SSH key, pinned `known_hosts`, one alias per fleet host                                                                                             |
+| `/var/lib/kadenco/.config/mtg-t3-fleet/`                           | kadenco, 0700      | fleet helper `hosts.json` and session cache `tokens.json` (`{}` is valid; the helper refuses to run without it)                                          |
 
 `kadenco` is a system account with no login shell. The unit runs with
 `ProtectSystem=strict` and may only write `/var/lib/kadenco`.
@@ -86,8 +87,9 @@ node /opt/kadenco/bin/kadenco-edge-ctl.mjs set-executor-expiry MS
 Every command except `status`, `manifest` and `get` holds a lock, so changes are
 serialized, and exits nonzero on refusal (including a `start` that does not reach
 ready). `status` counts the supervisor's `ready` only for systemd's current main
-process. Root never follows a link in the service-writable runtime directory:
-reads refuse symbolic links, writes go to a file root created exclusively and
+process. Files root writes live in root-owned directories (`/etc/kadenco`, the
+backup directory), never in the service-writable runtime directory, and
+reads refuse symbolic links; writes go to a file root created exclusively and
 are renamed into place, and backups go to the root-only `/var/backups/kadenco`.
 Transfers are taken only from `/root/kadenco-xfer/kadenco-<32 hex>`.
 `install-release` accepts only regular files and directories under `NAME/`,

@@ -41,11 +41,12 @@ function host() {
     join(root, "etc/kadenco/edge.json"),
     JSON.stringify({ releasePath: join(root, "opt/kadenco/releases/old"), executorExpiresAt: 1 }),
   );
-  writeFileSync(join(runtime, "config.json"), '{"port":41880}');
-  writeFileSync(join(runtime, "central-supervisor.json"), '{"bootstrap":{"serviceExpiresAt":1}}');
+  const etc = join(root, "etc/kadenco");
+  writeFileSync(join(etc, "config.json"), '{"port":41880}');
+  writeFileSync(join(etc, "central-supervisor.json"), '{"bootstrap":{"serviceExpiresAt":1}}');
   const victim = join(root, "victim");
   writeFileSync(victim, "SECRET-CONTENT");
-  return { root, runtime, victim, xfer: join(root, "root/kadenco-xfer") };
+  return { root, runtime, etc, victim, xfer: join(root, "root/kadenco-xfer") };
 }
 const ctlRun = (h, ...args) => {
   const r = spawnSync(process.execPath, [ctl, ...args], {
@@ -106,8 +107,8 @@ function expectedManifest(h) {
 test("get and install-file never follow a planted link", { skip }, () => {
   const h = host();
   try {
-    rmSync(join(h.runtime, "config.json"));
-    symlinkSync(h.victim, join(h.runtime, "config.json"));
+    rmSync(join(h.etc, "config.json"));
+    symlinkSync(h.victim, join(h.etc, "config.json"));
     const got = ctlRun(h, "get", "config");
     assert.equal(got.status, 1);
     assert.doesNotMatch(got.stdout, /SECRET/);
@@ -133,12 +134,12 @@ test(
       const src = transfer(h, '{"port":41999}');
       const r = ctlRun(h, "install-file", src, "config");
       assert.equal(r.status, 0, r.stdout);
-      assert.equal(readFileSync(join(h.runtime, "config.json"), "utf8"), '{"port":41999}');
+      assert.equal(readFileSync(join(h.etc, "config.json"), "utf8"), '{"port":41999}');
       assert.ok(r.json.backup.startsWith(join(h.root, "var/backups/kadenco") + "/"));
       assert.equal(readFileSync(r.json.backup, "utf8"), '{"port":41880}');
       assert.equal(existsSync(src), false);
       assert.equal(
-        readdirSync(h.runtime).filter((n) => n.startsWith(".")).length,
+        readdirSync(h.etc).filter((n) => n.startsWith(".")).length,
         0,
         "no temporary file left",
       );
@@ -147,6 +148,27 @@ test(
     }
   },
 );
+
+test("operator files live outside the service-writable runtime directory", { skip }, () => {
+  const h = host();
+  try {
+    // The service account owns the runtime directory's parent and could swap
+    // the directory for a link to a tree it controls. Root must not follow it.
+    const planted = join(h.root, "planted");
+    mkdirSync(planted);
+    writeFileSync(join(planted, "config.json"), "PLANTED");
+    rmSync(h.runtime, { recursive: true });
+    symlinkSync(planted, h.runtime);
+    assert.equal(ctlRun(h, "get", "config").stdout, '{"port":41880}');
+    const r = ctlRun(h, "install-file", transfer(h, '{"port":41998}'), "config");
+    assert.equal(r.status, 0, r.stdout);
+    assert.equal(readFileSync(join(h.etc, "config.json"), "utf8"), '{"port":41998}');
+    assert.deepEqual(readdirSync(planted), ["config.json"]);
+    assert.equal(readFileSync(join(planted, "config.json"), "utf8"), "PLANTED");
+  } finally {
+    rmSync(h.root, { recursive: true, force: true });
+  }
+});
 
 test("transfer paths outside the transfer directory are refused and left alone", { skip }, () => {
   const h = host();

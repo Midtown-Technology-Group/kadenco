@@ -12,7 +12,8 @@ import { isIP } from "node:net";
 
 const CONFIG = process.argv[2] ?? "/etc/kadenco/edge.json";
 const cfg = JSON.parse(readFileSync(CONFIG, "utf8"));
-const policy = JSON.parse(readFileSync(join(cfg.runtime, "config.json"), "utf8"));
+// The edge policy is operator-managed and read-only to the service.
+const policy = JSON.parse(readFileSync(cfg.configPath ?? join(cfg.runtime, "config.json"), "utf8"));
 const port = policy.port ?? 41880;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (event, fields = {}) =>
@@ -194,6 +195,7 @@ try {
   stage = "vault_read";
   status(stage);
   const secrets = await keeperRecord(cfg.keeper.secretsRecord);
+  checkpoint();
   const tunnelRecord = await keeperRecord(cfg.keeper.tunnelRecord);
   checkpoint();
   const tunnelKey = field(tunnelRecord, cfg.keeper.tunnelField);

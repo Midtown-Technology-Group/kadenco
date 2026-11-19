@@ -15,7 +15,8 @@ set -fu
 launcher=$1 token=$2 basedir=$3
 cmd=${SSH_ORIGINAL_COMMAND-}
 deny() { echo "kadenco-edge-ssh: refused" >&2; exit 126; }
-q() { printf "'%s'" "$1"; }
+# Quote exactly as the callers do: '...' with each embedded ' written as '\''.
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # One line of printable characters only: no newline, carriage return or control.
 case $cmd in *[![:print:]]*|'') deny ;; esac
 

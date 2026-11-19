@@ -34,7 +34,8 @@ deny() { echo "kadenco-edge: refused" >&2; exit 126; }
 case $(whoami | tr 'A-Z' 'a-z') in "$account"|*+"$account"|*\\"$account") ;; *) deny ;; esac
 
 cmd=${SSH_ORIGINAL_COMMAND-}
-q() { printf "'%s'" "$1"; }
+# Quote exactly as the callers do: '...' with each embedded ' written as '\''.
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # One line of printable characters only: no newline, carriage return or control.
 case $cmd in *[![:print:]]*|'') deny ;; esac
 fresh() { # file, max age seconds
