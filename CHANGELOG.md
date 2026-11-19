@@ -5,6 +5,16 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+- Add the Linux edge host files (`packages/control-plane/operator/linux/`): a
+  systemd supervisor that reads its secrets from a secret-store REST endpoint at
+  start and passes them to `run-edge.mjs` on private stdin, the unit (restarts
+  wait out the 120 s central lease), a root control script for status, verified
+  stop/start, manifest-checked release install and config install, and the SSH
+  forced commands that fleet hosts use to bound the edge's key (Linux, and
+  Windows through a pre-minted delivery session because Windows OpenSSH cannot
+  open key sessions for Entra ID accounts). Runbook:
+  `packages/control-plane/deployment/linux-edge.md`. No authorization changes.
+
 ## 0.1.0-alpha.25
 
 - `livePolicy` forgets its cached value when a read fails to parse, and its

@@ -130,3 +130,6 @@ may be in flight: an uncertain command could not be reconciled afterwards.
 
 A renewal grants no new host, provider, project or role; it changes when access
 ends and which routes it is bound to.
+
+On a Linux edge host, install the renewed files with `kadenco-edge-ctl.mjs` and
+extend host-caller credentials as described in [linux-edge.md](linux-edge.md).

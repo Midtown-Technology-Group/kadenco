@@ -1,0 +1,68 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Forced command for the Kadenco central edge's SSH key on a Linux T3 host.
+# Usage (authorized_keys command=): kadenco-edge-ssh LAUNCHER TOKEN_FILE BASE_DIR
+# Allows only what the edge runs over SSH on this host:
+#   - read T3 runtime metadata (port discovery);
+#   - read the enrolled fleet-read token (stat + cat);
+#   - `auth session issue|revoke` through this host's T3 launcher, for the
+#     edge's own delivery subject only.
+# Port forwards are bounded by permitopen/permitlisten in authorized_keys.
+set -fu
+launcher=$1 token=$2 basedir=$3
+cmd=${SSH_ORIGINAL_COMMAND-}
+deny() { echo "kadenco-edge-ssh: refused" >&2; exit 126; }
+q() { printf "'%s'" "$1"; }
+
+case $cmd in
+  'cat "$HOME/.t3/userdata/server-runtime.json"')
+    exec cat "$HOME/.t3/userdata/server-runtime.json" ;;
+esac
+if [ "$cmd" = "stat -c %Y $(q "$token") && cat $(q "$token")" ]; then
+  stat -c %Y "$token" && exec cat "$token"
+  exit 1
+fi
+
+# Native session: only single-quoted words of plain characters, so the
+# re-split below cannot expand, substitute or chain anything.
+printf '%s' "$cmd" | grep -Eqx "'[A-Za-z0-9 ._:/=+@-]*'( '[A-Za-z0-9 ._:/=+@-]*')*" || deny
+eval "set -- $cmd"
+[ "$#" -ge 4 ] && [ "$1" = "$launcher" ] && [ "$2" = auth ] && [ "$3" = session ] || deny
+sub=$4
+shift 4
+case $sub in
+  revoke)
+    [ "$#" -eq 3 ] && [ "$2" = --base-dir ] && [ "$3" = "$basedir" ] || deny
+    printf '%s' "$1" | grep -Eqx '[A-Za-z0-9_-]{1,200}' || deny
+    exec "$launcher" auth session revoke "$1" --base-dir "$basedir" ;;
+  issue)
+    subject= base=
+    set -- "$@" --end
+    args=
+    while [ "$1" != --end ]; do
+      case $1 in
+        --json) args="$args --json"; shift ;;
+        --scope)
+          case $2 in orchestration:read|orchestration:operate) ;; *) deny ;; esac
+          args="$args --scope $2"; shift 2 ;;
+        --ttl)
+          case $2 in 2m) ;; *) deny ;; esac
+          args="$args --ttl $2"; shift 2 ;;
+        --subject)
+          [ "$2" = eddie-t3-delivery ] || deny
+          subject=$2; args="$args --subject $2"; shift 2 ;;
+        --label)
+          [ "$2" = "Eddie T3 private delivery" ] || deny
+          shift 2 ;;
+        --base-dir)
+          [ "$2" = "$basedir" ] || deny
+          base=$2; shift 2 ;;
+        *) deny ;;
+      esac
+    done
+    [ -n "$subject" ] && [ -n "$base" ] || deny
+    # $args holds only fixed allowlisted words; label and base dir are re-added.
+    # shellcheck disable=SC2086
+    exec "$launcher" auth session issue $args --label "Eddie T3 private delivery" --base-dir "$basedir" ;;
+  *) deny ;;
+esac
