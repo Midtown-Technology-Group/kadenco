@@ -74,7 +74,7 @@ const serviceAccount = () =>
       ));
 
 /** Reads a regular file without following a symbolic link at its final component. */
-function readSafe(path) {
+function readSafeBuffer(path) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const s = fstatSync(fd);
@@ -86,11 +86,12 @@ function readSafe(path) {
       if (!r) break;
       n += r;
     }
-    return buf.subarray(0, n).toString("utf8");
+    return buf.subarray(0, n);
   } finally {
     closeSync(fd);
   }
 }
+const readSafe = (path) => readSafeBuffer(path).toString("utf8");
 const readJson = (p) => JSON.parse(readSafe(p));
 
 /** Writes a new file exclusively (never through an existing name), sets its
@@ -152,7 +153,8 @@ function manifest(dir) {
       if (s.isSymbolicLink()) fail("release_symlink");
       if (s.isDirectory()) walk(p, r);
       else if (s.isFile())
-        lines.push(r + "\0" + createHash("sha256").update(readFileSync(p)).digest("hex"));
+        // Hash what was opened without following links, not what lstat saw.
+        lines.push(r + "\0" + createHash("sha256").update(readSafeBuffer(p)).digest("hex"));
       else fail("release_special_file");
     }
   };
