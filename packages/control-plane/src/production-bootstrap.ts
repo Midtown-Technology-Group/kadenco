@@ -39,7 +39,12 @@ export function diagnosticHooks(
   return {
     deliveryHistory: async (owner: string, id: string, after: number, limit: number) => {
       bridge.effectGuard?.();
-      return ownerCall(owner, "outbox_history", { epoch, id, after_sequence: after, limit });
+      return ownerCall(owner, "outbox_history", {
+        epoch,
+        id,
+        after_sequence: after,
+        limit,
+      });
     },
     relayDiagnosticAccess: async (owner: string) => {
       bridge.effectGuard?.();
@@ -47,7 +52,9 @@ export function diagnosticHooks(
       if (current.reason === "forbidden")
         throw Object.assign(Error("forbidden"), { reason: "forbidden" });
       if (current.mode !== "active" || current.epoch !== epoch)
-        throw Object.assign(Error("source_unavailable"), { reason: "source_unavailable" });
+        throw Object.assign(Error("source_unavailable"), {
+          reason: "source_unavailable",
+        });
     },
   };
 }
@@ -102,7 +109,10 @@ export function projectControlPolicy(policy: Policy, config: BootstrapConfig) {
       if (g.codexExceptions?.some((e) => !g.providerInstanceIds.includes(e.providerInstanceId)))
         throw Error("legacy_provider_exception_mapping_required");
       const s = projectNativeGrant(policy, owner, g.host, "command");
-      grants.push({ ...s, expires: Math.min(s.expires, config.serviceExpiresAt) });
+      grants.push({
+        ...s,
+        expires: Math.min(s.expires, config.serviceExpiresAt),
+      });
     }
     const caps = new Set((p.commandHosts ?? []).map((g) => g.maxPerDay));
     if (caps.size > 1) throw Error("heterogeneous_host_budget_mapping_required");
@@ -149,6 +159,14 @@ export function projectRenewalPolicy(
   config: BootstrapConfig,
 ): ControlPolicy {
   const projected = projectControlPolicy(policy, config);
+  // The executor's grants are rebuilt from the projected owners alone, so an
+  // enrolled owner left out would keep authority the executor can no longer claim.
+  if (
+    current.principals.some(
+      (p) => p.role === "owner" && !projected.principals.some((n) => n.id === p.id),
+    )
+  )
+    throw Error("renewal_owner_omitted");
   for (const n of projected.principals) {
     const old = current.principals.find((p) => p.id === n.id);
     if (!old || old.tokenSha256 !== n.tokenSha256 || old.role !== n.role)
@@ -160,7 +178,12 @@ export function projectRenewalPolicy(
     principals: current.principals.map((old) => {
       const n = projected.principals.find((p) => p.id === old.id);
       return n
-        ? { ...old, hosts: n.hosts, nativeGrants: n.nativeGrants, expiresAt: n.expiresAt }
+        ? {
+            ...old,
+            hosts: n.hosts,
+            nativeGrants: n.nativeGrants,
+            expiresAt: n.expiresAt,
+          }
         : old;
     }),
   };

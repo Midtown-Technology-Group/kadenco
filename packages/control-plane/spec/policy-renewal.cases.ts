@@ -76,11 +76,17 @@ const input = (p = next()) => ({
 });
 async function call(op: string, body: object, configured = next(), token = "synthetic-owner") {
   return runInDurableObject(stub(), async (_obj, state) => {
-    const service = new FleetState(state, { ...env, AUTH_POLICY: JSON.stringify(configured) });
+    const service = new FleetState(state, {
+      ...env,
+      AUTH_POLICY: JSON.stringify(configured),
+    });
     const response = await service.fetch(
       new Request("https://fixture.invalid/" + op, {
         method: "POST",
-        headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer " + token,
+          "content-type": "application/json",
+        },
         body: JSON.stringify(body),
       }),
     );
@@ -107,7 +113,14 @@ describe("authenticated operator policy renewal", () => {
       state.storage.sql.exec(
         "DELETE FROM auth_policy; DELETE FROM audit; DELETE FROM revoked; DELETE FROM commands;",
       );
-      state.storage.sql.exec("UPDATE control SET mode='staging' WHERE id=1");
+      // Created lazily by the first service operation.
+      if (
+        state.storage.sql
+          .exec("SELECT name FROM sqlite_master WHERE name='subscriptions'")
+          .toArray().length
+      )
+        state.storage.sql.exec("DELETE FROM subscriptions");
+      state.storage.sql.exec("INSERT OR REPLACE INTO control VALUES(1,7,'active',NULL)");
       state.storage.sql.exec("INSERT INTO auth_policy VALUES(1,?)", JSON.stringify(old));
     });
   });
@@ -147,7 +160,12 @@ describe("authenticated operator policy renewal", () => {
     expect(s.audits[0]!.actor).toBe("owner");
     expect(s.audits[0]!.subject).not.toContain("synthetic-");
     expect(
-      (await call("renew_configured_policy", { ...input(), expected_revision: 4 })).body.reason,
+      (
+        await call("renew_configured_policy", {
+          ...input(),
+          expected_revision: 4,
+        })
+      ).body.reason,
     ).toBe("idempotency_conflict");
     // Renewed principals keep authenticating after their old expiry would have passed.
     expect((await call("status", {}, next(), "synthetic-executor")).status).toBe(200);
@@ -171,7 +189,11 @@ describe("authenticated operator policy renewal", () => {
         p.fleet = "other-fleet";
       },
       (p) => {
-        p.principals.push({ ...p.principals[0]!, id: "extra", tokenSha256: sha("extra") });
+        p.principals.push({
+          ...p.principals[0]!,
+          id: "extra",
+          tokenSha256: sha("extra"),
+        });
       },
       (p) => {
         p.principals[0]!.tokenSha256 = sha("changed");
@@ -225,6 +247,15 @@ describe("authenticated operator policy renewal", () => {
         p.principals[0]!.expiresAt = Date.now() + MAX_RENEWAL_MS + day;
       },
       (p) => {
+        // Successor kept beside the fingerprint it replaces.
+        p.principals[0]!.nativeGrants!.push(grant("local", "command", "a", later));
+      },
+      (p) => {
+        // The initiating owner expires itself.
+        p.principals[0]!.expiresAt = 1;
+        p.principals[0]!.nativeGrants = [];
+      },
+      (p) => {
         p.principals[0]!.threadBudgets = [
           { thread: "t", provider: "codex", maxPerDay: 1, expiresAt: later },
         ];
@@ -238,6 +269,112 @@ describe("authenticated operator policy renewal", () => {
       expect((await stored()).policy).toEqual(old);
     }
     expect((await stored()).audits).toHaveLength(0);
+  });
+  it("never extends a grant whose principal expiry is unchanged", async () => {
+    // A grant shorter than its principal cannot be stretched to the principal's
+    // expiry unless the principal itself is being renewed.
+    const short = structuredClone(old);
+    short.principals[0]!.nativeGrants![1]!.expires = soon - day / 2;
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(short));
+    });
+    const stretched = structuredClone(short);
+    stretched.revision++;
+    stretched.principals[0]!.nativeGrants![1]!.expires = soon;
+    expect((await call("renew_configured_policy", input(stretched), stretched)).body.reason).toBe(
+      "forbidden",
+    );
+    const renewed = structuredClone(stretched);
+    renewed.principals[0]!.expiresAt = later;
+    expect((await call("renew_configured_policy", input(renewed), renewed)).body.committed).toBe(
+      true,
+    );
+  });
+  it("rebinds a standing subscription to the renewed grant, keeping its identity", async () => {
+    const binding = (g: string, expires: number) => ({
+      project: "__authorized_host_observation__",
+      provider: "__observation__",
+      run: null,
+      grant: g.repeat(64),
+      revision: 1,
+      expires,
+    });
+    const subscription = (b: object, extra: object = {}, configured = next()) =>
+      call(
+        "subscribe_central",
+        {
+          epoch: 7,
+          id: "standing",
+          host: "remote",
+          thread_id: "thread",
+          binding: b,
+          expires: null,
+          name: "t3.thread.activity",
+          callback_reference: "standing",
+          ...extra,
+        },
+        configured,
+      );
+    const renewal = structuredClone(old);
+    renewal.revision++;
+    for (const a of renewal.principals.slice(0, 2)) {
+      a.nativeGrants = [
+        grant("local", "command", "c", later),
+        grant("remote", "observation", "d", later),
+      ];
+      a.expiresAt = later;
+    }
+    expect((await subscription(binding("b", soon), {}, old)).body).toMatchObject({ stored: true });
+    expect((await call("renew_configured_policy", input(renewal), renewal)).body.committed).toBe(
+      true,
+    );
+    // The old fingerprint is no longer authorized.
+    expect((await subscription(binding("b", soon), {}, renewal)).body.reason).toBe("forbidden");
+    // The edge's existing path: conflict, snapshot, then compare-and-swap.
+    const renewed = binding("d", later);
+    expect((await subscription(renewed, {}, renewal)).body.reason).toBe("idempotency_conflict");
+    expect(
+      (await subscription({ ...renewed, project: "other" }, { expected_expires: null }, renewal))
+        .body.reason,
+    ).toBe("idempotency_conflict");
+    expect((await subscription(renewed, { expected_expires: null }, renewal)).body).toMatchObject({
+      id: "standing",
+      stored: true,
+    });
+    const rows = await runInDurableObject(stub(), (_obj, state) =>
+      state.storage.sql
+        .exec<{ binding: string; host: string; active: number }>(
+          "SELECT binding,host,active FROM subscriptions WHERE id='standing'",
+        )
+        .toArray(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.binding)).toEqual(renewed);
+    expect(rows[0]!.active).toBe(1);
+  });
+  it("never extends a thread budget, even with the principal expiry unchanged", async () => {
+    const budgeted = structuredClone(old);
+    budgeted.principals[0]!.threadBudgets = [
+      {
+        thread: "t",
+        provider: "codex",
+        maxPerDay: 2,
+        expiresAt: Date.now() + 3600000,
+      },
+    ];
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(budgeted));
+    });
+    const extended = structuredClone(budgeted);
+    extended.revision++;
+    extended.principals[0]!.threadBudgets![0]!.expiresAt += day;
+    expect((await call("renew_configured_policy", input(extended), extended)).body.reason).toBe(
+      "forbidden",
+    );
+    const kept = structuredClone(budgeted);
+    kept.revision++;
+    kept.principals[0]!.threadBudgets![0]!.maxPerDay = 1;
+    expect((await call("renew_configured_policy", input(kept), kept)).body.committed).toBe(true);
   });
   it("permits dropping principals and keeping or shortening expiries", async () => {
     const p = next();
@@ -258,6 +395,11 @@ describe("authenticated operator policy renewal", () => {
     await runInDurableObject(stub(), (_obj, state) => {
       state.storage.sql.exec("DELETE FROM revoked");
       state.storage.sql.exec("UPDATE control SET mode='quiesced' WHERE id=1");
+    });
+    expect((await call("renew_configured_policy", input())).body.reason).toBe("fenced");
+    // Staging may hold an uploaded recovery import whose commit compares policies.
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE control SET mode='staging' WHERE id=1");
     });
     expect((await call("renew_configured_policy", input())).body.reason).toBe("fenced");
     expect((await stored()).policy).toEqual(old);
@@ -285,6 +427,22 @@ describe("authenticated operator policy renewal", () => {
     expect(
       (await call("policy_renewal_receipt", { request_id: request }, renewal, "synthetic-owner2"))
         .body.reason,
+    ).toBe("forbidden");
+    // The same ID under another credential cannot read the receipt either.
+    const reused = structuredClone(renewal);
+    reused.principals[0]!.tokenSha256 = sha("synthetic-owner-reissued");
+    await runInDurableObject(stub(), (_obj, state) => {
+      state.storage.sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(reused));
+    });
+    expect(
+      (
+        await call(
+          "policy_renewal_receipt",
+          { request_id: request },
+          reused,
+          "synthetic-owner-reissued",
+        )
+      ).body.reason,
     ).toBe("forbidden");
   });
   it("tighten_policy still refuses an expiry extension", async () => {

@@ -143,7 +143,10 @@ test("supported startup refuses historical cache aliases, key mismatch and inact
     await assert.rejects(
       startProductionSidecar({
         ...input,
-        bootstrap: { ...input.bootstrap, journalPath: join(archive, "central-attempts.db") },
+        bootstrap: {
+          ...input.bootstrap,
+          journalPath: join(archive, "central-attempts.db"),
+        },
       }),
       /production_journal_directory_mismatch/,
     );
@@ -173,7 +176,11 @@ test("supported startup refuses historical cache aliases, key mismatch and inact
           ...input.bootstrap,
           fetch: (async (url: string | URL) => {
             ops.push(new URL(url).pathname);
-            return Response.json({ mode: "active", epoch: 1, release_version: "0.1.0-alpha.16" });
+            return Response.json({
+              mode: "active",
+              epoch: 1,
+              release_version: "0.1.0-alpha.16",
+            });
           }) as typeof fetch,
         },
       }),
@@ -228,7 +235,10 @@ test("original service bindings resolve exact context for all supported operatio
     });
     assert.match(creation.envelope.thread_id, /^[a-f0-9-]{36}$/);
     assert.equal(creation.envelope.run, null);
-    const before = await f.commands.settings.read("owner", { host: "host", thread_id: "thread" });
+    const before = await f.commands.settings.read("owner", {
+      host: "host",
+      thread_id: "thread",
+    });
     const settings = await b.bind("settings_standard", "owner", {
       host: "host",
       thread_id: "thread",
@@ -358,7 +368,11 @@ test("task completion derives the original authorized session target and refuses
       thread: "verification-thread",
     });
     assert.throws(
-      () => eventTarget(f.bridge, s, { ...event, data: { ...event.data, host: "another-host" } }),
+      () =>
+        eventTarget(f.bridge, s, {
+          ...event,
+          data: { ...event.data, host: "another-host" },
+        }),
       /identity_mismatch/,
     );
     f.store.put("subscription", s.id, s);
@@ -368,7 +382,12 @@ test("task completion derives the original authorized session target and refuses
     await assert.rejects(
       callback(s.id, {
         data: event,
-        scope: { owner: "owner", host: "host", thread: "verification-thread", name: s.name },
+        scope: {
+          owner: "owner",
+          host: "host",
+          thread: "verification-thread",
+          name: s.name,
+        },
       }),
       /forbidden/,
     );
@@ -468,11 +487,31 @@ test("renewal projection re-derives grants and expiry for configured principals 
       assert.throws(
         () =>
           projectRenewalPolicy(
-            { ...current, principals: current.principals.filter((p) => p.id !== "fixture-edge") },
+            {
+              ...current,
+              principals: current.principals.filter((p) => p.id !== "fixture-edge"),
+            },
             f.policy,
             config,
           ),
         /renewal_identity_mismatch/,
+      );
+      // An enrolled owner left out of the projection input is refused, not narrowed.
+      const second = base.principals.find((p) => p.id === "owner")!;
+      assert.throws(
+        () =>
+          projectRenewalPolicy(
+            {
+              ...current,
+              principals: [
+                ...current.principals,
+                { ...second, id: "owner-two", tokenSha256: "d".repeat(64) },
+              ],
+            },
+            f.policy,
+            config,
+          ),
+        /renewal_owner_omitted/,
       );
     } finally {
       await f.close();
@@ -629,8 +668,12 @@ test("compiled production composition routes official MCP through central reserv
     f.dispatch("unknown");
     const uncertain = { ...p, request_id: randomUUID() };
     assert.equal(
-      value(await client.callTool({ name: "continue_thread", arguments: uncertain }))
-        .safe_to_resend,
+      value(
+        await client.callTool({
+          name: "continue_thread",
+          arguments: uncertain,
+        }),
+      ).safe_to_resend,
       false,
     );
     await client.callTool({ name: "continue_thread", arguments: uncertain });
@@ -657,18 +700,29 @@ test("compiled production composition routes official MCP through central reserv
     assert.equal(f.effects(), 2, "diagnostic read performs no additional native effect");
     const revoked = await fetchImpl("https://fixture.invalid/revoke", {
       method: "POST",
-      headers: { authorization: "Bearer fixture-owner", "content-type": "application/json" },
+      headers: {
+        authorization: "Bearer fixture-owner",
+        "content-type": "application/json",
+      },
       body: JSON.stringify({ principal_id: "owner" }),
     });
     assert.equal(revoked.status, 200);
     assert.equal(
-      (await client.callTool({ name: "get_relay_request_diagnostics", arguments: {} })).isError,
+      (
+        await client.callTool({
+          name: "get_relay_request_diagnostics",
+          arguments: {},
+        })
+      ).isError,
       true,
       "central revocation blocks diagnostics even before edge policy catches up",
     );
     f.policy.principals[0].enabled = false;
     await assert.rejects(
-      client.callTool({ name: "continue_thread", arguments: { ...p, request_id: randomUUID() } }),
+      client.callTool({
+        name: "continue_thread",
+        arguments: { ...p, request_id: randomUUID() },
+      }),
       (error: unknown) => (error as { data?: { status?: number } }).data?.status === 401,
     );
     assert.equal(f.effects(), 2);

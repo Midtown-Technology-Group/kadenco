@@ -31,6 +31,27 @@ const renewsGrant = (next: NativeGrantScope, prior: NativeGrantScope) =>
   subset(next.projects, prior.projects) &&
   subset(next.providers, prior.providers);
 
+/** Each native grant replaces a prior grant of the same host and purpose, one
+ * for one: a pair never holds more grants than before, so a successor cannot
+ * sit beside the fingerprint it replaces. A grant expires no later than its
+ * principal, and no later than the grants it replaces unless the principal's
+ * own expiry is being extended. */
+function grantsRenewed(n: ControlPrincipal, prior: ControlPrincipal, extended: boolean) {
+  const next = n.nativeGrants ?? [],
+    old = prior.nativeGrants ?? [];
+  const pair = (g: NativeGrantScope) => g.host + "\u0000" + g.purpose;
+  return next.every((g) => {
+    const before = old.filter((x) => pair(x) === pair(g));
+    return (
+      n.hosts.includes(g.host) &&
+      g.expires <= n.expiresAt &&
+      (extended || g.expires <= Math.max(...before.map((x) => x.expires))) &&
+      before.some((x) => renewsGrant(g, x)) &&
+      next.filter((x) => pair(x) === pair(g)).length <= before.length
+    );
+  });
+}
+
 /** Can `n` replace `prior` in a renewal? Identity, role and custody stay exactly
  * as they are; hosts, scopes, grants and budgets can only stay or narrow. Only
  * the expiry of an owner or executor may move later, bounded by `ceiling`. */
@@ -41,7 +62,7 @@ function renewable(n: ControlPrincipal, prior: ControlPrincipal, now: number, ce
         cap.thread === old.thread &&
         cap.provider === old.provider &&
         cap.maxPerDay <= old.maxPerDay &&
-        cap.expiresAt <= Math.max(old.expiresAt, n.expiresAt),
+        cap.expiresAt <= old.expiresAt,
     ),
   );
   const budgetsKnown = (n.threadBudgets ?? []).every((cap) =>
@@ -59,12 +80,7 @@ function renewable(n: ControlPrincipal, prior: ControlPrincipal, now: number, ce
     (n.scopes ?? []).every((scope) =>
       (prior.scopes ?? []).some((old) => JSON.stringify(old) === JSON.stringify(scope)),
     ) &&
-    (n.nativeGrants ?? []).every(
-      (g) =>
-        n.hosts.includes(g.host) &&
-        g.expires <= n.expiresAt &&
-        (prior.nativeGrants ?? []).some((old) => renewsGrant(g, old)),
-    ) &&
+    grantsRenewed(n, prior, extended) &&
     budgetsKept &&
     budgetsKnown &&
     (prior.maxPerDay === undefined
@@ -119,7 +135,13 @@ export function policyRenewal(
       request,
     )
     .toArray()[0];
-  if (prior && prior.actor !== actor.id) fail("forbidden");
+  // Bound to the credential, not only the ID: an ID dropped and later
+  // re-enrolled under another credential cannot read or replay this receipt.
+  if (
+    prior &&
+    (prior.actor !== actor.id || JSON.parse(prior.subject).actor_sha256 !== actor.tokenSha256)
+  )
+    fail("forbidden");
   if (receiptOnly)
     return prior ? { committed: true, ...JSON.parse(prior.subject) } : { committed: false };
   if (
@@ -136,8 +158,9 @@ export function policyRenewal(
     if (receipt.input_sha256 !== input) fail("idempotency_conflict");
     return { committed: true, ...receipt };
   }
-  // A recovery freeze compares exact policies; never change one underneath it.
-  if (sql.exec<{ mode: string }>("SELECT mode FROM control WHERE id=1").one().mode === "quiesced")
+  // Only a live service renews. Staging may hold an uploaded recovery import and
+  // a freeze compares exact policies: neither may see the policy change under it.
+  if (sql.exec<{ mode: string }>("SELECT mode FROM control WHERE id=1").one().mode !== "active")
     fail("fenced");
   const configuredDigest = enrollmentPolicyDigest(configured);
   if (
@@ -150,6 +173,10 @@ export function policyRenewal(
   if (
     configured.fleet !== current.fleet ||
     !configured.principals.length ||
+    // The initiating owner stays live, so it can reconcile this receipt.
+    !configured.principals.some(
+      (n) => n.id === actor.id && n.tokenSha256 === actor.tokenSha256 && n.expiresAt > now,
+    ) ||
     configured.principals.some((n) => {
       const old = current.principals.find((c) => c.id === n.id);
       return (
@@ -167,6 +194,7 @@ export function policyRenewal(
     policy_sha256: configuredDigest,
     previous_policy_sha256: enrollmentPolicyDigest(current),
     input_sha256: input,
+    actor_sha256: actor.tokenSha256,
   };
   sql.exec("UPDATE auth_policy SET value=? WHERE id=1", JSON.stringify(configured));
   sql.exec(
