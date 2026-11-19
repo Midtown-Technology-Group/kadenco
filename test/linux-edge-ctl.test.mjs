@@ -17,12 +17,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 
-const ctl = new URL(
-  "../packages/control-plane/operator/linux/kadenco-edge-ctl.mjs",
-  import.meta.url,
-).pathname;
+const ctl = fileURLToPath(
+  new URL("../packages/control-plane/operator/linux/kadenco-edge-ctl.mjs", import.meta.url),
+);
 const skip =
   process.platform === "linux"
     ? false

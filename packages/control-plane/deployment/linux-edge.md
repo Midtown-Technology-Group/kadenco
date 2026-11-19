@@ -45,6 +45,11 @@ The edge's SSH key is authorized on every fleet host with
 possible) and `permitlisten="127.0.0.1:<caller port>"` for the reverse caller
 forward, and a forced command:
 
+Every SSH route in the edge's `nativeDelivery` must set `baseDirectory`, equal to
+the `BASE_DIR` given to the forced command (on Windows, the template's `basedir`):
+the request must match exactly, so a route without it, or with another value, is
+refused (`native_auth_unavailable`), never widened.
+
 Both wrappers compare the whole request string with the exact argument vectors
 the edge sends (`src/native-session.mts`) and never evaluate it, and refuse any
 request containing a newline or other control character.

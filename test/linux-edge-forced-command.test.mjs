@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const dir = new URL("../packages/control-plane/operator/linux/forced-command/", import.meta.url);
 const skip =
@@ -103,7 +104,7 @@ function refusals(f) {
 
 test("linux forced command passes only the edge's own requests", { skip }, () => {
   const f = fixture();
-  const wrapper = [new URL("kadenco-edge-ssh", dir).pathname, f.launcher, f.token, f.base];
+  const wrapper = [fileURLToPath(new URL("kadenco-edge-ssh", dir)), f.launcher, f.token, f.base];
   try {
     for (const [scope, granted] of [
       [READ, ["--scope", "orchestration:read"]],
