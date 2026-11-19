@@ -146,6 +146,10 @@ test(
       assert.equal(readFileSync(join(h.etc, "config.json"), "utf8"), '{"port":41999}');
       assert.ok(r.json.backup.startsWith(join(h.root, "var/backups/kadenco") + "/"));
       assert.equal(readFileSync(r.json.backup, "utf8"), '{"port":41880}');
+      // Only the published backup remains; its temporary file is gone.
+      assert.deepEqual(readdirSync(join(h.root, "var/backups/kadenco")), [
+        r.json.backup.split("/").at(-1),
+      ]);
       assert.equal(existsSync(src), false);
       assert.equal(
         readdirSync(h.etc).filter((n) => n.startsWith(".")).length,

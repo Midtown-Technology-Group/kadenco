@@ -22,6 +22,7 @@ import {
   fchmodSync,
   fsyncSync,
   renameSync,
+  linkSync,
   existsSync,
   readdirSync,
   lstatSync,
@@ -122,6 +123,15 @@ function checkPolicyWiring(supervisor = readJson(FILES.supervisor)) {
     fail("policy_path_mismatch");
 }
 
+/** Writes the whole buffer; writeSync may write fewer bytes than asked. */
+function writeAll(fd, data) {
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
+  for (let off = 0; off < buf.length;) {
+    const n = writeSync(fd, buf, off, buf.length - off);
+    if (n <= 0) throw Error("short_write");
+    off += n;
+  }
+}
 /** Writes a new file exclusively (never through an existing name), sets its
  * owner and mode on the open descriptor, then renames it over the target. */
 function atomicWrite(path, text, owner, mode) {
@@ -132,7 +142,7 @@ function atomicWrite(path, text, owner, mode) {
     mode,
   );
   try {
-    writeSync(fd, text);
+    writeAll(fd, text);
     if (isRoot) fchownSync(fd, owner[0], owner[1]);
     fchmodSync(fd, mode);
     fsyncSync(fd);
@@ -144,30 +154,39 @@ function atomicWrite(path, text, owner, mode) {
 /** Copies the current file into the root-only backup directory. */
 function backup(path) {
   mkdirSync(BACKUPS, { recursive: true, mode: 0o700 });
-  const content = readSafe(path);
-  // Created exclusively under its final name: an existing backup is never replaced.
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const target = join(BACKUPS, `${basename(path)}.${stamp()}.${randomBytes(6).toString("hex")}`);
-    let fd;
+  const content = Buffer.from(readSafe(path), "utf8");
+  // Write and sync a private temporary file, then publish it with a hard link:
+  // a backup name only ever refers to a complete file, and link() never
+  // replaces an existing backup.
+  const tmp = join(BACKUPS, `.backup-${randomBytes(8).toString("hex")}`);
+  const fd = openSync(
+    tmp,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
     try {
-      fd = openSync(
-        target,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-        0o600,
-      );
-    } catch (e) {
-      if (e.code === "EEXIST") continue;
-      throw e;
-    }
-    try {
-      writeSync(fd, content);
+      writeAll(fd, content);
       fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
-    return target;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const target = join(
+        BACKUPS,
+        `${basename(path)}.${stamp()}.${randomBytes(6).toString("hex")}`,
+      );
+      try {
+        linkSync(tmp, target);
+        return target;
+      } catch (e) {
+        if (e.code !== "EEXIST") throw e;
+      }
+    }
+    fail("backup_name_unavailable");
+  } finally {
+    rmSync(tmp, { force: true });
   }
-  fail("backup_name_unavailable");
 }
 /** A transfer file: a fixed-pattern name directly in the root-only directory. */
 function transferPath(p) {
