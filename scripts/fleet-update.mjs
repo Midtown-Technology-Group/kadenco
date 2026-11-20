@@ -808,27 +808,41 @@ const loadState = (base) => (existsSync(statePath(base)) ? readJson(statePath(ba
  * active link is the truth when it names a managed release; an interrupted
  * Windows switch is completed; a missing link is restored from state.
  */
+/** The managed release a link target resolves to, or null. */
+export function managedAt(base, target) {
+  if (!target) return null;
+  let real;
+  try {
+    // Resolve first: the link may name the release by an alias (an 8.3 name).
+    real = realpathSync.native(target);
+  } catch {
+    return null;
+  }
+  const m = managedRelease(base, basename(real));
+  return m && samePath(real, m.dir) ? m : null;
+}
+const pendingPath = (base) => join(base, "adopt-pending.json");
+function undoPendingAdoption(base) {
+  if (!existsSync(pendingPath(base))) return;
+  const { prior } = readJson(pendingPath(base));
+  const back = managedRelease(base, prior);
+  if (back) switchCurrent(base, back.dir);
+  else if (isLink(join(base, "current"))) unlinkSync(join(base, "current"));
+  rmSync(pendingPath(base), { force: true });
+}
 export function reconcile(base, state) {
   const current = join(base, "current"),
     next = join(base, "current.next");
-  // A link counts only if it resolves to the managed release directory itself.
-  const managedAt = (target) => {
-    let real;
-    try {
-      // Resolve first: the link may name the release by an alias (an 8.3 name).
-      real = realpathSync.native(target);
-    } catch {
-      return null;
-    }
-    const m = managedRelease(base, basename(real));
-    return m && samePath(real, m.dir) ? m : null;
-  };
+  // An adoption that switched `current` but never committed (a crash before its
+  // catalogs and state were written) is undone: back to the prior release.
+  undoPendingAdoption(base);
+
   if (isLink(next)) {
-    const pending = managedAt(linkTarget(next, base));
+    const pending = managedAt(base, linkTarget(next, base));
     if (!isLink(current) && pending) renameSync(next, current);
     else unlinkSync(next);
   }
-  const active = managedAt(currentTarget(base));
+  const active = managedAt(base, currentTarget(base));
   if (active) {
     if (active.name !== state.current?.name) {
       if (managedRelease(base, state.current?.name)) state.previous = state.current;
@@ -1023,7 +1037,14 @@ export async function adopt(base, config, installed, args, deps = {}) {
   // resolve to this release). If the catalog installer refuses or fails, the
   // link is restored to where it was; state, the entry point and the schedule
   // are written only once both steps succeeded.
-  const prior = currentTarget(base);
+  undoPendingAdoption(base); // An earlier, interrupted adoption is undone first.
+  const priorTarget = currentTarget(base),
+    prior = managedAt(base, priorTarget);
+  // Only a link this updater can put back may be replaced.
+  if (priorTarget && !prior) throw Error("update_current_unmanaged");
+  // Journal the uncommitted switch: if we stop before committing, the next
+  // run's reconcile restores the prior release instead of adopting this one.
+  writeJson(pendingPath(base), { prior: prior?.name ?? null, candidate: installed.name });
   switchCurrent(base, installed.dir);
   if (!args.includes("--no-catalogs")) {
     try {
@@ -1044,7 +1065,8 @@ export async function adopt(base, config, installed, args, deps = {}) {
         ...(legacy ? { legacyOpenCodeManifest: legacy } : {}),
       });
     } catch (error) {
-      restoreLink(base, prior);
+      if (!restoreLink(base, prior)) throw Error("update_adopt_rollback_failed", { cause: error });
+      rmSync(pendingPath(base), { force: true });
       throw error;
     }
   }
@@ -1059,16 +1081,20 @@ export async function adopt(base, config, installed, args, deps = {}) {
   state.current = record(installed);
   writeJson(statePath(base), state);
   writeEntry(base);
+  // Committed: catalogs, link and state agree.
+  rmSync(pendingPath(base), { force: true });
   if (!args.includes("--no-schedule"))
     result.schedule = (deps.schedule ?? installSchedule)(base, config, home);
   return result;
-} /** Puts `current` back where it pointed before (or removes it if it was absent). */
+} /** Puts `current` back on the prior managed release (or removes it); false if it could not. */
 function restoreLink(base, prior) {
   try {
-    if (prior) switchCurrent(base, prior);
+    if (prior) switchCurrent(base, prior.dir);
     else if (isLink(join(base, "current"))) unlinkSync(join(base, "current"));
+    return true;
   } catch {
-    // Left for the next run's reconcile, which restores the recorded release.
+    // The pending journal stays; the next run's reconcile retries the restore.
+    return false;
   }
 } /**
  * The scheduler's stable entry point. It resolves the active release from

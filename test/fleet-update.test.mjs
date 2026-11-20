@@ -439,6 +439,7 @@ test("adoption health-checks, switches, records state and rewrites catalogs thro
     assert.equal(currentTarget(root), r.dir);
     assert.equal(stateOf(root).current.digest, "9".repeat(64));
     assert.equal(existsSync(join(root, "fleet-update-entry.mjs")), true);
+    assert.equal(existsSync(join(root, "adopt-pending.json")), false);
     const claude = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers
       .ask_eddie;
     assert.equal(claude.args[0], join(root, "current", "scripts", "invoke-eddie-posix.mjs"));
@@ -774,5 +775,53 @@ test("adoption refused by the catalog installer leaves the member untouched", as
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("an adoption interrupted after its switch is rolled back, not adopted", () => {
+  const root = base();
+  try {
+    const a = fakeRelease(root, "0.1.0-alpha.26", "6".repeat(64)),
+      b = fakeRelease(root, "0.1.0-alpha.27", "7".repeat(64));
+    switchCurrent(root, a.dir);
+    // What adopt() leaves if it stops between its switch and its commit.
+    writeFileSync(
+      join(root, "adopt-pending.json"),
+      JSON.stringify({ prior: a.name, candidate: b.name }),
+    );
+    switchCurrent(root, b.dir);
+    const state = reconcile(root, { current: record(a) });
+    assert.equal(state.current.name, a.name);
+    assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(a.dir));
+    assert.equal(existsSync(join(root, "adopt-pending.json")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("adoption refuses to replace a current link it could not restore", async () => {
+  const root = base(),
+    outside = base();
+  try {
+    const r = fakeRelease(root, "0.1.0-alpha.26", "8".repeat(64));
+    symlinkSync(outside, join(root, "current"), process.platform === "win32" ? "junction" : "dir");
+    const config = {
+      schema: 1,
+      host: "h",
+      launcher: "posix",
+      credential: join(root, "c"),
+      node: process.execPath,
+    };
+    await assert.rejects(
+      adopt(root, config, managedRelease(root, r.name), ["--no-catalogs", "--no-schedule"], {
+        health: async (_l, host) => ({ host }),
+      }),
+      /update_current_unmanaged/,
+    );
+    assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(outside));
+    assert.equal(existsSync(join(root, "adopt-pending.json")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   }
 });
