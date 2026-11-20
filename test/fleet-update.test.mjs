@@ -802,9 +802,10 @@ test("adoption refuses to replace a current link it could not restore", async ()
   }
 });
 
-test("the catalog installer resumes a run interrupted before its manifest commit", async () => {
+test("the catalog installer resumes only over entries its own interrupted run wrote", async () => {
   const { installAgentTools } = await import("../scripts/install-agent-tools.mjs");
   const home = base();
+  const state = join(home, ".config", "eddie-t3");
   try {
     const plan = {
       home,
@@ -819,22 +820,63 @@ test("the catalog installer resumes a run interrupted before its manifest commit
       opencodeMajor: 2,
     };
     installAgentTools(plan);
-    // As if the process stopped after replacing the catalogs but before the
-    // ownership manifest was written (first adoption: no manifest at all).
-    rmSync(join(home, ".config", "eddie-t3", "installation.json"));
+    assert.equal(existsSync(join(state, "install-pending.json")), false);
+    const written = JSON.parse(readFileSync(join(state, "installation.json"), "utf8")).resources;
+    // Identical entries with no record of ours (someone else configured them,
+    // or the manifest is gone) are not claimed.
+    rmSync(join(state, "installation.json"));
+    assert.throws(() => installAgentTools(plan), /owned_entry_drift|unowned_mcp_entry/);
+    // As left by a run that replaced the catalogs but stopped before its
+    // manifest commit: its pending record names what it wrote, so a retry resumes.
+    writeFileSync(
+      join(state, "install-pending.json"),
+      JSON.stringify({
+        resources: Object.fromEntries(Object.entries(written).map(([p, v]) => [p, [v]])),
+      }),
+    );
     assert.equal(installAgentTools(plan).installed, true);
-    // An entry that is neither recorded nor what this run would write is still refused.
-    rmSync(join(home, ".config", "eddie-t3", "installation.json"));
+    assert.equal(existsSync(join(state, "install-pending.json")), false);
+    // A foreign entry is refused even with a pending record present.
+    writeFileSync(
+      join(state, "install-pending.json"),
+      JSON.stringify({
+        resources: Object.fromEntries(Object.entries(written).map(([p, v]) => [p, [v]])),
+      }),
+    );
+    rmSync(join(state, "installation.json"));
     writeFileSync(
       join(home, ".claude.json"),
       JSON.stringify({ mcpServers: { ask_eddie: { type: "stdio", command: "someone-else" } } }),
     );
-    assert.throws(() => installAgentTools(plan), /unowned_mcp_entry/);
+    assert.throws(() => installAgentTools(plan), /owned_entry_drift|unowned_mcp_entry/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 });
 
+test("adoption repairs a dangling current link into releases", async () => {
+  const root = base();
+  try {
+    const r = fakeRelease(root, "0.1.0-alpha.27", "c".repeat(64));
+    const gone = join(root, "releases", "kadenco-0.1.0-alpha.26-" + "d".repeat(16));
+    mkdirSync(gone);
+    symlinkSync(gone, join(root, "current"), process.platform === "win32" ? "junction" : "dir");
+    rmSync(gone, { recursive: true });
+    const config = {
+      schema: 1,
+      host: "h",
+      launcher: "posix",
+      credential: join(root, "c"),
+      node: process.execPath,
+    };
+    await adopt(root, config, managedRelease(root, r.name), ["--no-catalogs", "--no-schedule"], {
+      health: async (_l, host) => ({ host }),
+    });
+    assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(r.dir));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 test(
   "a retried Windows switch first finishes an interrupted one",
   { skip: process.platform !== "win32" },

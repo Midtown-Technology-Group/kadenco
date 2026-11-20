@@ -167,13 +167,18 @@ export function installAgentTools(plan) {
     changes.push({ path, before, after });
     resources[path] = managed;
   };
-  // Owned: what the manifest recorded, or exactly what this run is about to
-  // write (an earlier, interrupted run already replaced it), so a retry resumes.
-  const owned = (path, current, intended) => {
-    const old = manifest.resources[path];
+  // Owned: what the manifest recorded, or what an earlier run of this installer
+  // wrote before it was interrupted (named in its pending-transaction record),
+  // so a retry resumes. An identical entry configured by anyone else is not
+  // claimed: without a record of ours, the manifest alone decides.
+  const pendingPath = join(root, "install-pending.json"),
+    pendingText = read(pendingPath),
+    pending = pendingText === null ? { resources: {} } : json(pendingText);
+  const owned = (path, current) => {
+    const same = (v) => v !== undefined && JSON.stringify(v) === JSON.stringify(current);
     return (
-      (old && JSON.stringify(old) === JSON.stringify(current)) ||
-      (intended !== undefined && JSON.stringify(intended) === JSON.stringify(current))
+      same(manifest.resources[path]) ||
+      (Array.isArray(pending.resources?.[path]) && pending.resources[path].some(same))
     );
   };
   const entry = { command: plan.command, args: plan.args };
@@ -196,7 +201,7 @@ export function installAgentTools(plan) {
   if (begin >= 0 || finish >= 0) {
     if (begin < 0 || finish < begin) throw Error("invalid_managed_block");
     block = beforeCodex.slice(begin, finish + end.length);
-    if (!owned(codex, block, nextBlock)) throw Error("owned_entry_drift");
+    if (!owned(codex, block)) throw Error("owned_entry_drift");
   } else if (/ask_eddie/.test(beforeCodex)) throw Error("unowned_mcp_entry");
   stage(
     codex,
@@ -234,7 +239,7 @@ export function installAgentTools(plan) {
       parent = parent?.[key];
     }
     const current = parent?.[keys.at(-1)];
-    if (current !== undefined && !owned(path, current, value)) throw Error("unowned_mcp_entry");
+    if (current !== undefined && !owned(path, current)) throw Error("unowned_mcp_entry");
     const base =
       path === open && openMajor === 2
         ? removeLegacyOpenCode(home, manifest, path, before, plan.legacyOpenCodeManifest)
@@ -257,13 +262,13 @@ export function installAgentTools(plan) {
     JSON.stringify(join(root, "connection.json")) +
     ");}\n";
   const beforeExtension = read(extension);
-  if (beforeExtension !== null && !owned(extension, beforeExtension, source))
+  if (beforeExtension !== null && !owned(extension, beforeExtension))
     throw Error("owned_entry_drift");
   stage(extension, beforeExtension, source, source);
   const connection = join(root, "connection.json");
   const beforeConnection = read(connection);
   const connectionText = JSON.stringify({ host: plan.host, ...entry }, null, 2) + "\n";
-  if (beforeConnection !== null && !owned(connection, beforeConnection, connectionText))
+  if (beforeConnection !== null && !owned(connection, beforeConnection))
     throw Error("owned_entry_drift");
   stage(connection, beforeConnection, connectionText, connectionText);
   const cli = join(
@@ -291,7 +296,7 @@ export function installAgentTools(plan) {
         quote(connection) +
         ' "$@"\n';
   const beforeCli = read(cli);
-  if (beforeCli !== null && !owned(cli, beforeCli, cliText)) throw Error("owned_entry_drift");
+  if (beforeCli !== null && !owned(cli, beforeCli)) throw Error("owned_entry_drift");
   stage(cli, beforeCli, cliText, cliText);
   // All collisions were checked before the first write. Full-file backups remain
   // private because user configurations may contain unrelated credentials.
@@ -300,6 +305,15 @@ export function installAgentTools(plan) {
   const stamp = Date.now() + "-" + process.pid;
   const applied = [],
     manifestTemp = manifestPath + ".eddie-" + stamp;
+  // Before replacing anything, record every value this run may write (added to
+  // any record left by an earlier interrupted run): a retry may then resume
+  // over entries we wrote, and over nothing else.
+  const record = { resources: { ...pending.resources } };
+  for (const [path, value] of Object.entries(resources))
+    record.resources[path] = [...(record.resources[path] ?? []), value];
+  const pendingTemp = pendingPath + ".eddie-" + stamp;
+  writeFileSync(pendingTemp, JSON.stringify(record), { mode: 0o600, flag: "wx" });
+  renameSync(pendingTemp, pendingPath);
   try {
     // Writing the backup and temp file first leaves only the recheck and the
     // rename between a concurrent save and our replacement. That window cannot
@@ -349,6 +363,12 @@ export function installAgentTools(plan) {
       else writeFileSync(c.path, c.before, { mode: 0o600 });
     }
     throw error;
+  }
+  // Committed: the manifest records everything; the pending record is spent.
+  try {
+    unlinkSync(pendingPath);
+  } catch {
+    // Harmless if left: it only names values this installer wrote.
   }
   return {
     installed: true,

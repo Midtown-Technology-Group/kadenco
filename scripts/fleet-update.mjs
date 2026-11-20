@@ -1035,7 +1035,14 @@ export async function adopt(base, config, installed, args, deps = {}) {
   // - update.json, written last, is the commit: until it exists no scheduled
   //   run or rollback acts on this base.
   const priorTarget = currentTarget(base);
-  if (priorTarget && !managedAt(base, priorTarget)) throw Error("update_current_unmanaged");
+  // A live link to something unmanaged is never replaced. A dangling link into
+  // our releases directory (its release was removed) may be repaired.
+  const dangling =
+    priorTarget &&
+    !existsSync(priorTarget) &&
+    samePath(dirname(priorTarget), join(base, "releases"));
+  if (priorTarget && !managedAt(base, priorTarget) && !dangling)
+    throw Error("update_current_unmanaged");
   switchCurrent(base, installed.dir);
   if (!args.includes("--no-catalogs")) {
     const { installAgentTools } = await import(
