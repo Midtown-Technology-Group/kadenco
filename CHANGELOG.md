@@ -5,6 +5,8 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.27
+
 - Fleet update follow-ups from the first rollout: npm and the updater self-test
   use a temporary directory inside the release stage, so a full `/tmp` cannot
   truncate an install; a verifier library that fails to load is reported as
