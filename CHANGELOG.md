@@ -18,6 +18,17 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
   follows links in the service-writable directory, vets archives before
   extraction and serializes changes. Runbook:
   `packages/control-plane/deployment/linux-edge.md`. No authorization changes.
+- Fleet members update their Eddie caller automatically
+  (`scripts/fleet-update.mjs`, [docs/fleet-update.md](docs/fleet-update.md)):
+  an hourly systemd user timer or Windows scheduled task installs the newest
+  published release only when GitHub attests its package was built by the
+  release workflow on main from the commit in `BUILD.json`, checks the new
+  caller against the live server, then switches a stable `current` link that
+  provider catalogs launch through; rollback and a hold file are supported.
+  The release workflow gains a separate `attest` job (main dispatches only) and
+  the package now ships the Linux and Windows caller launchers and the catalog
+  installer. Adds `sigstore` as an optional dependency for verification (it needs Node 22.22.2+, 24.15+ or 26+; the base package keeps its supported range). Releases up to
+  0.1.0-alpha.25 carry no attestation and are never installed automatically.
 
 ## 0.1.0-alpha.25
 

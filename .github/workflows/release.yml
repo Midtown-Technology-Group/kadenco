@@ -14,6 +14,10 @@ jobs:
   package:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Evaluated in the attempt that built and uploaded the artifact; a rerun of
+    # only a later job still reads this attempt's name.
+    outputs:
+      artifact: kadenco-release-${{ github.sha }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -38,3 +42,25 @@ jobs:
           path: release-output/
           if-no-files-found: error
           retention-days: 30
+  # Fleet members install a release only when GitHub attests its package was
+  # built by this workflow on main (docs/fleet-update.md). Separate job so the
+  # build itself never holds signing permissions; PR runs are not attested.
+  attest:
+    needs: package
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ${{ needs.package.outputs.artifact }}
+          path: release-output
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: |
+            release-output/kadenco-*.tgz
+            release-output/kadenco-control-plane-*.tar.gz

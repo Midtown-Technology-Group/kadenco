@@ -17,6 +17,27 @@ assert.equal(
     .verifyWorkerBuild,
   "function",
 );
+// Fleet members run this release's updater next: it must load its verifier.
+const selfTest = spawnSync(
+  process.execPath,
+  [join(root, "scripts/fleet-update.mjs"), "self-test"],
+  {
+    encoding: "utf8",
+    timeout: 30000,
+    windowsHide: true,
+  },
+);
+assert.equal(selfTest.status, 0, "fleet updater self-test");
+assert.equal(
+  typeof (await import(pathToFileURL(join(root, "scripts/posix-credential.mjs")).href))
+    .readCallerCredential,
+  "function",
+);
+assert.equal(
+  typeof (await import(pathToFileURL(join(root, "scripts/install-agent-tools.mjs")).href))
+    .installAgentTools,
+  "function",
+);
 const central = await import(
   pathToFileURL(join(root, "packages/control-plane/dist/edge-runtime.mjs"))
 );

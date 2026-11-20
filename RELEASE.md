@@ -163,6 +163,14 @@ then create an immutable `v<version>` tag at that source and a GitHub prerelease
 with those exact files. Reconcile existing tag/release/assets before publication;
 never replace an asset or move a tag. This uses the existing maintainer GitHub
 connection; the workflow receives no publishing token or production secrets.
+For main dispatches a separate `attest` job, after packaging, signs SLSA build
+provenance for both tarballs with GitHub's OIDC identity (`id-token` and
+`attestations` write only in that job). A failed attestation fails the run, so
+the release command never publishes an unattested build. Fleet members install
+a published release automatically only with that attestation
+([fleet updates](docs/fleet-update.md)): publishing a release ships the caller
+to the fleet within about an hour (a Windows member whose owner is signed out
+updates at the next sign-in).
 
 Run `node scripts/package-release.mjs` only in a clean Linux checkout after the
 pinned build. It refuses a dirty checkout or an existing output directory. Its
