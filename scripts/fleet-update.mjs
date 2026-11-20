@@ -13,6 +13,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   readlinkSync,
   realpathSync,
   renameSync,
@@ -79,19 +80,6 @@ export function compareVersions(a, b) {
   }
   return 0;
 }
-/** Newest published (non-draft) release strictly newer than `installed`. */
-export function selectRelease(releases, installed) {
-  let best = null;
-  for (const release of releases) {
-    if (!release || release.draft) continue;
-    const m = /^v(.+)$/.exec(release.tag_name ?? "");
-    if (!m || !parseVersion(m[1])) continue;
-    if (installed && compareVersions(m[1], installed) <= 0) continue;
-    if (!best || compareVersions(m[1], best.version) > 0) best = { version: m[1], release };
-  }
-  return best;
-}
-
 // --------------------------------------------------------------- integrity --
 export const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 export function checksumFor(sums, name) {
@@ -285,37 +273,59 @@ function log(base, entry) {
     // Logging never blocks an update decision.
   }
 }
-function lock(base) {
-  const path = join(base, "update.lock");
+function processAlive(pid) {
   try {
-    mkdirSync(path);
+    process.kill(pid, 0);
+    return true;
   } catch (error) {
-    if (error.code !== "EEXIST") throw error;
-    if (Date.now() - statSync(path).mtimeMs < LOCK_STALE_MS) throw Error("update_locked");
-    rmSync(path, { recursive: true, force: true });
-    mkdirSync(path);
+    return error.code === "EPERM";
   }
-  return () => rmSync(path, { recursive: true, force: true });
 }
-/** Points base/current at a release directory under base/releases. */
-export function switchCurrent(base, releaseDir) {
-  const current = join(base, "current"),
-    rel = relative(join(base, "releases"), releaseDir);
-  if (!rel || rel.startsWith("..") || isAbsolute(rel) || rel.includes("/") || rel.includes("\\"))
-    throw Error("update_release_outside_base");
-  if (existsSync(current) || isLink(current)) {
-    if (!isLink(current)) throw Error("update_current_not_link");
+/**
+ * Directory lock with an owner token. Only the owner releases it; a stale lock
+ * (owner process gone, or older than LOCK_STALE_MS) is retired by an atomic
+ * rename, so two contenders cannot both remove it and both proceed.
+ */
+export function lock(base) {
+  const path = join(base, "update.lock"),
+    token = randomBytes(16).toString("hex");
+  const retire = () => {
+    const away = `${path}.retired-${randomBytes(6).toString("hex")}`;
+    try {
+      renameSync(path, away);
+    } catch (error) {
+      if (error.code === "ENOENT") return; // Another contender retired it.
+      throw error;
+    }
+    rmSync(away, { recursive: true, force: true });
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      mkdirSync(path);
+      writeFileSync(join(path, "owner.json"), JSON.stringify({ token, pid: process.pid }));
+      return () => {
+        try {
+          if (readJson(join(path, "owner.json")).token === token) retire();
+        } catch {
+          // Already retired as stale by another run; nothing of ours to remove.
+        }
+      };
+    } catch (error) {
+      if (error.code !== "EEXIST" || attempt)
+        throw error.code === "EEXIST" ? Error("update_locked") : error;
+      let owner = null;
+      try {
+        owner = readJson(join(path, "owner.json"));
+      } catch {
+        // Owner not written yet, or unreadable: only age decides.
+      }
+      const old = Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS;
+      if (!old && !(Number.isInteger(owner?.pid) && !processAlive(owner.pid)))
+        throw Error("update_locked");
+      retire();
+    }
   }
-  if (isWindows) {
-    // Directory junctions cannot be replaced atomically; the gap is only the
-    // next provider launch and is bounded by this call.
-    if (isLink(current)) unlinkSync(current);
-    symlinkSync(releaseDir, current, "junction");
-  } else {
-    const temp = join(base, `.current-${randomBytes(6).toString("hex")}`);
-    symlinkSync(join("releases", basename(releaseDir)), temp);
-    renameSync(temp, current);
-  }
+  throw Error("update_locked");
 }
 function isLink(path) {
   try {
@@ -324,11 +334,40 @@ function isLink(path) {
     return false;
   }
 }
-export function currentTarget(base) {
-  const current = join(base, "current");
-  if (!isLink(current)) return null;
-  const target = readlinkSync(current);
+function linkTarget(path, base) {
+  if (!isLink(path)) return null;
+  const target = readlinkSync(path);
   return resolve(isAbsolute(target) ? target : join(base, target));
+}
+export const currentTarget = (base) => linkTarget(join(base, "current"), base);
+function checkReleaseDir(base, releaseDir) {
+  const rel = relative(join(base, "releases"), releaseDir);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel) || rel.includes("/") || rel.includes("\\"))
+    throw Error("update_release_outside_base");
+}
+/**
+ * Points base/current at a release under base/releases. Linux replaces the
+ * symlink atomically. Windows cannot replace a junction atomically: it creates
+ * current.next, removes current, then renames; an interruption leaves
+ * current.next, which reconcile() completes. The scheduled entry point never
+ * launches through current, so an interrupted switch cannot stop updates.
+ */
+export function switchCurrent(base, releaseDir) {
+  checkReleaseDir(base, releaseDir);
+  const current = join(base, "current"),
+    next = join(base, "current.next");
+  if ((existsSync(current) || isLink(current)) && !isLink(current))
+    throw Error("update_current_not_link");
+  if (!isWindows) {
+    const temp = join(base, `.current-${randomBytes(6).toString("hex")}`);
+    symlinkSync(join("releases", basename(releaseDir)), temp);
+    renameSync(temp, current);
+    return;
+  }
+  if (isLink(next)) unlinkSync(next);
+  symlinkSync(releaseDir, next, "junction");
+  if (isLink(current)) unlinkSync(current);
+  renameSync(next, current);
 }
 
 // ----------------------------------------------------------------- process --
@@ -381,21 +420,38 @@ export function launcher(config, root) {
     args: [join(root, "scripts", "invoke-eddie-posix.mjs"), config.credential],
   };
 }
+function stopTree(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (isWindows && child.pid)
+    spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      timeout: 15000,
+    });
+  else child.kill("SIGKILL");
+}
 /**
  * Starts the release's caller MCP exactly as a provider would and requires the
- * full tool surface and an authenticated host binding from the live server.
+ * full tool surface and the live server's authenticated binding to this host.
+ * Settles only after the caller (and, on Windows, its PowerShell wrapper's
+ * children) has exited.
  */
-export function healthCheck({ command, args }, timeoutMs = 90000) {
+export function healthCheck({ command, args }, expectedHost, timeoutMs = 90000) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    const exited = new Promise((done) => child.once("close", done));
     const pending = new Map();
     let buffer = "",
       settled = false;
-    const finish = (error, value) => {
+    const finish = async (error, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      child.kill();
+      child.stdin.end();
+      const graceful = await Promise.race([exited.then(() => true), delay(5000).then(() => false)]);
+      if (!graceful) {
+        stopTree(child);
+        await Promise.race([exited, delay(15000)]);
+      }
       if (error) reject(error);
       else resolvePromise(value);
     };
@@ -456,6 +512,7 @@ export function healthCheck({ command, args }, timeoutMs = 90000) {
         parsed?.delivery_acknowledgement?.available !== true
       )
         throw Error("update_health_capabilities");
+      if (parsed.host !== expectedHost) throw Error("update_health_host");
       return { tools: names.length, host: parsed.host, backend: parsed.backend_version };
     })().then(
       (v) => finish(null, v),
@@ -463,8 +520,10 @@ export function healthCheck({ command, args }, timeoutMs = 90000) {
     );
   });
 }
+const delay = (ms) => new Promise((done) => setTimeout(done, ms).unref());
 
 // ----------------------------------------------------------------- install --
+const MARKER = ".fleet-update.json";
 function releaseIdentity(dir) {
   const pkg = readJson(join(dir, "package.json")),
     build = readJson(join(dir, "BUILD.json"));
@@ -476,8 +535,38 @@ function releaseIdentity(dir) {
     throw Error("update_release_identity");
   return { version: pkg.version, source: build.source };
 }
-async function installRelease(base, config, selected, state) {
-  const { version, release } = selected;
+export const releaseName = (version, digest) => `kadenco-${version}-${digest.slice(0, 16)}`;
+/**
+ * A release this updater installed: its marker binds the directory name to the
+ * exact package digest that passed verification.
+ */
+export function managedRelease(base, name) {
+  if (typeof name !== "string" || !/^kadenco-[0-9A-Za-z.-]+-[a-f0-9]{16}$/.test(name)) return null;
+  const dir = join(base, "releases", name);
+  try {
+    const marker = readJson(join(dir, MARKER)),
+      id = releaseIdentity(dir);
+    if (
+      !/^[a-f0-9]{64}$/.test(marker.digest ?? "") ||
+      releaseName(marker.version, marker.digest) !== name ||
+      marker.version !== id.version ||
+      marker.source !== id.source
+    )
+      return null;
+    return { name, dir, version: id.version, source: id.source, digest: marker.digest };
+  } catch {
+    return null;
+  }
+}
+const record = (r) => ({ name: r.name, version: r.version, source: r.source, digest: r.digest });
+
+/** Errors that condemn one release (its publication), not the run. */
+const REJECTS =
+  /^update_(asset_missing|build_identity|checksum|provenance|archive_unsafe|release_identity|fetch_too_large|fetch_status:404)/;
+export const isReleaseRejection = (error) => REJECTS.test(error?.message ?? "");
+
+async function installRelease(base, config, candidate) {
+  const { version, release } = candidate;
   const asset = (name) => {
     const a = (release.assets ?? []).find((x) => x.name === name);
     if (
@@ -507,6 +596,8 @@ async function installRelease(base, config, selected, state) {
   if (checksumFor(sums, tgzName) !== digest) throw Error("update_checksum_mismatch");
   if (tgzAsset.digest && tgzAsset.digest !== "sha256:" + digest)
     throw Error("update_checksum_mismatch");
+  if (candidate.expectDigest && candidate.expectDigest !== digest)
+    throw Error("update_checksum_unexpected");
   const { verify } = await import("sigstore");
   await verifyProvenance(await attestationBundles(digest), {
     digest,
@@ -516,22 +607,22 @@ async function installRelease(base, config, selected, state) {
   });
 
   const releases = join(base, "releases"),
-    name = `kadenco-${version}-${build.source.slice(0, 7)}`,
+    name = releaseName(version, digest),
     finalDir = join(releases, name);
   mkdirSync(releases, { recursive: true });
   if (existsSync(finalDir)) {
-    // Installed by an earlier run that did not switch (for example a failed health check).
-    const id = releaseIdentity(finalDir);
-    if (id.version !== version || id.source !== build.source)
+    // Installed earlier from these exact verified bytes (for example before a
+    // failed health check); the marker binds the directory to the digest.
+    const existing = managedRelease(base, name);
+    if (!existing || existing.digest !== digest || existing.source !== build.source)
       throw Error("update_release_collision");
-    if (!state.installed?.includes(name)) throw Error("update_release_unowned");
-    return { dir: finalDir, name, version, source: build.source, digest };
+    return existing;
   }
   const stage = join(releases, `.stage-${randomBytes(6).toString("hex")}`);
   mkdirSync(stage);
   try {
-    const archive = join(stage, tgzName);
-    writeFileSync(archive, tgz, { flag: "wx" });
+    // tar reads the bytes we hashed and verified, from a file we just created.
+    writeFileSync(join(stage, tgzName), tgz, { flag: "wx" });
     const names = runChecked("tar", ["-tzf", tgzName], { cwd: stage })
       .split(/\r?\n/)
       .filter(Boolean);
@@ -540,7 +631,7 @@ async function installRelease(base, config, selected, state) {
       .filter(Boolean);
     checkArchiveListing(names, details);
     runChecked("tar", ["-xzf", tgzName, ...(isWindows ? [] : ["--no-same-owner"])], { cwd: stage });
-    rmSync(archive);
+    rmSync(join(stage, tgzName));
     const pkgDir = join(stage, "package");
     const id = releaseIdentity(pkgDir);
     if (id.version !== version || id.source !== build.source)
@@ -557,38 +648,48 @@ async function installRelease(base, config, selected, state) {
         "--no-fund",
         "--loglevel=error",
       ],
-      {
-        cwd: pkgDir,
-        timeout: 15 * 60 * 1000,
-      },
+      { cwd: pkgDir, timeout: 15 * 60 * 1000 },
     );
     // The next run uses this release's updater: it must load before we switch.
     runChecked(config.node, [join(pkgDir, "scripts", "fleet-update.mjs"), "self-test"], {
       cwd: pkgDir,
       timeout: 60000,
     });
+    // Ownership travels with the directory, so a crash after the rename still
+    // leaves a release later runs recognize and reuse.
+    writeFileSync(
+      join(pkgDir, MARKER),
+      JSON.stringify({
+        version,
+        source: build.source,
+        digest,
+        installed_at: new Date().toISOString(),
+      }) + "\n",
+      { flag: "wx" },
+    );
     renameSync(pkgDir, finalDir);
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
-  state.installed = [...new Set([...(state.installed ?? []), name])];
-  return { dir: finalDir, name, version, source: build.source, digest };
+  const installed = managedRelease(base, name);
+  if (!installed) throw Error("update_release_identity");
+  return installed;
 }
 function prune(base, state, keep = 3) {
   const releases = join(base, "releases");
   const protectedNames = new Set([state.current?.name, state.previous?.name].filter(Boolean));
-  const owned = (state.installed ?? []).filter((n) => existsSync(join(releases, n)));
-  const removable = owned.filter((n) => !protectedNames.has(n));
-  const excess = removable.slice(0, Math.max(0, owned.length - keep));
-  for (const n of excess) {
+  const owned = readdirSync(releases)
+    .map((n) => managedRelease(base, n))
+    .filter(Boolean)
+    .sort((a, b) => compareVersions(b.version, a.version));
+  for (const r of owned.slice(keep)) {
+    if (protectedNames.has(r.name)) continue;
     try {
-      rmSync(join(releases, n), { recursive: true, force: true });
+      rmSync(r.dir, { recursive: true, force: true });
     } catch {
-      continue; // In use (Windows); retried on a later run.
+      // In use (Windows); retried on a later run.
     }
-    state.installed = state.installed.filter((x) => x !== n);
   }
-  state.installed = state.installed.filter((n) => existsSync(join(releases, n)));
 }
 
 // ---------------------------------------------------------------- commands --
@@ -606,56 +707,136 @@ function loadConfig(base) {
     throw Error("update_config_invalid");
   return c;
 }
-const loadState = (base) =>
-  existsSync(join(base, "update-state.json")) ? readJson(join(base, "update-state.json")) : {};
+const statePath = (base) => join(base, "update-state.json");
+const loadState = (base) => (existsSync(statePath(base)) ? readJson(statePath(base)) : {});
+/**
+ * Under the lock: makes state agree with the filesystem after any crash. The
+ * active link is the truth when it names a managed release; an interrupted
+ * Windows switch is completed; a missing link is restored from state.
+ */
+export function reconcile(base, state) {
+  const current = join(base, "current"),
+    next = join(base, "current.next");
+  if (isLink(next)) {
+    const pending = managedRelease(base, basename(linkTarget(next, base) ?? ""));
+    if (!isLink(current) && pending) renameSync(next, current);
+    else unlinkSync(next);
+  }
+  const active = managedRelease(base, basename(currentTarget(base) ?? ""));
+  if (active) {
+    if (active.name !== state.current?.name) {
+      if (managedRelease(base, state.current?.name)) state.previous = state.current;
+      state.current = record(active);
+    }
+  } else {
+    const recorded = managedRelease(base, state.current?.name);
+    if (!recorded) throw Error("update_not_configured");
+    switchCurrent(base, recorded.dir);
+  }
+  if (state.previous && !managedRelease(base, state.previous.name)) state.previous = null;
+  return state;
+}
+async function listReleases() {
+  const all = [];
+  for (let page = 1; page <= 5; page++) {
+    const batch = await fetchJson(
+      `${API}/repos/${REPOSITORY}/releases?per_page=100&page=${page}`,
+      16 << 20,
+    );
+    if (!Array.isArray(batch)) throw Error("update_releases_unreadable");
+    all.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return all;
+}
+const REJECTION_TTL_MS = 24 * 60 * 60 * 1000,
+  MAX_ATTEMPTS = 5;
 
-export async function runUpdate(base) {
+export async function runUpdate(base, { health = healthCheck } = {}) {
   const config = loadConfig(base);
   if (existsSync(join(base, "update.hold"))) return { result: "held" };
   const unlock = lock(base);
   try {
-    const state = loadState(base);
-    if (!state.current?.version) throw Error("update_not_configured");
-    const releases = await fetchJson(`${API}/repos/${REPOSITORY}/releases?per_page=30`);
-    if (!Array.isArray(releases)) throw Error("update_releases_unreadable");
-    const selected = selectRelease(releases, state.current.version);
+    const state = reconcile(base, loadState(base));
+    writeJson(statePath(base), state);
+    const now = Date.now();
+    state.rejected = Object.fromEntries(
+      Object.entries(state.rejected ?? {}).filter(
+        ([, r]) => now - Date.parse(r.at) < REJECTION_TTL_MS,
+      ),
+    );
+    const candidates = newerReleases(await listReleases(), state.current.version).filter(
+      (c) => !state.rejected[c.release.tag_name],
+    );
     state.checked_at = new Date().toISOString();
-    if (!selected) {
-      writeJson(join(base, "update-state.json"), state);
-      return { result: "current", version: state.current.version };
+    const skipped = [];
+    for (const candidate of candidates.slice(0, MAX_ATTEMPTS)) {
+      let installed;
+      try {
+        installed = await installRelease(base, config, candidate);
+        const result = await health(launcher(config, installed.dir), config.host);
+        switchCurrent(base, installed.dir);
+        state.previous = state.current;
+        state.current = record(installed);
+        state.updated_at = new Date().toISOString();
+        prune(base, state);
+        writeJson(statePath(base), state);
+        writeEntry(base);
+        return {
+          result: "updated",
+          from: state.previous.version,
+          to: installed.version,
+          digest: installed.digest,
+          health: result,
+          skipped,
+        };
+      } catch (error) {
+        const reason = safeReason(error);
+        if (isReleaseRejection(error)) {
+          state.rejected[candidate.release.tag_name] = { at: new Date().toISOString(), reason };
+          skipped.push({ version: candidate.version, reason });
+          continue;
+        }
+        // A failed health check may be this release or the server: keep the
+        // install for reuse and try an older candidate; nothing is switched.
+        if (reason.startsWith("update_health_")) {
+          skipped.push({ version: candidate.version, reason });
+          continue;
+        }
+        writeJson(statePath(base), state);
+        throw error;
+      }
     }
-    const installed = await installRelease(base, config, selected, state);
-    writeJson(join(base, "update-state.json"), state);
-    const health = await healthCheck(launcher(config, installed.dir));
-    switchCurrent(base, installed.dir);
-    state.previous = state.current;
-    state.current = { name: installed.name, version: installed.version, source: installed.source };
-    state.updated_at = new Date().toISOString();
-    prune(base, state);
-    writeJson(join(base, "update-state.json"), state);
-    return {
-      result: "updated",
-      from: state.previous.version,
-      to: installed.version,
-      digest: installed.digest,
-      health,
-    };
+    writeJson(statePath(base), state);
+    return { result: "current", version: state.current.version, skipped };
   } finally {
     unlock();
   }
 }
+/** All published releases newer than `installed`, newest first. */
+export function newerReleases(releases, installed) {
+  const seen = new Set();
+  return releases
+    .filter((r) => r && !r.draft)
+    .map((r) => ({ release: r, version: /^v(.+)$/.exec(r.tag_name ?? "")?.[1] }))
+    .filter(
+      (c) => c.version && parseVersion(c.version) && !seen.has(c.version) && seen.add(c.version),
+    )
+    .filter((c) => !installed || compareVersions(c.version, installed) > 0)
+    .sort((a, b) => compareVersions(b.version, a.version));
+}
 export function rollback(base) {
   const unlock = lock(base);
   try {
-    const state = loadState(base);
+    const state = reconcile(base, loadState(base));
     if (!state.previous?.name) throw Error("update_no_previous");
-    const dir = join(base, "releases", state.previous.name);
-    releaseIdentity(dir);
-    switchCurrent(base, dir);
-    [state.current, state.previous] = [state.previous, state.current];
+    const target = managedRelease(base, state.previous.name);
+    if (!target) throw Error("update_no_previous");
+    switchCurrent(base, target.dir);
+    [state.current, state.previous] = [record(target), state.current];
     // Stay on the rolled-back release until an operator removes the hold.
     writeFileSync(join(base, "update.hold"), "rollback " + new Date().toISOString() + "\n");
-    writeJson(join(base, "update-state.json"), state);
+    writeJson(statePath(base), state);
     return { result: "rolled_back", to: state.current.version, held: true };
   } finally {
     unlock();
@@ -679,61 +860,62 @@ function setupConfig(args) {
   };
 }
 /**
- * Bootstrap through the same verified path as an update: downloads the named
- * release, checks its provenance, installs it under base/releases, then adopts it.
+ * Bootstrap. Run from a package whose tarball the operator verified with an
+ * independent verifier (docs/fleet-update.md); --expect-digest binds this run
+ * to those bytes. Installs the release through the update path, then adopts it
+ * under the same lock.
  */
-export async function installVersion(base, version, args) {
-  if (!parseVersion(version)) throw Error("update_setup_usage");
+export async function installVersion(base, version, args, deps = {}) {
+  const expectDigest = option(args, "--expect-digest");
+  if (!parseVersion(version) || !/^[a-f0-9]{64}$/.test(expectDigest ?? ""))
+    throw Error("update_setup_usage");
   const config = setupConfig(args);
   mkdirSync(base, { recursive: true });
   const unlock = lock(base);
-  let dir;
   try {
     const release = await fetchJson(`${API}/repos/${REPOSITORY}/releases/tags/v${version}`);
     if (release.draft || release.tag_name !== `v${version}`) throw Error("update_release_missing");
-    const state = loadState(base);
-    dir = (await installRelease(base, config, { version, release }, state)).dir;
-    writeJson(join(base, "update-state.json"), state);
+    const installed = await installRelease(base, config, { version, release, expectDigest });
+    return await adopt(base, config, installed, args, deps);
   } finally {
     unlock();
   }
-  return setup(base, args, dir);
 }
 /**
- * One-time adoption of an installed release under base/releases: records the
- * configuration, points `current` at it, rewrites the owned provider catalog
- * entries to launch through `current`, and installs the schedule.
+ * Adoption of an installed release (lock held): health check, `current`,
+ * configuration and state, the stable entry point, owned provider catalog
+ * entries launching through `current`, and the schedule.
  */
-export async function setup(
-  base,
-  args,
-  releaseDir = resolve(dirname(fileURLToPath(import.meta.url)), ".."),
-) {
-  const id = releaseIdentity(releaseDir);
-  const config = setupConfig(args);
-  mkdirSync(base, { recursive: true });
-  const health = await healthCheck(launcher(config, releaseDir));
-  switchCurrent(base, releaseDir);
+export async function adopt(base, config, installed, args, deps = {}) {
+  const health = deps.health ?? healthCheck,
+    home = deps.home ?? homedir();
+  const result = {
+    result: "configured",
+    version: installed.version,
+    health: await health(launcher(config, installed.dir), config.host),
+  };
+  switchCurrent(base, installed.dir);
   writeJson(join(base, "update.json"), config);
   const state = loadState(base);
-  state.previous =
-    state.current?.name && state.current.name !== basename(releaseDir)
-      ? state.current
-      : (state.previous ?? null);
-  state.current = { name: basename(releaseDir), version: id.version, source: id.source };
-  state.installed = [...new Set([...(state.installed ?? []), basename(releaseDir)])];
-  writeJson(join(base, "update-state.json"), state);
-  const result = { result: "configured", version: id.version, health };
+  if (
+    state.current?.name &&
+    state.current.name !== installed.name &&
+    managedRelease(base, state.current.name)
+  )
+    state.previous = state.current;
+  state.current = record(installed);
+  writeJson(statePath(base), state);
+  writeEntry(base);
   if (!args.includes("--no-catalogs")) {
     const { installAgentTools } = await import(
-      pathToFileURL(join(releaseDir, "scripts", "install-agent-tools.mjs")).href
+      pathToFileURL(join(installed.dir, "scripts", "install-agent-tools.mjs")).href
     );
     const stable = launcher(config, join(base, "current"));
     const major = option(args, "--opencode-major");
     const legacy = option(args, "--legacy-opencode-manifest");
     result.catalogs = installAgentTools({
-      home: homedir(),
-      host,
+      home,
+      host: config.host,
       releasePath: join(base, "current"),
       nodePath: config.node,
       command: stable.command,
@@ -742,11 +924,39 @@ export async function setup(
       ...(legacy ? { legacyOpenCodeManifest: legacy } : {}),
     });
   }
-  if (!args.includes("--no-schedule")) result.schedule = installSchedule(base, config);
+  if (!args.includes("--no-schedule"))
+    result.schedule = (deps.schedule ?? installSchedule)(base, config, home);
   return result;
 }
-export function installSchedule(base, config) {
-  const script = join(base, "current", "scripts", "fleet-update.mjs");
+/**
+ * The scheduler's stable entry point. It resolves the active release from
+ * update-state.json (not through `current`), so an interrupted switch cannot
+ * disable updates; the release's updater then reconciles the link.
+ */
+export function entrySource() {
+  return `// Generated by kadenco scripts/fleet-update.mjs; see docs/fleet-update.md.
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+const base = dirname(fileURLToPath(import.meta.url));
+const state = JSON.parse(readFileSync(join(base, "update-state.json"), "utf8"));
+const name = state.current?.name;
+if (typeof name !== "string" || !/^kadenco-[0-9A-Za-z.-]+-[a-f0-9]{16}$/.test(name)) {
+  console.error(JSON.stringify({ result: "failed", reason: "update_state_invalid" }));
+  process.exit(1);
+}
+const { cli } = await import(pathToFileURL(join(base, "releases", name, "scripts", "fleet-update.mjs")).href);
+await cli([...process.argv.slice(2), "--base", base]);
+`;
+}
+function writeEntry(base) {
+  const path = join(base, "fleet-update-entry.mjs"),
+    temp = `${path}.${randomBytes(4).toString("hex")}`;
+  writeFileSync(temp, entrySource(), { mode: 0o644, flag: "wx" });
+  renameSync(temp, path);
+}
+export function installSchedule(base, config, home = homedir()) {
+  const script = join(base, "fleet-update-entry.mjs");
   if (isWindows) {
     const xmlEscape = (s) =>
       s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -762,11 +972,14 @@ export function installSchedule(base, config) {
 `;
     const file = join(base, "kadenco-fleet-update.task.xml");
     writeFileSync(file, "\uFEFF" + xml, { encoding: "utf16le" });
-    runChecked("schtasks.exe", ["/Create", "/TN", "kadenco-fleet-update", "/XML", file, "/F"]);
-    rmSync(file);
+    try {
+      runChecked("schtasks.exe", ["/Create", "/TN", "kadenco-fleet-update", "/XML", file, "/F"]);
+    } finally {
+      rmSync(file, { force: true });
+    }
     return { task: "kadenco-fleet-update", interval: "1h" };
   }
-  const units = join(homedir(), ".config", "systemd", "user");
+  const units = join(home, ".config", "systemd", "user");
   mkdirSync(units, { recursive: true });
   const q = (s) => `"${s.replace(/["\\]/g, (c) => "\\" + c)}"`;
   writeFileSync(
@@ -782,16 +995,17 @@ export function installSchedule(base, config) {
   return { timer: "kadenco-update.timer", interval: "1h" };
 }
 
-async function main(argv) {
-  const [command, ...args] = argv;
-  const base = resolve(option(args, "--base") ?? defaultBase());
+const safeReason = (error) =>
+  /^update_[a-z_]+(:[A-Za-z0-9_.,-]+)?$/.test(error?.message ?? "")
+    ? error.message
+    : "update_failed";
+async function main(command, args, base) {
   if (command === "self-test") {
     await import("sigstore");
     return { result: "ok" };
   }
   if (command === "run") return runUpdate(base);
   if (command === "rollback") return rollback(base);
-  if (command === "setup") return setup(base, args);
   if (command === "install") return installVersion(base, args[0], args.slice(1));
   if (command === "status")
     return {
@@ -801,26 +1015,26 @@ async function main(argv) {
     };
   throw Error("update_usage");
 }
+/** Command-line entry (direct invocation or the stable entry point). */
+export async function cli(argv) {
+  const [command, ...args] = argv;
+  const base = resolve(option(args, "--base") ?? defaultBase());
+  try {
+    const result = await main(command, args, base);
+    if (command === "run") log(base, result);
+    console.log(JSON.stringify(result));
+  } catch (error) {
+    const reason = safeReason(error);
+    if (command === "run") log(base, { result: "failed", reason });
+    console.error(JSON.stringify({ result: "failed", reason }));
+    process.exitCode = 1;
+  }
+}
 const invokedDirectly = () => {
   try {
-    // Launched through base/current: Node reports the module by its real path.
     return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
   } catch {
     return false;
   }
 };
-if (process.argv[1] && invokedDirectly()) {
-  const base = resolve(option(process.argv, "--base") ?? defaultBase());
-  try {
-    const result = await main(process.argv.slice(2));
-    if (process.argv[2] === "run") log(base, result);
-    console.log(JSON.stringify(result));
-  } catch (error) {
-    const reason = /^update_[a-z_]+(:[A-Za-z0-9_.,-]+)?$/.test(error?.message ?? "")
-      ? error.message
-      : "update_failed";
-    if (process.argv[2] === "run") log(base, { result: "failed", reason });
-    console.error(JSON.stringify({ result: "failed", reason }));
-    process.exitCode = 1;
-  }
-}
+if (process.argv[1] && invokedDirectly()) await cli(process.argv.slice(2));

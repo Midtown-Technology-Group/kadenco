@@ -31,55 +31,90 @@ A run installs a release only when all of these hold:
    release's own updater loads (`self-test`).
 5. The new caller, started exactly as a provider starts it, lists every caller
    tool (including `acknowledge_thread_delivery`) and the live server reports an
-   authenticated host binding with delivery acknowledgement available.
+   authenticated binding to this member's configured host, with delivery
+   acknowledgement available.
 
-Anything else leaves the member on its current release and logs a static reason.
-A release that installed but failed the health check is retried on the next run.
+Candidates are tried newest first (all published releases, paginated), at most
+five per run. A release whose publication fails a check (missing asset,
+checksum, provenance, archive, identity) is skipped and not retried for 24
+hours, so one bad release cannot hold back an older good one. A failed health
+check skips to the next candidate without condemning the release (the server
+may be down); its installed copy is reused on a later run. Network or tool
+failures end the run. Nothing is switched unless every check passed; each run
+logs a static reason.
 
 Releases published before the attestation job existed (up to 0.1.0-alpha.25)
 are never installed automatically.
 
 ## Layout
 
-|          | Linux                                                                           | Windows                                        |
-| -------- | ------------------------------------------------------------------------------- | ---------------------------------------------- |
-| Base     | `~/.local/share/eddie-t3`                                                       | `%USERPROFILE%\.t3\runtime\eddie-t3`           |
-| Releases | `<base>/releases/kadenco-<version>-<source7>`                                   | same                                           |
-| Active   | `<base>/current` (symlink, replaced atomically)                                 | `<base>\current` (junction)                    |
-| Schedule | systemd user timer `kadenco-update.timer` (hourly, 10 min jitter; needs linger) | scheduled task `kadenco-fleet-update` (hourly) |
+|          | Linux                                                                           | Windows                                         |
+| -------- | ------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Base     | `~/.local/share/eddie-t3`                                                       | `%USERPROFILE%\.t3\runtime\eddie-t3`            |
+| Releases | `<base>/releases/kadenco-<version>-<first 16 hex of package digest>`            | same                                            |
+| Active   | `<base>/current` (symlink, replaced atomically)                                 | `<base>\current` (junction, via `current.next`) |
+| Schedule | systemd user timer `kadenco-update.timer` (hourly, 10 min jitter; needs linger) | scheduled task `kadenco-fleet-update` (hourly)  |
 
 `update.json` holds the host name, launcher type, node path and the path of the
 existing caller credential; the updater never reads the credential, only the
-launcher does. `update-state.json` records the current and previous release and
-the releases the updater installed; `update.log` has one JSON line per run.
-Provider catalogs launch through `current`, so an update needs no catalog edit;
-running provider sessions keep their already-started caller until their next
-session. The updater keeps the current, previous and newest installed releases
-and only ever deletes releases it installed.
+launcher does. Each installed release carries `.fleet-update.json`, binding its
+directory to the verified package digest; only such directories are reused,
+activated or deleted. `update-state.json` records the current and previous
+release and recent rejections; `update.log` has one JSON line per run. Every
+run first reconciles state with the filesystem under the lock: it adopts a
+switch that completed before a crash, finishes an interrupted Windows switch
+(`current.next`) and restores a missing link. The schedule runs
+`<base>/fleet-update-entry.mjs`, which loads the active release named in
+`update-state.json` rather than going through `current`, so a broken link
+cannot stop updates. Provider catalogs launch through `current`, so an update
+needs no catalog edit; running provider sessions keep their already-started
+caller until their next session. The updater keeps the current, previous and
+newest installed releases.
 
 ## Adopt a member (once)
 
-On the member, as the user that owns its provider catalogs and caller
-credential, with the same Node the catalogs use (Node 22.22.2+, 24.15+ or 26+, which the verifier requires), run the updater from the first
-attested release (download and extract it anywhere, then `npm ci --omit=dev
---ignore-scripts` in it):
+Bootstrapping runs the release's own updater, so verify the package with an
+independent verifier before extracting or running anything from it. On a
+trusted machine with GitHub CLI 2.49 or later:
+
+```sh
+gh release download v<version> --repo Midtown-Technology-Group/kadenco \
+  --pattern 'kadenco-<version>.tgz' --pattern BUILD.json
+gh attestation verify kadenco-<version>.tgz --repo Midtown-Technology-Group/kadenco \
+  --signer-workflow Midtown-Technology-Group/kadenco/.github/workflows/release.yml \
+  --source-ref refs/heads/main --source-digest <source from BUILD.json> \
+  --deny-self-hosted-runners
+sha256sum kadenco-<version>.tgz
+```
+
+Copy that verified tarball to the member; do not download it again there.
+Extract it, run `npm ci --omit=dev --ignore-scripts` in `package/`, then, as the
+user that owns the member's provider catalogs and caller credential, with the
+same Node the catalogs use (Node 22.22.2+, 24.15+ or 26+, which the verifier
+requires):
 
 ```sh
 node package/scripts/fleet-update.mjs install <version> \
-  --host <fleet host name> --credential ~/.config/eddie-t3/host-caller.json
+  --expect-digest <sha256 of the verified tarball> \
+  --host <host name the Eddie server reports for this caller> \
+  --credential ~/.config/eddie-t3/host-caller.json
 ```
 
-On Windows pass the caller's `.clixml` credential file. `install` downloads and
-verifies the release exactly as an update does, installs it under `releases`,
-health-checks it, points `current` at it, rewrites the owned catalog entries
-through the existing `install-agent-tools.mjs` (it refuses entries it does not
-own; `--opencode-major 2` and `--legacy-opencode-manifest <path>` are passed
-through) and installs the schedule. `--no-catalogs` and `--no-schedule` skip
-those steps.
+On Windows pass the caller's `.clixml` credential file. `--host` must equal the
+`host` that `get_eddie_capabilities` returns for this member's credential (the
+health check refuses any other binding). `install` downloads the release,
+refuses it unless its digest is the one you verified and it passes every check
+above, installs it under `releases`, health-checks it, points `current` at it,
+writes the stable entry point, rewrites the owned catalog entries through the
+existing `install-agent-tools.mjs` (it refuses entries it does not own;
+`--opencode-major 2` and `--legacy-opencode-manifest <path>` are passed
+through) and installs the schedule, all under the update lock.
+`--no-catalogs` and `--no-schedule` skip those steps. Delete the extracted
+bootstrap copy afterwards.
 
 ## Operate
 
-- `node <base>/current/scripts/fleet-update.mjs status`: current, previous,
+- `node <base>/fleet-update-entry.mjs status`: current, previous,
   last check, hold.
 - `... run`: one update check now (what the timer runs).
 - Pause: create `<base>/update.hold`; delete it to resume.
