@@ -6,12 +6,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import {
   ISSUER,
@@ -30,7 +30,7 @@ import {
   adopt,
   healthCheck,
   runUpdate,
-  isReleaseRejection,
+  isTransient,
   snappyDecode,
   switchCurrent,
   verifyProvenance,
@@ -320,33 +320,55 @@ test("reconcile completes an interrupted Windows-style switch from current.next"
   }
 });
 
-test("the lock admits one owner, retires a dead owner's lock and never removes another's", () => {
+test("the lock admits one process at a time and is released when its holder exits", async () => {
   const root = base();
   try {
-    const unlock = lock(root);
-    assert.throws(() => lock(root), /update_locked/);
-    unlock();
-    // A lock left by a process that no longer exists is retired.
-    mkdirSync(join(root, "update.lock"));
-    writeFileSync(
-      join(root, "update.lock", "owner.json"),
-      JSON.stringify({ token: "x", pid: 2 ** 30 }),
+    const holder = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `const m = await import(${JSON.stringify(new URL("../scripts/fleet-update.mjs", import.meta.url).href)});
+         await m.lock(${JSON.stringify(root)}); console.log("held"); setInterval(() => {}, 1000);`,
+      ],
+      { stdio: ["ignore", "pipe", "inherit"] },
     );
-    const second = lock(root);
-    // If our lock was retired and re-taken by someone else, unlocking leaves theirs.
-    renameSync(join(root, "update.lock"), join(root, "gone"));
-    mkdirSync(join(root, "update.lock"));
-    writeFileSync(
-      join(root, "update.lock", "owner.json"),
-      JSON.stringify({ token: "theirs", pid: process.pid }),
-    );
-    second();
-    assert.equal(existsSync(join(root, "update.lock", "owner.json")), true);
+    await new Promise((ok) => holder.stdout.once("data", ok));
+    await assert.rejects(lock(root), /update_locked/);
+    holder.kill("SIGKILL");
+    await new Promise((ok) => holder.once("close", ok));
+    const unlock = await lock(root);
+    await assert.rejects(lock(root), /update_locked/);
+    await unlock();
+    await (
+      await lock(root)
+    )();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
+test("reconcile ignores a link to a same-named directory outside releases", () => {
+  const root = base(),
+    outside = base();
+  try {
+    const a = fakeRelease(root, "0.1.0-alpha.26", "c".repeat(64)),
+      b = fakeRelease(root, "0.1.0-alpha.27", "d".repeat(64));
+    const decoy = fakeRelease(outside, "0.1.0-alpha.27", "d".repeat(64));
+    assert.equal(decoy.name, b.name);
+    symlinkSync(
+      decoy.dir,
+      join(root, "current"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const state = reconcile(root, { current: record(a) });
+    assert.equal(state.current.name, a.name);
+    assert.equal(currentTarget(root), a.dir);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
 test("adoption health-checks, switches, records state and rewrites catalogs through current", async () => {
   const root = base(),
     home = base();
@@ -437,44 +459,97 @@ test("a release with broken publication is skipped and remembered, not retried e
       }),
     );
     const dl = `https://github.com/${REPOSITORY}/releases/download/`;
+    const assets = (v) =>
+      [`kadenco-${v}.tgz`, "SHA256SUMS", "BUILD.json"].map((name) => ({
+        name,
+        browser_download_url: `${dl}v${v}/${name}`,
+      }));
     const releases = [
+      { tag_name: "v0.1.0-alpha.29", assets: assets("0.1.0-alpha.29") },
       { tag_name: "v0.1.0-alpha.28", assets: [] },
-      {
-        tag_name: "v0.1.0-alpha.27",
-        assets: ["kadenco-0.1.0-alpha.27.tgz", "SHA256SUMS", "BUILD.json"].map((name) => ({
-          name,
-          browser_download_url: dl + "v0.1.0-alpha.27/" + name,
-        })),
-      },
+      { tag_name: "v0.1.0-alpha.27", assets: assets("0.1.0-alpha.27") },
     ];
     const files = {
-      SHA256SUMS: `${"0".repeat(64)}  kadenco-0.1.0-alpha.27.tgz\n`,
-      "BUILD.json": JSON.stringify({ version: "0.1.0-alpha.27", source }),
-      "kadenco-0.1.0-alpha.27.tgz": "not the listed bytes",
+      "v0.1.0-alpha.29/SHA256SUMS": `${"0".repeat(64)}  kadenco-0.1.0-alpha.29.tgz\n`,
+      "v0.1.0-alpha.29/BUILD.json": "{ not json",
+      "v0.1.0-alpha.27/SHA256SUMS": `${"0".repeat(64)}  kadenco-0.1.0-alpha.27.tgz\n`,
+      "v0.1.0-alpha.27/BUILD.json": JSON.stringify({ version: "0.1.0-alpha.27", source }),
+      "v0.1.0-alpha.27/kadenco-0.1.0-alpha.27.tgz": "not the listed bytes",
     };
+    let listStatus = 200;
     globalThis.fetch = async (url) => {
-      const body = String(url).includes("/releases?")
-        ? JSON.stringify(releases)
-        : files[String(url).split("/").pop()];
-      const r = new Response(body, { status: 200 });
-      Object.defineProperty(r, "url", { value: String(url) });
+      const u = String(url),
+        list = u.includes("/releases?");
+      const r = new Response(list ? JSON.stringify(releases) : files[u.slice(dl.length)], {
+        status: list ? listStatus : 200,
+      });
+      Object.defineProperty(r, "url", { value: u });
       return r;
     };
     const first = await runUpdate(root);
     assert.equal(first.result, "current");
+    // A malformed release, one with no assets and one with wrong bytes are each
+    // skipped; none of them stops the run.
     assert.deepEqual(
       first.skipped.map((s) => s.version),
-      ["0.1.0-alpha.28", "0.1.0-alpha.27"],
+      ["0.1.0-alpha.29", "0.1.0-alpha.28", "0.1.0-alpha.27"],
     );
-    assert.match(first.skipped[1].reason, /update_checksum_mismatch/);
-    assert.deepEqual(Object.keys(stateOf(root).rejected).sort(), [
+    assert.match(first.skipped[2].reason, /update_checksum_mismatch/);
+    const rejected = stateOf(root).rejected;
+    assert.deepEqual(Object.keys(rejected).sort(), [
       "v0.1.0-alpha.27",
       "v0.1.0-alpha.28",
+      "v0.1.0-alpha.29",
     ]);
+    assert.ok(Date.parse(rejected["v0.1.0-alpha.27"].retry_after) > Date.now() + 23 * 3600e3);
     assert.deepEqual((await runUpdate(root)).skipped, []);
-    assert.equal(isReleaseRejection(Error("update_fetch_status:503")), false);
+    // An unavailable GitHub API ends the run without condemning any release.
+    listStatus = 503;
+    await assert.rejects(runUpdate(root), /update_fetch_status:503/);
+    assert.equal(isTransient(Error("update_fetch_status:503")), true);
+    assert.equal(isTransient(Error("update_checksum_mismatch")), false);
+    // A hold is honored after reconcile, and reported with the current version.
+    listStatus = 200;
+    writeFileSync(join(root, "update.hold"), "test\n");
+    assert.deepEqual(await runUpdate(root), { result: "held", version: "0.1.0-alpha.26" });
   } finally {
     globalThis.fetch = realFetch;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("health cleanup reaches the caller's descendants and fails when one escapes", async () => {
+  const tools = [
+    "ask_eddie",
+    "get_eddie_reply",
+    "acknowledge_eddie_reply",
+    "acknowledge_thread_delivery",
+    "get_eddie_conversation",
+    "get_eddie_capabilities",
+  ].map((name) => ({ name }));
+  // A caller that answers correctly, ignores end of input, and starts a
+  // descendant sharing its output (escaping into a new session if asked).
+  const fake = (escape) => `
+    const { spawn } = require("node:child_process");
+    spawn(process.execPath, ["-e", "setTimeout(() => {}, 4000)"], { stdio: ["ignore", "inherit", "ignore"], detached: ${escape} });
+    setInterval(() => {}, 1000);
+    process.stdin.setEncoding("utf8"); let b = "";
+    process.stdin.on("data", (d) => { b += d; let i; while ((i = b.indexOf("\\n")) >= 0) { const m = JSON.parse(b.slice(0, i)); b = b.slice(i + 1);
+      if (m.id === undefined) continue; let result = {};
+      if (m.method === "tools/list") result = { tools: ${JSON.stringify(tools)} };
+      if (m.method === "tools/call") result = { content: [{ type: "text", text: JSON.stringify({ host_caller: true, host: "h", delivery_acknowledgement: { available: true } }) }] };
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }) + "\\n"); } });`;
+  const fast = { graceMs: 200, killWaitMs: 1500 };
+  const ok = await healthCheck(
+    { command: process.execPath, args: ["-e", fake(false)] },
+    "h",
+    20000,
+    fast,
+  );
+  assert.equal(ok.host, "h");
+  if (process.platform !== "win32")
+    await assert.rejects(
+      healthCheck({ command: process.execPath, args: ["-e", fake(true)] }, "h", 20000, fast),
+      /update_health_cleanup/,
+    );
 });

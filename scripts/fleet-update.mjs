@@ -21,11 +21,11 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -49,7 +49,6 @@ const DOWNLOAD_HOSTS = new Set([
   "release-assets.githubusercontent.com",
 ]);
 const isWindows = process.platform === "win32";
-const LOCK_STALE_MS = 45 * 60 * 1000;
 
 // ---------------------------------------------------------------- versions --
 export function parseVersion(text) {
@@ -281,59 +280,29 @@ function log(base, entry) {
     // Logging never blocks an update decision.
   }
 }
-function processAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
+/** Lock name for this user and base: an abstract Unix socket or a named pipe. */
+export function lockName(base) {
+  const id = createHash("sha256").update(resolve(base)).digest("hex").slice(0, 24);
+  return isWindows
+    ? `\\\\.\\pipe\\kadenco-fleet-update-${id}`
+    : `\0kadenco-fleet-update-${process.getuid?.() ?? 0}-${id}`;
 }
 /**
- * Directory lock with an owner token. Only the owner releases it; a stale lock
- * (owner process gone, or older than LOCK_STALE_MS) is retired by an atomic
- * rename, so two contenders cannot both remove it and both proceed.
+ * Process-lifetime lock. Listening on the name succeeds for exactly one
+ * process; the operating system releases it when that process exits, however
+ * it exits, so there is no stale lock to detect or retire.
  */
 export function lock(base) {
-  const path = join(base, "update.lock"),
-    token = randomBytes(16).toString("hex");
-  const retire = () => {
-    const away = `${path}.retired-${randomBytes(6).toString("hex")}`;
-    try {
-      renameSync(path, away);
-    } catch (error) {
-      if (error.code === "ENOENT") return; // Another contender retired it.
-      throw error;
-    }
-    rmSync(away, { recursive: true, force: true });
-  };
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      mkdirSync(path);
-      writeFileSync(join(path, "owner.json"), JSON.stringify({ token, pid: process.pid }));
-      return () => {
-        try {
-          if (readJson(join(path, "owner.json")).token === token) retire();
-        } catch {
-          // Already retired as stale by another run; nothing of ours to remove.
-        }
-      };
-    } catch (error) {
-      if (error.code !== "EEXIST" || attempt)
-        throw error.code === "EEXIST" ? Error("update_locked") : error;
-      let owner = null;
-      try {
-        owner = readJson(join(path, "owner.json"));
-      } catch {
-        // Owner not written yet, or unreadable: only age decides.
-      }
-      const old = Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS;
-      if (!old && !(Number.isInteger(owner?.pid) && !processAlive(owner.pid)))
-        throw Error("update_locked");
-      retire();
-    }
-  }
-  throw Error("update_locked");
+  return new Promise((ok, fail) => {
+    const server = createServer((socket) => socket.destroy());
+    server.once("error", (error) =>
+      fail(error.code === "EADDRINUSE" ? Error("update_locked") : error),
+    );
+    server.listen(lockName(base), () => {
+      server.unref();
+      ok(() => new Promise((done) => server.close(() => done())));
+    });
+  });
 }
 function isLink(path) {
   try {
@@ -428,25 +397,28 @@ export function launcher(config, root) {
     args: [join(root, "scripts", "invoke-eddie-posix.mjs"), config.credential],
   };
 }
-function stopTree(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  if (isWindows && child.pid)
-    spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
-      windowsHide: true,
-      timeout: 15000,
-    });
-  else child.kill("SIGKILL");
-}
 /**
  * Starts the release's caller MCP exactly as a provider would and requires the
  * full tool surface and the live server's authenticated binding to this host.
- * Settles only after the caller (and, on Windows, its PowerShell wrapper's
- * children) has exited.
+ * It settles only once `close` confirms every process holding the caller's
+ * output has exited; an unconfirmed shutdown fails the check. Windows kills the
+ * tree while the PowerShell wrapper still parents the caller.
  */
-export function healthCheck({ command, args }, expectedHost, timeoutMs = 90000) {
+export function healthCheck(
+  { command, args },
+  expectedHost,
+  timeoutMs = 90000,
+  { graceMs = 5000, killWaitMs = 20000 } = {},
+) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
-    const exited = new Promise((done) => child.once("close", done));
+    // POSIX: its own process group, so cleanup reaches every descendant.
+    const child = spawn(command, args, {
+      stdio: ["pipe", "pipe", "ignore"],
+      windowsHide: true,
+      detached: !isWindows,
+    });
+    const closed = new Promise((done) => child.once("close", () => done(true)));
+    const within = (ms) => Promise.race([closed, delay(ms).then(() => false)]);
     const pending = new Map();
     let buffer = "",
       settled = false;
@@ -454,13 +426,28 @@ export function healthCheck({ command, args }, expectedHost, timeoutMs = 90000) 
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      child.stdin.end();
-      const graceful = await Promise.race([exited.then(() => true), delay(5000).then(() => false)]);
-      if (!graceful) {
-        stopTree(child);
-        await Promise.race([exited, delay(15000)]);
+      let stopped;
+      if (isWindows) {
+        if (child.exitCode === null && child.signalCode === null && child.pid)
+          spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+            windowsHide: true,
+            timeout: 15000,
+          });
+        stopped = await within(killWaitMs);
+      } else {
+        child.stdin.end();
+        stopped = await within(graceMs);
+        if (!stopped) {
+          try {
+            process.kill(-child.pid, "SIGKILL");
+          } catch {
+            // Group already gone.
+          }
+          stopped = await within(killWaitMs);
+        }
       }
-      if (error) reject(error);
+      if (!stopped) reject(Error("update_health_cleanup"));
+      else if (error) reject(error);
       else resolvePromise(value);
     };
     const timer = setTimeout(() => finish(Error("update_health_timeout")), timeoutMs);
@@ -568,11 +555,23 @@ export function managedRelease(base, name) {
 }
 const record = (r) => ({ name: r.name, version: r.version, source: r.source, digest: r.digest });
 
-/** Errors that condemn one release (its publication), not the run. */
-const REJECTS =
-  /^update_(asset_missing|build_identity|checksum|provenance|archive_unsafe|release_identity|fetch_too_large|fetch_status:404)/;
-export const isReleaseRejection = (error) => REJECTS.test(error?.message ?? "");
-
+/**
+ * Failures of the infrastructure rather than of one release: they end the run
+ * without marking any release, and the next run retries. npm ci counts here
+ * because an attested package's shrinkwrap already installed in the release
+ * workflow's smoke test, so a failure points at the registry or network.
+ */
+export function isTransient(error) {
+  const m = error?.message ?? "";
+  return (
+    m === "fetch failed" ||
+    error?.name === "TimeoutError" ||
+    error?.name === "AbortError" ||
+    /^update_fetch_status:(403|408|429|5\d\d)$/.test(m) ||
+    m === "update_npm_failed" ||
+    m === "update_npm_unavailable"
+  );
+}
 async function installRelease(base, config, candidate) {
   const { version, release } = candidate;
   const asset = (name) => {
@@ -646,24 +645,32 @@ async function installRelease(base, config, candidate) {
     if (id.version !== version || id.source !== build.source)
       throw Error("update_release_identity");
     const [npm, prefix] = npmCommand();
-    runChecked(
-      npm,
-      [
-        ...prefix,
-        "ci",
-        "--omit=dev",
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-        "--loglevel=error",
-      ],
-      { cwd: pkgDir, timeout: 15 * 60 * 1000 },
-    );
+    try {
+      runChecked(
+        npm,
+        [
+          ...prefix,
+          "ci",
+          "--omit=dev",
+          "--ignore-scripts",
+          "--no-audit",
+          "--no-fund",
+          "--loglevel=error",
+        ],
+        { cwd: pkgDir, timeout: 15 * 60 * 1000 },
+      );
+    } catch {
+      throw Error("update_npm_failed");
+    }
     // The next run uses this release's updater: it must load before we switch.
-    runChecked(config.node, [join(pkgDir, "scripts", "fleet-update.mjs"), "self-test"], {
-      cwd: pkgDir,
-      timeout: 60000,
-    });
+    try {
+      runChecked(config.node, [join(pkgDir, "scripts", "fleet-update.mjs"), "self-test"], {
+        cwd: pkgDir,
+        timeout: 60000,
+      });
+    } catch {
+      throw Error("update_self_test_failed");
+    }
     // Ownership travels with the directory, so a crash after the rename still
     // leaves a release later runs recognize and reuse.
     writeFileSync(
@@ -726,12 +733,17 @@ const loadState = (base) => (existsSync(statePath(base)) ? readJson(statePath(ba
 export function reconcile(base, state) {
   const current = join(base, "current"),
     next = join(base, "current.next");
+  // A link counts only if it resolves to the managed release directory itself.
+  const managedAt = (target) => {
+    const m = target ? managedRelease(base, basename(target)) : null;
+    return m && resolve(target) === resolve(m.dir) ? m : null;
+  };
   if (isLink(next)) {
-    const pending = managedRelease(base, basename(linkTarget(next, base) ?? ""));
+    const pending = managedAt(linkTarget(next, base));
     if (!isLink(current) && pending) renameSync(next, current);
     else unlinkSync(next);
   }
-  const active = managedRelease(base, basename(currentTarget(base) ?? ""));
+  const active = managedAt(currentTarget(base));
   if (active) {
     if (active.name !== state.current?.name) {
       if (managedRelease(base, state.current?.name)) state.previous = state.current;
@@ -745,9 +757,10 @@ export function reconcile(base, state) {
   if (state.previous && !managedRelease(base, state.previous.name)) state.previous = null;
   return state;
 }
+const MAX_PAGES = 10;
 async function listReleases() {
   const all = [];
-  for (let page = 1; page <= 5; page++) {
+  for (let page = 1; page <= MAX_PAGES; page++) {
     const batch = await fetchJson(
       `${API}/repos/${REPOSITORY}/releases?per_page=100&page=${page}`,
       16 << 20,
@@ -758,21 +771,23 @@ async function listReleases() {
   }
   return all;
 }
-const REJECTION_TTL_MS = 24 * 60 * 60 * 1000,
-  MAX_ATTEMPTS = 5;
+const MAX_ATTEMPTS = 5,
+  REJECT_MS = 24 * 60 * 60 * 1000,
+  DEFER_MS = 2 * 60 * 60 * 1000;
 
 export async function runUpdate(base, { health = healthCheck } = {}) {
   const config = loadConfig(base);
-  if (existsSync(join(base, "update.hold"))) return { result: "held" };
-  const unlock = lock(base);
+  const unlock = await lock(base);
   try {
+    // Reconcile first, so a rollback or switch interrupted by a crash is
+    // settled before the hold is honored or anything is installed.
     const state = reconcile(base, loadState(base));
     writeJson(statePath(base), state);
+    if (existsSync(join(base, "update.hold")))
+      return { result: "held", version: state.current.version };
     const now = Date.now();
     state.rejected = Object.fromEntries(
-      Object.entries(state.rejected ?? {}).filter(
-        ([, r]) => now - Date.parse(r.at) < REJECTION_TTL_MS,
-      ),
+      Object.entries(state.rejected ?? {}).filter(([, r]) => Date.parse(r.retry_after) > now),
     );
     const candidates = newerReleases(await listReleases(), state.current.version).filter(
       (c) => !state.rejected[c.release.tag_name],
@@ -780,9 +795,8 @@ export async function runUpdate(base, { health = healthCheck } = {}) {
     state.checked_at = new Date().toISOString();
     const skipped = [];
     for (const candidate of candidates.slice(0, MAX_ATTEMPTS)) {
-      let installed;
       try {
-        installed = await installRelease(base, config, candidate);
+        const installed = await installRelease(base, config, candidate);
         const result = await health(launcher(config, installed.dir), config.host);
         switchCurrent(base, installed.dir);
         state.previous = state.current;
@@ -800,26 +814,27 @@ export async function runUpdate(base, { health = healthCheck } = {}) {
           skipped,
         };
       } catch (error) {
-        const reason = safeReason(error);
-        if (isReleaseRejection(error)) {
-          state.rejected[candidate.release.tag_name] = { at: new Date().toISOString(), reason };
-          skipped.push({ version: candidate.version, reason });
-          continue;
+        if (isTransient(error)) {
+          writeJson(statePath(base), state);
+          throw error;
         }
-        // A failed health check may be this release or the server: keep the
-        // install for reuse and try an older candidate; nothing is switched.
-        if (reason.startsWith("update_health_")) {
-          skipped.push({ version: candidate.version, reason });
-          continue;
-        }
-        writeJson(statePath(base), state);
-        throw error;
+        // Anything else is about this release. A failed health check may be the
+        // server rather than the release, so it is deferred briefly; the rest
+        // is rejected for a day. Later runs reach older candidates either way.
+        const reason = safeReason(error),
+          wait = reason.startsWith("update_health_") ? DEFER_MS : REJECT_MS;
+        state.rejected[candidate.release.tag_name] = {
+          at: new Date().toISOString(),
+          reason,
+          retry_after: new Date(Date.now() + wait).toISOString(),
+        };
+        skipped.push({ version: candidate.version, reason });
       }
     }
     writeJson(statePath(base), state);
     return { result: "current", version: state.current.version, skipped };
   } finally {
-    unlock();
+    await unlock();
   }
 }
 /** All published releases newer than `installed`, newest first. */
@@ -834,21 +849,22 @@ export function newerReleases(releases, installed) {
     .filter((c) => !installed || compareVersions(c.version, installed) > 0)
     .sort((a, b) => compareVersions(b.version, a.version));
 }
-export function rollback(base) {
-  const unlock = lock(base);
+export async function rollback(base) {
+  const unlock = await lock(base);
   try {
     const state = reconcile(base, loadState(base));
     if (!state.previous?.name) throw Error("update_no_previous");
     const target = managedRelease(base, state.previous.name);
     if (!target) throw Error("update_no_previous");
+    // The hold is written first: if we crash after switching, the next run
+    // reconciles to the rolled-back release and still does not update.
+    writeFileSync(join(base, "update.hold"), "rollback " + new Date().toISOString() + "\n");
     switchCurrent(base, target.dir);
     [state.current, state.previous] = [record(target), state.current];
-    // Stay on the rolled-back release until an operator removes the hold.
-    writeFileSync(join(base, "update.hold"), "rollback " + new Date().toISOString() + "\n");
     writeJson(statePath(base), state);
     return { result: "rolled_back", to: state.current.version, held: true };
   } finally {
-    unlock();
+    await unlock();
   }
 }
 function option(args, name) {
@@ -880,14 +896,14 @@ export async function installVersion(base, version, args, deps = {}) {
     throw Error("update_setup_usage");
   const config = setupConfig(args);
   mkdirSync(base, { recursive: true });
-  const unlock = lock(base);
+  const unlock = await lock(base);
   try {
     const release = await fetchJson(`${API}/repos/${REPOSITORY}/releases/tags/v${version}`);
     if (release.draft || release.tag_name !== `v${version}`) throw Error("update_release_missing");
     const installed = await installRelease(base, config, { version, release, expectDigest });
     return await adopt(base, config, installed, args, deps);
   } finally {
-    unlock();
+    await unlock();
   }
 }
 /**

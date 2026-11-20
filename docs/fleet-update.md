@@ -34,15 +34,18 @@ A run installs a release only when all of these hold:
    authenticated binding to this member's configured host, with delivery
    acknowledgement available.
 
-Candidates are tried newest first (all published releases, paginated), at most
-five per run. A release whose publication fails a check (missing asset,
-checksum, provenance, archive, identity) is skipped and not retried for 24
-hours, so one bad release cannot hold back an older good one. A failed health
-check skips to the next candidate without condemning the release (the server
-may be down); its installed copy is reused on a later run. Network or tool
-failures end the run. Nothing is switched unless every check passed; each run
-logs a static reason.
-
+Candidates are tried newest first, across up to the 1000 newest releases, at
+most five per run. A failure that concerns one release (a missing or malformed
+asset, checksum, provenance, archive, identity or self-test) skips it for 24
+hours; a failed health check, which may be the server rather than the release,
+skips it for 2 hours and keeps its installed copy for reuse. Either way later
+runs reach older candidates, so no single release can hold the member back.
+Infrastructure failures (GitHub unreachable or rate-limited, npm registry
+errors) end the run without marking any release; the next run retries. Nothing
+is switched unless every check passed; each run logs a static reason. Runs are
+serialized by an operating-system lock (an abstract Unix socket or a named
+pipe) that is released when the process exits, so a crashed run never leaves a
+stale lock.
 Releases published before the attestation job existed (up to 0.1.0-alpha.25)
 are never installed automatically.
 
@@ -61,9 +64,10 @@ launcher does. Each installed release carries `.fleet-update.json`, binding its
 directory to the verified package digest; only such directories are reused,
 activated or deleted. `update-state.json` records the current and previous
 release and recent rejections; `update.log` has one JSON line per run. Every
-run first reconciles state with the filesystem under the lock: it adopts a
-switch that completed before a crash, finishes an interrupted Windows switch
-(`current.next`) and restores a missing link. The schedule runs
+run first reconciles state with the filesystem under the lock, before honoring
+a hold: it adopts a switch that completed before a crash, finishes an
+interrupted Windows switch (`current.next`) and restores a missing link. A link
+counts only if it resolves to the managed release directory itself. The schedule runs
 `<base>/fleet-update-entry.mjs`, which loads the active release named in
 `update-state.json` rather than going through `current`, so a broken link
 cannot stop updates. Provider catalogs launch through `current`, so an update
@@ -75,7 +79,8 @@ newest installed releases.
 
 Bootstrapping runs the release's own updater, so verify the package with an
 independent verifier before extracting or running anything from it. On a
-trusted machine with GitHub CLI 2.49 or later:
+trusted machine with a GitHub CLI whose `gh attestation verify` has `--source-digest`
+(2.104 does; 2.49, which introduced attestation verification, does not):
 
 ```sh
 gh release download v<version> --repo Midtown-Technology-Group/kadenco \
@@ -88,7 +93,8 @@ sha256sum kadenco-<version>.tgz
 ```
 
 Copy that verified tarball to the member; do not download it again there.
-Extract it, run `npm ci --omit=dev --ignore-scripts` in `package/`, then, as the
+Before extracting it, check on the member that its SHA-256 equals the digest you
+verified (`sha256sum` on Linux, `Get-FileHash` on Windows). Then extract it, run `npm ci --omit=dev --ignore-scripts` in `package/`, then, as the
 user that owns the member's provider catalogs and caller credential, with the
 same Node the catalogs use (Node 22.22.2+, 24.15+ or 26+, which the verifier
 requires):
@@ -118,8 +124,9 @@ bootstrap copy afterwards.
   last check, hold.
 - `... run`: one update check now (what the timer runs).
 - Pause: create `<base>/update.hold`; delete it to resume.
-- `... rollback`: switch `current` back to the previous release and create the
-  hold so the next run does not reinstall the release you rolled back from.
+- `... rollback`: create the hold, then switch `current` back to the previous
+  release, so even a crash midway never lets the next run reinstall the release
+  you rolled back from.
   Fix forward with a new release, then delete the hold.
 - Logs: `<base>/update.log`; on Linux also `journalctl --user -u kadenco-update`.
 
