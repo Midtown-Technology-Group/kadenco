@@ -5,6 +5,15 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+- Fleet update follow-ups from the first rollout: npm and the updater self-test
+  use a temporary directory inside the release stage, so a full `/tmp` cannot
+  truncate an install; a verifier library that fails to load is reported as
+  `update_verifier_unavailable` instead of a trust-root outage; adoption is forward-only and commits by writing `update.json` last, so a refused or
+  interrupted `install` changes nothing a scheduled run acts on and is completed by
+  running it again; the Windows `ask-eddie.ps1` wrapper no longer fixes a mode list (named and
+  positional calls still work; `agent-tool.mjs` validates modes), restoring the
+  sharing modes.
+
 ## 0.1.0-alpha.26
 
 - Add the Linux edge host files (`packages/control-plane/operator/linux/`): a

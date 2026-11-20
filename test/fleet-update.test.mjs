@@ -12,8 +12,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   ISSUER,
   identityPattern,
@@ -32,6 +33,7 @@ import {
   adopt,
   healthCheck,
   runUpdate,
+  rollback,
   isTransient,
   snappyDecode,
   switchCurrent,
@@ -441,6 +443,47 @@ test("adoption health-checks, switches, records state and rewrites catalogs thro
     const claude = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers
       .ask_eddie;
     assert.equal(claude.args[0], join(root, "current", "scripts", "invoke-eddie-posix.mjs"));
+    // The CLI wrapper leaves mode validation to agent-tool.mjs, so modes added
+    // later work without regenerating it; named and positional calls both work.
+    const cliPath = join(
+      home,
+      ".local",
+      "bin",
+      process.platform === "win32" ? "ask-eddie.ps1" : "ask-eddie",
+    );
+    assert.doesNotMatch(readFileSync(cliPath, "utf8"), /ValidateSet/);
+    writeFileSync(
+      join(r.dir, "scripts", "agent-tool.mjs"),
+      "console.log(JSON.stringify(process.argv.slice(2)));\n",
+    );
+    const request = join(home, "dir with space", "r.json");
+    const calls =
+      process.platform === "win32"
+        ? [
+            [
+              "powershell.exe",
+              [
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                cliPath,
+                "-Mode",
+                "request_sharing",
+                "-RequestFile",
+                request,
+              ],
+            ],
+            [
+              "powershell.exe",
+              ["-NoProfile", "-NonInteractive", "-File", cliPath, "request_sharing", request],
+            ],
+          ]
+        : [["sh", [cliPath, "request_sharing", request]]];
+    for (const [command, args] of calls) {
+      const out = spawnSync(command, args, { encoding: "utf8", windowsHide: true });
+      assert.equal(out.status, 0, out.stderr);
+      assert.deepEqual(JSON.parse(out.stdout.trim()).slice(1), ["request_sharing", request]);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
@@ -662,6 +705,160 @@ test("recovery recognizes a switch made through another spelling of the base", (
     assert.equal(state.previous.name, a.name);
   } finally {
     if (process.platform !== "win32") rmSync(alias, { force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an adoption the catalog installer refuses is not committed, and a re-run completes it", async () => {
+  const root = base(),
+    home = base();
+  try {
+    const r = fakeRelease(root, "0.1.0-alpha.26", "4".repeat(64));
+    writeFileSync(
+      join(r.dir, "scripts", "install-agent-tools.mjs"),
+      readFileSync(new URL("../scripts/install-agent-tools.mjs", import.meta.url)),
+    );
+    mkdirSync(join(r.dir, "node_modules"), { recursive: true });
+    symlinkSync(
+      join(fileURLToPath(new URL("..", import.meta.url)), "node_modules", "jsonc-parser"),
+      join(r.dir, "node_modules", "jsonc-parser"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    // An ask_eddie entry this installer never recorded: it must refuse.
+    writeFileSync(
+      join(home, ".claude.json"),
+      JSON.stringify({ mcpServers: { ask_eddie: { type: "stdio", command: "someone-else" } } }),
+    );
+    const config = {
+      schema: 1,
+      host: "h1",
+      launcher: "posix",
+      credential: join(home, "c"),
+      node: process.execPath,
+    };
+    const deps = {
+      health: async (_l, host) => ({ host }),
+      home,
+      schedule: () => ({ timer: "stub" }),
+    };
+    await assert.rejects(
+      adopt(root, config, managedRelease(root, r.name), [], deps),
+      /unowned_mcp_entry/,
+    );
+    // Not committed: no configuration, state or entry point, so nothing acts.
+    for (const f of ["update.json", "update-state.json", "fleet-update-entry.mjs"])
+      assert.equal(existsSync(join(root, f)), false, f);
+    await assert.rejects(runUpdate(root), /update_not_configured/);
+    // Nothing to roll back to, and nothing is written.
+    await assert.rejects(rollback(root), /update_no_previous/);
+    assert.equal(existsSync(join(root, "update-state.json")), false);
+    // `current` names the checked release; the refused catalog is untouched.
+    assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(r.dir));
+    assert.equal(
+      JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.ask_eddie.command,
+      "someone-else",
+    );
+    // Once the owner resolves the conflict, running adoption again completes it.
+    rmSync(join(home, ".claude.json"));
+    const done = await adopt(root, config, managedRelease(root, r.name), [], deps);
+    assert.equal(done.schedule.timer, "stub");
+    assert.equal(stateOf(root).current.name, r.name);
+    assert.equal(existsSync(join(root, "update.json")), true);
+    // A `current` that is not a link fails before any catalog is written.
+    rmSync(join(root, "current"));
+    mkdirSync(join(root, "current"));
+    rmSync(join(home, ".claude.json"));
+    await assert.rejects(
+      adopt(root, config, managedRelease(root, r.name), [], deps),
+      /update_current_not_link/,
+    );
+    assert.equal(existsSync(join(home, ".claude.json")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+test("the catalog installer never claims an ask_eddie entry it has no record of", async () => {
+  const { installAgentTools } = await import("../scripts/install-agent-tools.mjs");
+  const home = base();
+  try {
+    const plan = {
+      home,
+      host: "h",
+      releasePath: join(home, "rel", "current"),
+      nodePath: process.execPath,
+      command: process.execPath,
+      args: [
+        join(home, "rel", "current", "scripts", "invoke-eddie-posix.mjs"),
+        join(home, "cred.json"),
+      ],
+      opencodeMajor: 2,
+    };
+    installAgentTools(plan);
+    // Identical entries without the ownership manifest are not claimed.
+    rmSync(join(home, ".config", "eddie-t3", "installation.json"));
+    assert.throws(() => installAgentTools(plan), /owned_entry_drift|unowned_mcp_entry/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+test("adoption repairs a dangling current link into releases", async () => {
+  const root = base();
+  try {
+    const r = fakeRelease(root, "0.1.0-alpha.27", "c".repeat(64));
+    const gone = join(root, "releases", "kadenco-0.1.0-alpha.26-" + "d".repeat(16));
+    mkdirSync(gone);
+    symlinkSync(gone, join(root, "current"), process.platform === "win32" ? "junction" : "dir");
+    rmSync(gone, { recursive: true });
+    const config = {
+      schema: 1,
+      host: "h",
+      launcher: "posix",
+      credential: join(root, "c"),
+      node: process.execPath,
+    };
+    await adopt(root, config, managedRelease(root, r.name), ["--no-catalogs", "--no-schedule"], {
+      health: async (_l, host) => ({ host }),
+    });
+    assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(r.dir));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test(
+  "a retried Windows switch first finishes an interrupted one",
+  { skip: process.platform !== "win32" },
+  () => {
+    const root = base();
+    try {
+      const a = fakeRelease(root, "0.1.0-alpha.26", "a".repeat(64)),
+        b = fakeRelease(root, "0.1.0-alpha.27", "b".repeat(64));
+      // Interrupted after creating current.next and removing current.
+      symlinkSync(b.dir, join(root, "current.next"), "junction");
+      switchCurrent(root, a.dir);
+      assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(a.dir));
+      assert.equal(existsSync(join(root, "current.next")), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("rollback recovers an enrolled member even without its update.json", async () => {
+  const root = base();
+  try {
+    const a = fakeRelease(root, "0.1.0-alpha.26", "1".repeat(64)),
+      b = fakeRelease(root, "0.1.0-alpha.27", "2".repeat(64));
+    switchCurrent(root, b.dir);
+    writeFileSync(
+      join(root, "update-state.json"),
+      JSON.stringify({ current: record(b), previous: record(a) }),
+    );
+    const done = await rollback(root);
+    assert.equal(done.to, "0.1.0-alpha.26");
+    assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(a.dir));
+    assert.equal(existsSync(join(root, "update.hold")), true);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

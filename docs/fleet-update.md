@@ -99,7 +99,7 @@ gh attestation verify "kadenco-$version.tgz" --repo "$repo" \
 sha256sum "kadenco-$version.tgz"
 ```
 
-Copy that verified tarball to the member; do not download it again there.
+Copy that verified tarball to the member; do not download it again there. Work in a directory under the member's home rather than `/tmp`: a full `/tmp` tmpfs silently truncates the extraction or `npm ci`.
 Before extracting it, check on the member that its SHA-256 equals the digest you
 verified (`sha256sum` on Linux, `Get-FileHash` on Windows). Then extract it and
 run `npm ci --omit=dev --ignore-scripts` in `package/`. As the user that owns
@@ -126,7 +126,7 @@ writes the stable entry point, rewrites the owned catalog entries through the
 existing `install-agent-tools.mjs` (it refuses entries it does not own;
 `--opencode-major 2` and `--legacy-opencode-manifest <path>` are passed
 through) and installs the schedule, all under the update lock.
-Run it while the member's provider apps are idle: the catalog installer refuses a file that changed since it read it, but a save in the instant before its replacement can still be overwritten. `--no-catalogs` and `--no-schedule` skip those steps. Delete the extracted
+Run it while the member's provider apps are idle: the catalog installer refuses a file that changed since it read it, but a save in the instant before its replacement can still be overwritten. If `install` is refused (for example by a catalog entry it does not own) or interrupted, resolve the cause and run it again: the release was checked before anything changed, `current` only ever names a checked release, and nothing scheduled acts on the member until `install` completes and writes `update.json`. If `install` is interrupted while rewriting provider catalogs, a re-run may refuse with `owned_entry_drift` (the catalogs changed but their ownership record did not); restore the affected files from the private backups in `~/.config/eddie-t3/backup-*` and run it again. On a member that is already enrolled, a re-run of `install` switches `current` to the checked release before it rewrites catalogs; if it is then refused or interrupted, `current` stays on that checked release while `update.json` (and so `--host`/`--credential` changes) keeps its previous values, and catalog entries may be partly rewritten. They all still launch through `current`; run `install` again to finish. `--no-catalogs` and `--no-schedule` skip those steps. Delete the extracted
 bootstrap copy afterwards.
 
 ## Operate

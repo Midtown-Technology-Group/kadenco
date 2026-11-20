@@ -381,6 +381,9 @@ export function switchCurrent(base, releaseDir) {
     renameSync(temp, current);
     return;
   }
+  // A switch interrupted between removing `current` and renaming `current.next`
+  // is finished first, so `current` is never left missing by a retry.
+  if (!isLink(current) && isLink(next)) renameSync(next, current);
   if (isLink(next)) unlinkSync(next);
   symlinkSync(releaseDir, next, "junction");
   if (isLink(current)) unlinkSync(current);
@@ -620,6 +623,7 @@ export function isTransient(error) {
     /^update_fetch_status:(403|408|429|5\d\d)$/.test(m) ||
     m === "update_npm_failed" ||
     m === "update_trust_root_unavailable" ||
+    m === "update_verifier_unavailable" ||
     m === "update_npm_unavailable"
   );
 }
@@ -659,9 +663,16 @@ async function installRelease(base, config, candidate) {
   const bundles = await attestationBundles(digest);
   // Trust material (Sigstore TUF) is fetched once, outside the per-bundle
   // checks: its unavailability is an infrastructure failure, not a bad release.
+  let createVerifier;
+  try {
+    ({ createVerifier } = await import("sigstore"));
+  } catch {
+    // The verifier library itself did not load: a local installation fault,
+    // not a release problem and not a trust-root outage.
+    throw Error("update_verifier_unavailable");
+  }
   let verifier;
   try {
-    const { createVerifier } = await import("sigstore");
     verifier = await createVerifier({
       certificateIdentityURI: identityPattern(SIGNER),
       certificateIssuer: ISSUER,
@@ -707,6 +718,12 @@ async function installRelease(base, config, candidate) {
     const id = releaseIdentity(pkgDir);
     if (id.version !== version || id.source !== build.source)
       throw Error("update_release_identity");
+    // npm and the self-test get a temporary directory inside the stage (on the
+    // releases filesystem, removed with it): a full /tmp tmpfs must not be able
+    // to truncate what they write.
+    const scratch = join(stage, ".tmp");
+    mkdirSync(scratch);
+    const env = { ...process.env, TMPDIR: scratch, TMP: scratch, TEMP: scratch };
     const [npm, prefix] = npmCommand();
     try {
       runChecked(
@@ -720,7 +737,7 @@ async function installRelease(base, config, candidate) {
           "--no-fund",
           "--loglevel=error",
         ],
-        { cwd: pkgDir, timeout: 15 * 60 * 1000 },
+        { cwd: pkgDir, env, timeout: 15 * 60 * 1000 },
       );
     } catch {
       throw Error("update_npm_failed");
@@ -729,6 +746,7 @@ async function installRelease(base, config, candidate) {
     try {
       runChecked(config.node, [join(pkgDir, "scripts", "fleet-update.mjs"), "self-test"], {
         cwd: pkgDir,
+        env,
         timeout: 60000,
       });
     } catch {
@@ -793,27 +811,29 @@ const loadState = (base) => (existsSync(statePath(base)) ? readJson(statePath(ba
  * active link is the truth when it names a managed release; an interrupted
  * Windows switch is completed; a missing link is restored from state.
  */
+/** The managed release a link target resolves to, or null. */
+export function managedAt(base, target) {
+  if (!target) return null;
+  let real;
+  try {
+    // Resolve first: the link may name the release by an alias (an 8.3 name).
+    real = realpathSync.native(target);
+  } catch {
+    return null;
+  }
+  const m = managedRelease(base, basename(real));
+  return m && samePath(real, m.dir) ? m : null;
+}
 export function reconcile(base, state) {
   const current = join(base, "current"),
     next = join(base, "current.next");
-  // A link counts only if it resolves to the managed release directory itself.
-  const managedAt = (target) => {
-    let real;
-    try {
-      // Resolve first: the link may name the release by an alias (an 8.3 name).
-      real = realpathSync.native(target);
-    } catch {
-      return null;
-    }
-    const m = managedRelease(base, basename(real));
-    return m && samePath(real, m.dir) ? m : null;
-  };
+
   if (isLink(next)) {
-    const pending = managedAt(linkTarget(next, base));
+    const pending = managedAt(base, linkTarget(next, base));
     if (!isLink(current) && pending) renameSync(next, current);
     else unlinkSync(next);
   }
-  const active = managedAt(currentTarget(base));
+  const active = managedAt(base, currentTarget(base));
   if (active) {
     if (active.name !== state.current?.name) {
       if (managedRelease(base, state.current?.name)) state.previous = state.current;
@@ -847,9 +867,10 @@ const MAX_ATTEMPTS = 5,
 
 export async function runUpdate(base, { health = healthCheck, install = installRelease } = {}) {
   base = canonicalPath(base);
-  const config = loadConfig(base);
   const unlock = await lock(base);
   try {
+    // Read under the lock: a concurrent re-adoption cannot change it mid-run.
+    const config = loadConfig(base);
     // Reconcile first, so a rollback or switch interrupted by a crash is
     // settled before the hold is honored or anything is installed.
     const state = reconcile(base, loadState(base));
@@ -1004,18 +1025,16 @@ export async function adopt(base, config, installed, args, deps = {}) {
     version: installed.version,
     health: await health(launcher(config, installed.dir), config.host),
   };
+  // Forward-only: every intermediate state is safe, and an interrupted
+  // adoption is completed by running `install` again.
+  // - The release was verified and health-checked above, so whatever `current`
+  //   is left pointing at is a working caller.
+  // - Catalog entries name `current`, which the switch creates first; a
+  //   partially rewritten catalog therefore launches that checked release.
+  // - update.json, written last, is the commit: until it exists no scheduled
+  //   run or rollback acts on this base.
   switchCurrent(base, installed.dir);
-  writeJson(join(base, "update.json"), config);
-  const state = loadState(base);
-  if (
-    state.current?.name &&
-    state.current.name !== installed.name &&
-    managedRelease(base, state.current.name)
-  )
-    state.previous = state.current;
-  state.current = record(installed);
-  writeJson(statePath(base), state);
-  writeEntry(base);
+
   if (!args.includes("--no-catalogs")) {
     const { installAgentTools } = await import(
       pathToFileURL(join(installed.dir, "scripts", "install-agent-tools.mjs")).href
@@ -1034,11 +1053,21 @@ export async function adopt(base, config, installed, args, deps = {}) {
       ...(legacy ? { legacyOpenCodeManifest: legacy } : {}),
     });
   }
+  const state = loadState(base);
+  if (
+    state.current?.name &&
+    state.current.name !== installed.name &&
+    managedRelease(base, state.current.name)
+  )
+    state.previous = state.current;
+  state.current = record(installed);
+  writeJson(statePath(base), state);
+  writeEntry(base);
+  writeJson(join(base, "update.json"), config);
   if (!args.includes("--no-schedule"))
     result.schedule = (deps.schedule ?? installSchedule)(base, config, home);
   return result;
-}
-/**
+} /**
  * The scheduler's stable entry point. It resolves the active release from
  * update-state.json (not through `current`), so an interrupted switch cannot
  * disable updates; the release's updater then reconciles the link.
