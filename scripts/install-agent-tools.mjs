@@ -167,19 +167,9 @@ export function installAgentTools(plan) {
     changes.push({ path, before, after });
     resources[path] = managed;
   };
-  // Owned: what the manifest recorded, or what an earlier run of this installer
-  // wrote before it was interrupted (named in its pending-transaction record),
-  // so a retry resumes. An identical entry configured by anyone else is not
-  // claimed: without a record of ours, the manifest alone decides.
-  const pendingPath = join(root, "install-pending.json"),
-    pendingText = read(pendingPath),
-    pending = pendingText === null ? { resources: {} } : json(pendingText);
   const owned = (path, current) => {
-    const same = (v) => v !== undefined && JSON.stringify(v) === JSON.stringify(current);
-    return (
-      same(manifest.resources[path]) ||
-      (Array.isArray(pending.resources?.[path]) && pending.resources[path].some(same))
-    );
+    const old = manifest.resources[path];
+    return old && JSON.stringify(old) === JSON.stringify(current);
   };
   const entry = { command: plan.command, args: plan.args };
   // Codex reads a TOML table. Only this exact owned marker block is replaced;
@@ -187,14 +177,6 @@ export function installAgentTools(plan) {
   const codex = join(home, ".codex", "config.toml"),
     rawCodex = read(codex),
     beforeCodex = rawCodex ?? "";
-  const nextBlock =
-    marker +
-    "\n[mcp_servers.ask_eddie]\ncommand = " +
-    JSON.stringify(plan.command) +
-    "\nargs = " +
-    JSON.stringify(plan.args) +
-    "\nstartup_timeout_sec = 45\n" +
-    end;
   const begin = beforeCodex.indexOf(marker),
     finish = beforeCodex.indexOf(end);
   let block = null;
@@ -203,6 +185,14 @@ export function installAgentTools(plan) {
     block = beforeCodex.slice(begin, finish + end.length);
     if (!owned(codex, block)) throw Error("owned_entry_drift");
   } else if (/ask_eddie/.test(beforeCodex)) throw Error("unowned_mcp_entry");
+  const nextBlock =
+    marker +
+    "\n[mcp_servers.ask_eddie]\ncommand = " +
+    JSON.stringify(plan.command) +
+    "\nargs = " +
+    JSON.stringify(plan.args) +
+    "\nstartup_timeout_sec = 45\n" +
+    end;
   stage(
     codex,
     rawCodex,
@@ -267,9 +257,9 @@ export function installAgentTools(plan) {
   stage(extension, beforeExtension, source, source);
   const connection = join(root, "connection.json");
   const beforeConnection = read(connection);
-  const connectionText = JSON.stringify({ host: plan.host, ...entry }, null, 2) + "\n";
   if (beforeConnection !== null && !owned(connection, beforeConnection))
     throw Error("owned_entry_drift");
+  const connectionText = JSON.stringify({ host: plan.host, ...entry }, null, 2) + "\n";
   stage(connection, beforeConnection, connectionText, connectionText);
   const cli = join(
     home,
@@ -305,15 +295,6 @@ export function installAgentTools(plan) {
   const stamp = Date.now() + "-" + process.pid;
   const applied = [],
     manifestTemp = manifestPath + ".eddie-" + stamp;
-  // Before replacing anything, record every value this run may write (added to
-  // any record left by an earlier interrupted run): a retry may then resume
-  // over entries we wrote, and over nothing else.
-  const record = { resources: { ...pending.resources } };
-  for (const [path, value] of Object.entries(resources))
-    record.resources[path] = [...(record.resources[path] ?? []), value];
-  const pendingTemp = pendingPath + ".eddie-" + stamp;
-  writeFileSync(pendingTemp, JSON.stringify(record), { mode: 0o600, flag: "wx" });
-  renameSync(pendingTemp, pendingPath);
   try {
     // Writing the backup and temp file first leaves only the recheck and the
     // rename between a concurrent save and our replacement. That window cannot
@@ -363,12 +344,6 @@ export function installAgentTools(plan) {
       else writeFileSync(c.path, c.before, { mode: 0o600 });
     }
     throw error;
-  }
-  // Committed: the manifest records everything; the pending record is spent.
-  try {
-    unlinkSync(pendingPath);
-  } catch {
-    // Harmless if left: it only names values this installer wrote.
   }
   return {
     installed: true,

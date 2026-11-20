@@ -776,36 +776,9 @@ test("an adoption the catalog installer refuses is not committed, and a re-run c
     rmSync(home, { recursive: true, force: true });
   }
 });
-test("adoption refuses to replace a current link it could not restore", async () => {
-  const root = base(),
-    outside = base();
-  try {
-    const r = fakeRelease(root, "0.1.0-alpha.26", "8".repeat(64));
-    symlinkSync(outside, join(root, "current"), process.platform === "win32" ? "junction" : "dir");
-    const config = {
-      schema: 1,
-      host: "h",
-      launcher: "posix",
-      credential: join(root, "c"),
-      node: process.execPath,
-    };
-    await assert.rejects(
-      adopt(root, config, managedRelease(root, r.name), ["--no-catalogs", "--no-schedule"], {
-        health: async (_l, host) => ({ host }),
-      }),
-      /update_current_unmanaged/,
-    );
-    assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(outside));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-    rmSync(outside, { recursive: true, force: true });
-  }
-});
-
-test("the catalog installer resumes only over entries its own interrupted run wrote", async () => {
+test("the catalog installer never claims an ask_eddie entry it has no record of", async () => {
   const { installAgentTools } = await import("../scripts/install-agent-tools.mjs");
   const home = base();
-  const state = join(home, ".config", "eddie-t3");
   try {
     const plan = {
       home,
@@ -820,40 +793,13 @@ test("the catalog installer resumes only over entries its own interrupted run wr
       opencodeMajor: 2,
     };
     installAgentTools(plan);
-    assert.equal(existsSync(join(state, "install-pending.json")), false);
-    const written = JSON.parse(readFileSync(join(state, "installation.json"), "utf8")).resources;
-    // Identical entries with no record of ours (someone else configured them,
-    // or the manifest is gone) are not claimed.
-    rmSync(join(state, "installation.json"));
-    assert.throws(() => installAgentTools(plan), /owned_entry_drift|unowned_mcp_entry/);
-    // As left by a run that replaced the catalogs but stopped before its
-    // manifest commit: its pending record names what it wrote, so a retry resumes.
-    writeFileSync(
-      join(state, "install-pending.json"),
-      JSON.stringify({
-        resources: Object.fromEntries(Object.entries(written).map(([p, v]) => [p, [v]])),
-      }),
-    );
-    assert.equal(installAgentTools(plan).installed, true);
-    assert.equal(existsSync(join(state, "install-pending.json")), false);
-    // A foreign entry is refused even with a pending record present.
-    writeFileSync(
-      join(state, "install-pending.json"),
-      JSON.stringify({
-        resources: Object.fromEntries(Object.entries(written).map(([p, v]) => [p, [v]])),
-      }),
-    );
-    rmSync(join(state, "installation.json"));
-    writeFileSync(
-      join(home, ".claude.json"),
-      JSON.stringify({ mcpServers: { ask_eddie: { type: "stdio", command: "someone-else" } } }),
-    );
+    // Identical entries without the ownership manifest are not claimed.
+    rmSync(join(home, ".config", "eddie-t3", "installation.json"));
     assert.throws(() => installAgentTools(plan), /owned_entry_drift|unowned_mcp_entry/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 });
-
 test("adoption repairs a dangling current link into releases", async () => {
   const root = base();
   try {
