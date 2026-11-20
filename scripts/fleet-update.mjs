@@ -8,8 +8,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
-  appendFileSync,
+  closeSync,
   existsSync,
+  fstatSync,
+  openSync,
+  writeSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -265,10 +268,15 @@ function writeJson(path, value) {
 function log(base, entry) {
   const path = join(base, "update.log");
   try {
-    if (existsSync(path) && statSync(path).size > 1 << 20) renameSync(path, path + ".1");
-    appendFileSync(path, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n", {
-      mode: 0o600,
-    });
+    const fd = openSync(path, "a", 0o600);
+    let full;
+    try {
+      writeSync(fd, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n");
+      full = fstatSync(fd).size > 1 << 20;
+    } finally {
+      closeSync(fd);
+    }
+    if (full) renameSync(path, path + ".1");
   } catch {
     // Logging never blocks an update decision.
   }
@@ -621,17 +629,18 @@ async function installRelease(base, config, candidate) {
   const stage = join(releases, `.stage-${randomBytes(6).toString("hex")}`);
   mkdirSync(stage);
   try {
-    // tar reads the bytes we hashed and verified, from a file we just created.
-    writeFileSync(join(stage, tgzName), tgz, { flag: "wx" });
-    const names = runChecked("tar", ["-tzf", tgzName], { cwd: stage })
+    // tar reads exactly the bytes we hashed and verified, from memory.
+    const names = runChecked("tar", ["-tzf", "-"], { cwd: stage, input: tgz })
       .split(/\r?\n/)
       .filter(Boolean);
-    const details = runChecked("tar", ["-tvzf", tgzName], { cwd: stage })
+    const details = runChecked("tar", ["-tvzf", "-"], { cwd: stage, input: tgz })
       .split(/\r?\n/)
       .filter(Boolean);
     checkArchiveListing(names, details);
-    runChecked("tar", ["-xzf", tgzName, ...(isWindows ? [] : ["--no-same-owner"])], { cwd: stage });
-    rmSync(join(stage, tgzName));
+    runChecked("tar", ["-xzf", "-", ...(isWindows ? [] : ["--no-same-owner"])], {
+      cwd: stage,
+      input: tgz,
+    });
     const pkgDir = join(stage, "package");
     const id = releaseIdentity(pkgDir);
     if (id.version !== version || id.source !== build.source)

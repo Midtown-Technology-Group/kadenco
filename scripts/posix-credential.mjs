@@ -1,25 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 
 export function readCallerCredential(path, { now = Date.now(), uid = process.getuid?.() } = {}) {
   try {
     if (!isAbsolute(path) || uid === undefined) throw new Error();
-    const file = lstatSync(path),
-      dir = lstatSync(dirname(path));
-    if (
-      !file.isFile() ||
-      file.isSymbolicLink() ||
-      !dir.isDirectory() ||
-      dir.isSymbolicLink() ||
-      file.uid !== uid ||
-      dir.uid !== uid ||
-      file.mode & 0o077 ||
-      dir.mode & 0o077 ||
-      file.size > 16384
-    )
+    const dir = lstatSync(dirname(path));
+    if (!dir.isDirectory() || dir.isSymbolicLink() || dir.uid !== uid || dir.mode & 0o077)
       throw new Error();
-    const c = JSON.parse(readFileSync(path, "utf8"));
+    // Check and read the same open file: no link is followed and nothing can
+    // be swapped in between.
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let text;
+    try {
+      const file = fstatSync(fd);
+      if (!file.isFile() || file.uid !== uid || file.mode & 0o077 || file.size > 16384)
+        throw new Error();
+      text = readFileSync(fd, "utf8");
+    } finally {
+      closeSync(fd);
+    }
+    const c = JSON.parse(text);
     if (
       typeof c.token !== "string" ||
       !c.token ||

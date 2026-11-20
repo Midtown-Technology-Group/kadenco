@@ -2,6 +2,10 @@
 // Operator-only, additive integration into supported user-level tool catalogs.
 // Plan contains paths/launch metadata only. Credential contents are never read.
 import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
   readFileSync,
   writeFileSync,
   existsSync,
@@ -19,10 +23,27 @@ const marker = "# >>> Eddie T3 managed MCP >>>",
 const psQuote = (s) => "'" + s.replaceAll("'", "''") + "'";
 const quote = (s) => "'" + s.replaceAll("'", "'\"'\"'") + "'";
 function read(path) {
-  if (!existsSync(path)) return null;
-  if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile())
-    throw Error("unowned_or_unsafe_path");
-  return readFileSync(path, "utf8");
+  let fd;
+  try {
+    // POSIX: O_NOFOLLOW refuses a final symlink and the checks below apply to
+    // the very file read. Windows has no such flag; check the link first.
+    if (constants.O_NOFOLLOW === undefined && lstatSync(path).isSymbolicLink())
+      throw Error("unowned_or_unsafe_path");
+    fd = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    if (error.code === "ELOOP" || error.code === "EISDIR") throw Error("unowned_or_unsafe_path");
+    throw error;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) throw Error("unowned_or_unsafe_path");
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
 }
 function json(text) {
   const errors = [],
