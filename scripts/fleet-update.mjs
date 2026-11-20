@@ -1031,8 +1031,10 @@ export async function adopt(base, config, installed, args, deps = {}) {
   //   is left pointing at is a working caller.
   // - Catalog entries name `current`, which the switch creates first; a
   //   partially rewritten catalog therefore launches that checked release.
-  // - update.json, written last, is the commit: until it exists no scheduled
-  //   run or rollback acts on this base.
+  // - update.json is the commit, written after catalogs, state and the entry
+  //   point: until it exists no scheduled run acts on this base. (rollback needs
+  //   a recorded previous release, which a first adoption never has.) The
+  //   schedule is installed after the commit.
   switchCurrent(base, installed.dir);
 
   if (!args.includes("--no-catalogs")) {
