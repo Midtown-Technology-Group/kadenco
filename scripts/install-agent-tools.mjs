@@ -160,9 +160,11 @@ export function installAgentTools(plan) {
       parent = dirname(parent);
     }
   };
-  const stage = (path, after, managed) => {
+  // `before` is the snapshot `after` was computed from: the commit refuses to
+  // replace a file that changed since, so concurrent edits are never lost.
+  const stage = (path, before, after, managed) => {
     checkPath(path);
-    changes.push({ path, before: read(path), after });
+    changes.push({ path, before, after });
     resources[path] = managed;
   };
   const owned = (path, current) => {
@@ -173,7 +175,8 @@ export function installAgentTools(plan) {
   // Codex reads a TOML table. Only this exact owned marker block is replaced;
   // unrelated tables/comments remain byte-for-byte unchanged.
   const codex = join(home, ".codex", "config.toml"),
-    beforeCodex = read(codex) ?? "";
+    rawCodex = read(codex),
+    beforeCodex = rawCodex ?? "";
   const begin = beforeCodex.indexOf(marker),
     finish = beforeCodex.indexOf(end);
   let block = null;
@@ -192,6 +195,7 @@ export function installAgentTools(plan) {
     end;
   stage(
     codex,
+    rawCodex,
     block ? beforeCodex.replace(block, nextBlock) : beforeCodex + "\n" + nextBlock + "\n",
     nextBlock,
   );
@@ -212,7 +216,8 @@ export function installAgentTools(plan) {
     [join(home, ".jcode", "mcp.json"), ["mcpServers", "ask_eddie"], entry],
     [join(home, ".claude.json"), ["mcpServers", "ask_eddie"], { type: "stdio", ...entry }],
   ]) {
-    const before = read(path) ?? "{}",
+    const raw = read(path),
+      before = raw ?? "{}",
       data = json(before);
     let parent = data;
     for (const key of keys.slice(0, -1)) {
@@ -231,6 +236,7 @@ export function installAgentTools(plan) {
         : before;
     stage(
       path,
+      raw,
       applyEdits(
         base,
         modify(base, keys, value, { formattingOptions: { insertSpaces: true, tabSize: 2 } }),
@@ -248,12 +254,13 @@ export function installAgentTools(plan) {
   const beforeExtension = read(extension);
   if (beforeExtension !== null && !owned(extension, beforeExtension))
     throw Error("owned_entry_drift");
-  stage(extension, source, source);
+  stage(extension, beforeExtension, source, source);
   const connection = join(root, "connection.json");
-  if (read(connection) !== null && !owned(connection, read(connection)))
+  const beforeConnection = read(connection);
+  if (beforeConnection !== null && !owned(connection, beforeConnection))
     throw Error("owned_entry_drift");
   const connectionText = JSON.stringify({ host: plan.host, ...entry }, null, 2) + "\n";
-  stage(connection, connectionText, connectionText);
+  stage(connection, beforeConnection, connectionText, connectionText);
   const cli = join(
     home,
     ".local",
@@ -278,13 +285,14 @@ export function installAgentTools(plan) {
         ' "$@"\n';
   const beforeCli = read(cli);
   if (beforeCli !== null && !owned(cli, beforeCli)) throw Error("owned_entry_drift");
-  stage(cli, cliText, cliText);
+  stage(cli, beforeCli, cliText, cliText);
   // All collisions were checked before the first write. Full-file backups remain
   // private because user configurations may contain unrelated credentials.
   mkdirSync(root, { recursive: true, mode: 0o700 });
   if (process.platform !== "win32") chmodSync(root, 0o700);
   const stamp = Date.now() + "-" + process.pid;
-  const applied = [];
+  const applied = [],
+    manifestTemp = manifestPath + ".eddie-" + stamp;
   try {
     for (let i = 0; i < changes.length; i++) {
       const c = changes[i];
@@ -301,7 +309,20 @@ export function installAgentTools(plan) {
       renameSync(temp, c.path);
       applied.push(c);
     }
+    // The ownership manifest commits last, atomically, inside the transaction:
+    // if it cannot be written, the catalog changes above are rolled back.
+    writeFileSync(
+      manifestTemp,
+      JSON.stringify({ version: "0.10.5", host: plan.host, resources }, null, 2),
+      { mode: 0o600, flag: "wx" },
+    );
+    renameSync(manifestTemp, manifestPath);
   } catch (error) {
+    try {
+      unlinkSync(manifestTemp);
+    } catch {
+      // Not written.
+    }
     for (const c of applied.reverse()) {
       if (read(c.path) !== c.after) throw Error("rollback_configuration_drift");
       if (c.before === null) unlinkSync(c.path);
@@ -309,11 +330,6 @@ export function installAgentTools(plan) {
     }
     throw error;
   }
-  writeFileSync(
-    manifestPath,
-    JSON.stringify({ version: "0.10.5", host: plan.host, resources }, null, 2),
-    { mode: 0o600 },
-  );
   return {
     installed: true,
     host: plan.host,

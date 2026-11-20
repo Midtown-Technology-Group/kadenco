@@ -27,7 +27,7 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
   provider catalogs launch through; rollback and a hold file are supported.
   The release workflow gains a separate `attest` job (main dispatches only) and
   the package now ships the Linux and Windows caller launchers and the catalog
-  installer. Adds the `sigstore` dependency for verification. Releases up to
+  installer. Adds `sigstore` as an optional dependency for verification (it needs Node 22.22.2+, 24.15+ or 26+; the base package keeps its supported range). Releases up to
   0.1.0-alpha.25 carry no attestation and are never installed automatically.
 
 ## 0.1.0-alpha.25

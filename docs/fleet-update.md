@@ -51,12 +51,12 @@ are never installed automatically.
 
 ## Layout
 
-|          | Linux                                                                           | Windows                                         |
-| -------- | ------------------------------------------------------------------------------- | ----------------------------------------------- |
-| Base     | `~/.local/share/eddie-t3`                                                       | `%USERPROFILE%\.t3\runtime\eddie-t3`            |
-| Releases | `<base>/releases/kadenco-<version>-<first 16 hex of package digest>`            | same                                            |
-| Active   | `<base>/current` (symlink, replaced atomically)                                 | `<base>\current` (junction, via `current.next`) |
-| Schedule | systemd user timer `kadenco-update.timer` (hourly, 10 min jitter; needs linger) | scheduled task `kadenco-fleet-update` (hourly)  |
+|          | Linux                                                                           | Windows                                                                                |
+| -------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Base     | `~/.local/share/eddie-t3`                                                       | `%USERPROFILE%\.t3\runtime\eddie-t3`                                                   |
+| Releases | `<base>/releases/kadenco-<version>-<first 16 hex of package digest>`            | same                                                                                   |
+| Active   | `<base>/current` (symlink, replaced atomically)                                 | `<base>\current` (junction, via `current.next`)                                        |
+| Schedule | systemd user timer `kadenco-update.timer` (hourly, 10 min jitter; needs linger) | scheduled task `kadenco-fleet-update` (hourly; runs only while its owner is signed in) |
 
 `update.json` holds the host name, launcher type, node path and the path of the
 existing caller credential; the updater never reads the credential, only the
@@ -83,27 +83,34 @@ trusted machine with a GitHub CLI whose `gh attestation verify` has `--source-di
 (2.104 does; 2.49, which introduced attestation verification, does not):
 
 ```sh
-gh release download v<version> --repo Midtown-Technology-Group/kadenco \
-  --pattern 'kadenco-<version>.tgz' --pattern BUILD.json
-gh attestation verify kadenco-<version>.tgz --repo Midtown-Technology-Group/kadenco \
-  --signer-workflow Midtown-Technology-Group/kadenco/.github/workflows/release.yml \
-  --source-ref refs/heads/main --source-digest <source from BUILD.json> \
+version=0.1.0-alpha.26   # the release to adopt
+repo=Midtown-Technology-Group/kadenco
+gh release download "v$version" --repo "$repo" \
+  --pattern "kadenco-$version.tgz" --pattern BUILD.json
+source=$(node -p 'require("./BUILD.json").source')
+gh attestation verify "kadenco-$version.tgz" --repo "$repo" \
+  --signer-workflow "$repo/.github/workflows/release.yml" \
+  --source-ref refs/heads/main --source-digest "$source" \
   --deny-self-hosted-runners
-sha256sum kadenco-<version>.tgz
+sha256sum "kadenco-$version.tgz"
 ```
 
 Copy that verified tarball to the member; do not download it again there.
 Before extracting it, check on the member that its SHA-256 equals the digest you
-verified (`sha256sum` on Linux, `Get-FileHash` on Windows). Then extract it, run `npm ci --omit=dev --ignore-scripts` in `package/`, then, as the
-user that owns the member's provider catalogs and caller credential, with the
-same Node the catalogs use (Node 22.22.2+, 24.15+ or 26+, which the verifier
-requires):
+verified (`sha256sum` on Linux, `Get-FileHash` on Windows). Then extract it and
+run `npm ci --omit=dev --ignore-scripts` in `package/`. As the user that owns
+the member's provider catalogs and caller credential, with the same Node the
+catalogs use (the verifier, the optional `sigstore` dependency, needs Node
+22.22.2+, 24.15+ or 26+; on older Node the updater's self-test fails and nothing
+is installed), set the values and run:
 
 ```sh
-node package/scripts/fleet-update.mjs install <version> \
-  --expect-digest <sha256 of the verified tarball> \
-  --host <host name the Eddie server reports for this caller> \
-  --credential ~/.config/eddie-t3/host-caller.json
+version=0.1.0-alpha.26
+digest=...   # the SHA-256 verified above
+host=...     # the host the Eddie server reports for this member's caller
+node package/scripts/fleet-update.mjs install "$version" \
+  --expect-digest "$digest" --host "$host" \
+  --credential "$HOME/.config/eddie-t3/host-caller.json"
 ```
 
 On Windows pass the caller's `.clixml` credential file. `--host` must equal the

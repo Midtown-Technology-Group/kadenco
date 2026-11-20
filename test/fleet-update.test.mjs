@@ -141,13 +141,28 @@ test("provenance statement must name this package, workflow on main, hosted runn
 
 test("an update needs one bundle whose signature and statement both verify", async () => {
   const calls = [];
-  const verify = async (_bundle, options) => {
+  // Like sigstore-js: the identity option is a regular expression, and the
+  // verified signer identity is returned.
+  const signerOf = (san) => async (_bundle, options) => {
     calls.push(options);
-    if (options.certificateIdentityURI !== SIGNER || options.certificateIssuer !== ISSUER)
+    if (
+      !new RegExp(options.certificateIdentityURI).test(san) ||
+      options.certificateIssuer !== ISSUER
+    )
       throw Error("identity");
+    return { identity: { subjectAlternativeName: san } };
   };
+  const verify = signerOf(SIGNER);
   assert.equal(await verifyProvenance([bundle(statement())], { digest, source, verify }), true);
-  assert.deepEqual(calls[0], { certificateIdentityURI: SIGNER, certificateIssuer: ISSUER });
+  assert.equal(calls[0].certificateIssuer, ISSUER);
+  assert.match(calls[0].certificateIdentityURI, /^\^.*\$$/);
+  // A workflow on another branch whose identity merely contains the expected
+  // one (or an unescaped look-alike) is refused, whatever its statement claims.
+  for (const san of [SIGNER + "-evil", SIGNER.replace("release.yml", "releaseXyml")])
+    await assert.rejects(
+      verifyProvenance([bundle(statement())], { digest, source, verify: signerOf(san) }),
+      /update_provenance_unverified/,
+    );
   // A valid signature over a statement for other bytes is refused.
   await assert.rejects(
     verifyProvenance([bundle(statement())], { digest: "f".repeat(64), source, verify }),

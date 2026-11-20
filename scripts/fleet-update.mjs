@@ -136,7 +136,14 @@ export async function verifyProvenance(
   for (const bundle of bundles) {
     try {
       if (bundle?.dsseEnvelope?.payloadType !== "application/vnd.in-toto+json") continue;
-      await verify(bundle, { certificateIdentityURI: signer, certificateIssuer: ISSUER });
+      // sigstore-js matches the identity as a regular expression: anchor and
+      // escape it, then also require the exact certificate identity.
+      const exact = "^" + signer.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&") + "$";
+      const identity = await verify(bundle, {
+        certificateIdentityURI: exact,
+        certificateIssuer: ISSUER,
+      });
+      if (identity?.identity?.subjectAlternativeName !== signer) continue;
       const statement = JSON.parse(
         Buffer.from(bundle.dsseEnvelope.payload, "base64").toString("utf8"),
       );
@@ -226,9 +233,21 @@ async function fetchBytes(url, cap, { hosts } = {}) {
   if (hosts && !hosts.has(new URL(r.url).hostname)) throw Error("update_fetch_host");
   const declared = Number(r.headers.get("content-length") ?? 0);
   if (declared > cap) throw Error("update_fetch_too_large");
-  const bytes = Buffer.from(await r.arrayBuffer());
-  if (bytes.length > cap) throw Error("update_fetch_too_large");
-  return bytes;
+  // Count while streaming, so an undeclared oversized body is cut off early.
+  const chunks = [];
+  let size = 0;
+  const reader = r.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > cap) {
+      await reader.cancel().catch(() => {});
+      throw Error("update_fetch_too_large");
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
 }
 const fetchJson = async (url, cap = 4 << 20, opts) =>
   JSON.parse((await fetchBytes(url, cap, opts)).toString("utf8"));
@@ -362,10 +381,20 @@ function runChecked(command, args, options = {}) {
     );
   return r.stdout;
 }
+/**
+ * npm from the same Node installation the updater runs on (the configured
+ * node), never whatever `npm` a scheduler's PATH happens to resolve.
+ */
 function npmCommand() {
-  if (!isWindows) return ["npm", []];
-  const cli = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  if (!existsSync(cli)) throw Error("update_npm_unavailable");
+  const bin = dirname(realpathSync(process.execPath));
+  const candidates = isWindows
+    ? [join(bin, "node_modules", "npm", "bin", "npm-cli.js")]
+    : [
+        join(bin, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+        "/usr/share/nodejs/npm/bin/npm-cli.js",
+      ];
+  const cli = candidates.find((p) => existsSync(p));
+  if (!cli) throw Error("update_npm_unavailable");
   return [process.execPath, [cli]];
 }
 /** The provider launch for a release root (versioned for checks, `current` in catalogs). */
@@ -798,13 +827,19 @@ export async function runUpdate(base, { health = healthCheck } = {}) {
       try {
         const installed = await installRelease(base, config, candidate);
         const result = await health(launcher(config, installed.dir), config.host);
+        // An operator may have paused while we verified: the installed copy stays
+        // for reuse once the hold is removed.
+        if (existsSync(join(base, "update.hold"))) {
+          writeJson(statePath(base), state);
+          return { result: "held", version: state.current.version, ready: installed.version };
+        }
         switchCurrent(base, installed.dir);
         state.previous = state.current;
         state.current = record(installed);
         state.updated_at = new Date().toISOString();
-        prune(base, state);
         writeJson(statePath(base), state);
         writeEntry(base);
+        prune(base, state);
         return {
           result: "updated",
           from: state.previous.version,

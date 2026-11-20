@@ -169,7 +169,8 @@ provenance for both tarballs with GitHub's OIDC identity (`id-token` and
 the release command never publishes an unattested build. Fleet members install
 a published release automatically only with that attestation
 ([fleet updates](docs/fleet-update.md)): publishing a release ships the caller
-to the fleet within about an hour.
+to the fleet within about an hour (a Windows member whose owner is signed out
+updates at the next sign-in).
 
 Run `node scripts/package-release.mjs` only in a clean Linux checkout after the
 pinned build. It refuses a dirty checkout or an existing output directory. Its
