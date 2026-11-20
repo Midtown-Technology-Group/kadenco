@@ -33,6 +33,7 @@ import {
   adopt,
   healthCheck,
   runUpdate,
+  rollback,
   isTransient,
   snappyDecode,
   switchCurrent,
@@ -439,7 +440,6 @@ test("adoption health-checks, switches, records state and rewrites catalogs thro
     assert.equal(currentTarget(root), r.dir);
     assert.equal(stateOf(root).current.digest, "9".repeat(64));
     assert.equal(existsSync(join(root, "fleet-update-entry.mjs")), true);
-    assert.equal(existsSync(join(root, "adopt-pending.json")), false);
     const claude = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers
       .ask_eddie;
     assert.equal(claude.args[0], join(root, "current", "scripts", "invoke-eddie-posix.mjs"));
@@ -709,7 +709,7 @@ test("recovery recognizes a switch made through another spelling of the base", (
   }
 });
 
-test("adoption refused by the catalog installer leaves the member untouched", async () => {
+test("an adoption the catalog installer refuses is not committed, and a re-run completes it", async () => {
   const root = base(),
     home = base();
   try {
@@ -736,39 +736,38 @@ test("adoption refused by the catalog installer leaves the member untouched", as
       credential: join(home, "c"),
       node: process.execPath,
     };
+    const deps = {
+      health: async (_l, host) => ({ host }),
+      home,
+      schedule: () => ({ timer: "stub" }),
+    };
     await assert.rejects(
-      adopt(root, config, managedRelease(root, r.name), [], {
-        health: async (_l, host) => ({ host }),
-        home,
-        schedule: () => assert.fail("no schedule after a refusal"),
-      }),
+      adopt(root, config, managedRelease(root, r.name), [], deps),
       /unowned_mcp_entry/,
     );
-    assert.equal(currentTarget(root), null);
-    assert.equal(existsSync(join(root, "update-state.json")), false);
-    assert.equal(existsSync(join(root, "fleet-update-entry.mjs")), false);
-    // With a previous release active, a refusal puts the link back on it.
-    const prior = fakeRelease(root, "0.1.0-alpha.25", "5".repeat(64));
-    switchCurrent(root, prior.dir);
-    await assert.rejects(
-      adopt(root, config, managedRelease(root, r.name), [], {
-        health: async (_l, host) => ({ host }),
-        home,
-        schedule: () => assert.fail("no schedule after a refusal"),
-      }),
-      /unowned_mcp_entry/,
+    // Not committed: no configuration, state or entry point, so nothing acts.
+    for (const f of ["update.json", "update-state.json", "fleet-update-entry.mjs"])
+      assert.equal(existsSync(join(root, f)), false, f);
+    await assert.rejects(runUpdate(root), /update_not_configured/);
+    await assert.rejects(rollback(root), /update_not_configured/);
+    // `current` names the checked release; the refused catalog is untouched.
+    assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(r.dir));
+    assert.equal(
+      JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.ask_eddie.command,
+      "someone-else",
     );
-    assert.equal(currentTarget(root), prior.dir);
+    // Once the owner resolves the conflict, running adoption again completes it.
+    rmSync(join(home, ".claude.json"));
+    const done = await adopt(root, config, managedRelease(root, r.name), [], deps);
+    assert.equal(done.schedule.timer, "stub");
+    assert.equal(stateOf(root).current.name, r.name);
+    assert.equal(existsSync(join(root, "update.json")), true);
     // A `current` that is not a link fails before any catalog is written.
     rmSync(join(root, "current"));
     mkdirSync(join(root, "current"));
     rmSync(join(home, ".claude.json"));
     await assert.rejects(
-      adopt(root, config, managedRelease(root, r.name), [], {
-        health: async (_l, host) => ({ host }),
-        home,
-        schedule: () => assert.fail("no schedule"),
-      }),
+      adopt(root, config, managedRelease(root, r.name), [], deps),
       /update_current_not_link/,
     );
     assert.equal(existsSync(join(home, ".claude.json")), false);
@@ -777,28 +776,6 @@ test("adoption refused by the catalog installer leaves the member untouched", as
     rmSync(home, { recursive: true, force: true });
   }
 });
-
-test("an adoption interrupted after its switch is rolled back, not adopted", () => {
-  const root = base();
-  try {
-    const a = fakeRelease(root, "0.1.0-alpha.26", "6".repeat(64)),
-      b = fakeRelease(root, "0.1.0-alpha.27", "7".repeat(64));
-    switchCurrent(root, a.dir);
-    // What adopt() leaves if it stops between its switch and its commit.
-    writeFileSync(
-      join(root, "adopt-pending.json"),
-      JSON.stringify({ prior: a.name, candidate: b.name }),
-    );
-    switchCurrent(root, b.dir);
-    const state = reconcile(root, { current: record(a) });
-    assert.equal(state.current.name, a.name);
-    assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(a.dir));
-    assert.equal(existsSync(join(root, "adopt-pending.json")), false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test("adoption refuses to replace a current link it could not restore", async () => {
   const root = base(),
     outside = base();
@@ -819,7 +796,6 @@ test("adoption refuses to replace a current link it could not restore", async ()
       /update_current_unmanaged/,
     );
     assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(outside));
-    assert.equal(existsSync(join(root, "adopt-pending.json")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });

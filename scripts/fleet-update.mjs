@@ -821,21 +821,9 @@ export function managedAt(base, target) {
   const m = managedRelease(base, basename(real));
   return m && samePath(real, m.dir) ? m : null;
 }
-const pendingPath = (base) => join(base, "adopt-pending.json");
-function undoPendingAdoption(base) {
-  if (!existsSync(pendingPath(base))) return;
-  const { prior } = readJson(pendingPath(base));
-  const back = managedRelease(base, prior);
-  if (back) switchCurrent(base, back.dir);
-  else if (isLink(join(base, "current"))) unlinkSync(join(base, "current"));
-  rmSync(pendingPath(base), { force: true });
-}
 export function reconcile(base, state) {
   const current = join(base, "current"),
     next = join(base, "current.next");
-  // An adoption that switched `current` but never committed (a crash before its
-  // catalogs and state were written) is undone: back to the prior release.
-  undoPendingAdoption(base);
 
   if (isLink(next)) {
     const pending = managedAt(base, linkTarget(next, base));
@@ -963,6 +951,7 @@ export function newerReleases(releases, installed) {
 }
 export async function rollback(base) {
   base = canonicalPath(base);
+  loadConfig(base); // Only an adopted (committed) base is rolled back.
   const unlock = await lock(base);
   try {
     const state = reconcile(base, loadState(base));
@@ -1033,44 +1022,35 @@ export async function adopt(base, config, installed, args, deps = {}) {
     version: installed.version,
     health: await health(launcher(config, installed.dir), config.host),
   };
-  // Switch, then write catalogs (their entries name `current`, which must
-  // resolve to this release). If the catalog installer refuses or fails, the
-  // link is restored to where it was; state, the entry point and the schedule
-  // are written only once both steps succeeded.
-  undoPendingAdoption(base); // An earlier, interrupted adoption is undone first.
-  const priorTarget = currentTarget(base),
-    prior = managedAt(base, priorTarget);
-  // Only a link this updater can put back may be replaced.
-  if (priorTarget && !prior) throw Error("update_current_unmanaged");
-  // Journal the uncommitted switch: if we stop before committing, the next
-  // run's reconcile restores the prior release instead of adopting this one.
-  writeJson(pendingPath(base), { prior: prior?.name ?? null, candidate: installed.name });
+  // Forward-only: every intermediate state is safe, and an interrupted
+  // adoption is completed by running `install` again.
+  // - The release was verified and health-checked above, so whatever `current`
+  //   is left pointing at is a working caller.
+  // - Catalog entries name `current`, which the switch creates first; a
+  //   partially rewritten catalog therefore launches that checked release.
+  // - update.json, written last, is the commit: until it exists no scheduled
+  //   run or rollback acts on this base.
+  const priorTarget = currentTarget(base);
+  if (priorTarget && !managedAt(base, priorTarget)) throw Error("update_current_unmanaged");
   switchCurrent(base, installed.dir);
   if (!args.includes("--no-catalogs")) {
-    try {
-      const { installAgentTools } = await import(
-        pathToFileURL(join(installed.dir, "scripts", "install-agent-tools.mjs")).href
-      );
-      const stable = launcher(config, join(base, "current"));
-      const major = option(args, "--opencode-major");
-      const legacy = option(args, "--legacy-opencode-manifest");
-      result.catalogs = installAgentTools({
-        home,
-        host: config.host,
-        releasePath: join(base, "current"),
-        nodePath: config.node,
-        command: stable.command,
-        args: stable.args,
-        ...(major ? { opencodeMajor: Number(major) } : {}),
-        ...(legacy ? { legacyOpenCodeManifest: legacy } : {}),
-      });
-    } catch (error) {
-      if (!restoreLink(base, prior)) throw Error("update_adopt_rollback_failed", { cause: error });
-      rmSync(pendingPath(base), { force: true });
-      throw error;
-    }
+    const { installAgentTools } = await import(
+      pathToFileURL(join(installed.dir, "scripts", "install-agent-tools.mjs")).href
+    );
+    const stable = launcher(config, join(base, "current"));
+    const major = option(args, "--opencode-major");
+    const legacy = option(args, "--legacy-opencode-manifest");
+    result.catalogs = installAgentTools({
+      home,
+      host: config.host,
+      releasePath: join(base, "current"),
+      nodePath: config.node,
+      command: stable.command,
+      args: stable.args,
+      ...(major ? { opencodeMajor: Number(major) } : {}),
+      ...(legacy ? { legacyOpenCodeManifest: legacy } : {}),
+    });
   }
-  writeJson(join(base, "update.json"), config);
   const state = loadState(base);
   if (
     state.current?.name &&
@@ -1081,21 +1061,10 @@ export async function adopt(base, config, installed, args, deps = {}) {
   state.current = record(installed);
   writeJson(statePath(base), state);
   writeEntry(base);
-  // Committed: catalogs, link and state agree.
-  rmSync(pendingPath(base), { force: true });
+  writeJson(join(base, "update.json"), config);
   if (!args.includes("--no-schedule"))
     result.schedule = (deps.schedule ?? installSchedule)(base, config, home);
   return result;
-} /** Puts `current` back on the prior managed release (or removes it); false if it could not. */
-function restoreLink(base, prior) {
-  try {
-    if (prior) switchCurrent(base, prior.dir);
-    else if (isLink(join(base, "current"))) unlinkSync(join(base, "current"));
-    return true;
-  } catch {
-    // The pending journal stays; the next run's reconcile retries the restore.
-    return false;
-  }
 } /**
  * The scheduler's stable entry point. It resolves the active release from
  * update-state.json (not through `current`), so an interrupted switch cannot
