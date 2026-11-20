@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -631,10 +632,36 @@ test("fallback stops at the first good candidate and an unconfirmed cleanup ends
     assert.equal(done.result, "updated");
     assert.equal(done.to, "0.1.0-alpha.28");
     assert.deepEqual(installs, ["0.1.0-alpha.28"]);
-    assert.equal(currentTarget(root), built["0.1.0-alpha.28"].dir);
+    assert.equal(
+      realpathSync.native(currentTarget(root)),
+      realpathSync.native(built["0.1.0-alpha.28"].dir),
+    );
     assert.equal(stateOf(root).previous.name, a.name);
   } finally {
     globalThis.fetch = realFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("recovery recognizes a switch made through another spelling of the base", () => {
+  const root = base();
+  const alias =
+    process.platform === "win32"
+      ? root.replace(/^[A-Za-z]:/, (d) =>
+          d === d.toUpperCase() ? d.toLowerCase() : d.toUpperCase(),
+        )
+      : root + "-alias";
+  try {
+    if (process.platform !== "win32") symlinkSync(root, alias, "dir");
+    const a = fakeRelease(root, "0.1.0-alpha.26", "1".repeat(64)),
+      b = fakeRelease(root, "0.1.0-alpha.27", "2".repeat(64));
+    switchCurrent(alias, join(alias, "releases", b.name));
+    // A crash before the state write: state still names A.
+    const state = reconcile(root, { current: record(a) });
+    assert.equal(state.current.name, b.name);
+    assert.equal(state.previous.name, a.name);
+  } finally {
+    if (process.platform !== "win32") rmSync(alias, { force: true });
     rmSync(root, { recursive: true, force: true });
   }
 });

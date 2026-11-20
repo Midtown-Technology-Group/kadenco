@@ -27,7 +27,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const REPOSITORY = "Midtown-Technology-Group/kadenco";
@@ -296,15 +296,28 @@ function log(base, entry) {
     // Logging never blocks an update decision.
   }
 }
+/**
+ * The real path of an existing directory, as stored on disk. Every command
+ * works from this form of its base, so all derived paths agree.
+ */
+export const canonicalPath = (path) => realpathSync.native(path);
+/** Identity for comparison: real path, case-folded on Windows (case-insensitive). */
+const pathKey = (path) => {
+  const real = realpathSync.native(path);
+  return isWindows ? real.toLowerCase() : real;
+};
+function samePath(a, b) {
+  try {
+    return pathKey(a) === pathKey(b);
+  } catch {
+    return false;
+  }
+}
 /** Lock name for this user and base: an abstract Unix socket or a named pipe. */
 export function lockName(base) {
   // One name per directory, however it is spelled: resolve links, and fold
   // case on Windows, whose paths are case-insensitive.
-  const real = realpathSync.native(base);
-  const id = createHash("sha256")
-    .update(isWindows ? real.toLowerCase() : real)
-    .digest("hex")
-    .slice(0, 24);
+  const id = createHash("sha256").update(pathKey(base)).digest("hex").slice(0, 24);
   return isWindows
     ? `\\\\.\\pipe\\kadenco-fleet-update-${id}`
     : `\0kadenco-fleet-update-${process.getuid?.() ?? 0}-${id}`;
@@ -340,11 +353,16 @@ function linkTarget(path, base) {
 }
 export const currentTarget = (base) => linkTarget(join(base, "current"), base);
 function checkReleaseDir(base, releaseDir) {
-  const rel = relative(join(base, "releases"), releaseDir);
-  if (!rel || rel.startsWith("..") || isAbsolute(rel) || rel.includes("/") || rel.includes("\\"))
+  const name = basename(releaseDir);
+  if (
+    !name ||
+    name === "." ||
+    name === ".." ||
+    !samePath(dirname(releaseDir), join(base, "releases"))
+  )
     throw Error("update_release_outside_base");
-}
-/**
+  return join(base, "releases", name);
+} /**
  * Points base/current at a release under base/releases. Linux replaces the
  * symlink atomically. Windows cannot replace a junction atomically: it creates
  * current.next, removes current, then renames; an interruption leaves
@@ -352,7 +370,7 @@ function checkReleaseDir(base, releaseDir) {
  * launches through current, so an interrupted switch cannot stop updates.
  */
 export function switchCurrent(base, releaseDir) {
-  checkReleaseDir(base, releaseDir);
+  releaseDir = checkReleaseDir(base, releaseDir);
   const current = join(base, "current"),
     next = join(base, "current.next");
   if ((existsSync(current) || isLink(current)) && !isLink(current))
@@ -781,7 +799,7 @@ export function reconcile(base, state) {
   // A link counts only if it resolves to the managed release directory itself.
   const managedAt = (target) => {
     const m = target ? managedRelease(base, basename(target)) : null;
-    return m && resolve(target) === resolve(m.dir) ? m : null;
+    return m && samePath(target, m.dir) ? m : null;
   };
   if (isLink(next)) {
     const pending = managedAt(linkTarget(next, base));
@@ -821,6 +839,7 @@ const MAX_ATTEMPTS = 5,
   DEFER_MS = 2 * 60 * 60 * 1000;
 
 export async function runUpdate(base, { health = healthCheck, install = installRelease } = {}) {
+  base = canonicalPath(base);
   const config = loadConfig(base);
   const unlock = await lock(base);
   try {
@@ -907,6 +926,7 @@ export function newerReleases(releases, installed) {
     .sort((a, b) => compareVersions(b.version, a.version));
 }
 export async function rollback(base) {
+  base = canonicalPath(base);
   const unlock = await lock(base);
   try {
     const state = reconcile(base, loadState(base));
@@ -953,6 +973,7 @@ export async function installVersion(base, version, args, deps = {}) {
     throw Error("update_setup_usage");
   const config = setupConfig(args);
   mkdirSync(base, { recursive: true });
+  base = canonicalPath(base);
   const unlock = await lock(base);
   try {
     const release = await fetchJson(`${API}/repos/${REPOSITORY}/releases/tags/v${version}`);

@@ -294,10 +294,16 @@ export function installAgentTools(plan) {
   const applied = [],
     manifestTemp = manifestPath + ".eddie-" + stamp;
   try {
+    // Writing the backup and temp file first leaves only the recheck and the
+    // rename between a concurrent save and our replacement. That window cannot
+    // be closed with file APIs alone: run with providers idle (an exclusive
+    // writer window) to guarantee no concurrent edit is replaced.
     for (let i = 0; i < changes.length; i++) {
       const c = changes[i];
-      if (read(c.path) !== c.before) throw Error("concurrent_configuration_change");
-      if (c.before === c.after) continue;
+      if (c.before === c.after) {
+        if (read(c.path) !== c.before) throw Error("concurrent_configuration_change");
+        continue;
+      }
       if (c.before !== null)
         writeFileSync(join(root, "backup-" + stamp + "-" + i), c.before, {
           mode: 0o600,
@@ -306,10 +312,13 @@ export function installAgentTools(plan) {
       mkdirSync(dirname(c.path), { recursive: true, mode: 0o700 });
       const temp = c.path + ".eddie-" + stamp;
       writeFileSync(temp, c.after, { mode: c.path === cli ? 0o700 : 0o600, flag: "wx" });
+      if (read(c.path) !== c.before) {
+        unlinkSync(temp);
+        throw Error("concurrent_configuration_change");
+      }
       renameSync(temp, c.path);
       applied.push(c);
-    }
-    // The ownership manifest commits last, atomically, inside the transaction:
+    } // The ownership manifest commits last, atomically, inside the transaction:
     // if it cannot be written, the catalog changes above are rolled back.
     writeFileSync(
       manifestTemp,
