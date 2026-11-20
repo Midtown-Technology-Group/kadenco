@@ -96,7 +96,12 @@ try {
     "caller-client.mjs",
     "caller-mcp.mjs",
     "caller.mjs",
+    "fleet-update.mjs",
+    "install-agent-tools.mjs",
+    "invoke-eddie-posix.mjs",
+    "invoke-eddie.ps1",
     "pi-eddie.mjs",
+    "posix-credential.mjs",
     "status-check.mjs",
     "worker-provenance.mjs",
   ])

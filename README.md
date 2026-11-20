@@ -37,6 +37,7 @@ See [operational status](docs/status.md) for the authenticated `GET /status`
 endpoint and the `npm run status` acceptance check; it is the source of truth for
 what is deployed and which journeys currently work.
 
+See [fleet member automatic updates](docs/fleet-update.md) for how fleet hosts install new releases of the Eddie caller, what they verify and how to pause or roll back.
 See [fleet visibility and recovery](docs/fleet-visibility.md) for retained scan freshness, degraded reads, coverage notification coalescing and worker timing diagnostics.
 
 See [delivery evidence and scoped request diagnostics](docs/observability-goal.md) for the read-only event history, attribution boundaries, retention limits and public-project scout dispositions.
