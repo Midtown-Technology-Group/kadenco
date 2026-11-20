@@ -269,15 +269,15 @@ export function installAgentTools(plan) {
   );
   const cliText =
     process.platform === "win32"
-      ? // Arguments pass through: agent-tool.mjs validates the mode, so modes
-        // added by later releases work without regenerating this wrapper.
-        "& " +
+      ? // Named or positional -Mode/-RequestFile; agent-tool.mjs validates the
+        // mode, so modes added by later releases need no new wrapper.
+        "param([Parameter(Mandatory)][string]$Mode,[Parameter(Mandatory)][string]$RequestFile)\n& " +
         psQuote(plan.nodePath) +
         " " +
         psQuote(join(plan.releasePath, "scripts", "agent-tool.mjs")) +
         " " +
         psQuote(connection) +
-        " @args\nexit $LASTEXITCODE\n"
+        " $Mode $RequestFile\nexit $LASTEXITCODE\n"
       : "#!/bin/sh\nexec " +
         quote(plan.nodePath) +
         " " +

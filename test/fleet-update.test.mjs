@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -442,13 +442,47 @@ test("adoption health-checks, switches, records state and rewrites catalogs thro
     const claude = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers
       .ask_eddie;
     assert.equal(claude.args[0], join(root, "current", "scripts", "invoke-eddie-posix.mjs"));
-    // The CLI wrapper passes every argument through, so new modes need no regeneration.
-    const cli = readFileSync(
-      join(home, ".local", "bin", process.platform === "win32" ? "ask-eddie.ps1" : "ask-eddie"),
-      "utf8",
+    // The CLI wrapper leaves mode validation to agent-tool.mjs, so modes added
+    // later work without regenerating it; named and positional calls both work.
+    const cliPath = join(
+      home,
+      ".local",
+      "bin",
+      process.platform === "win32" ? "ask-eddie.ps1" : "ask-eddie",
     );
-    assert.match(cli, process.platform === "win32" ? /@args/ : /"\$@"/);
-    assert.doesNotMatch(cli, /ValidateSet/);
+    assert.doesNotMatch(readFileSync(cliPath, "utf8"), /ValidateSet/);
+    writeFileSync(
+      join(r.dir, "scripts", "agent-tool.mjs"),
+      "console.log(JSON.stringify(process.argv.slice(2)));\n",
+    );
+    const request = join(home, "dir with space", "r.json");
+    const calls =
+      process.platform === "win32"
+        ? [
+            [
+              "powershell.exe",
+              [
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                cliPath,
+                "-Mode",
+                "request_sharing",
+                "-RequestFile",
+                request,
+              ],
+            ],
+            [
+              "powershell.exe",
+              ["-NoProfile", "-NonInteractive", "-File", cliPath, "request_sharing", request],
+            ],
+          ]
+        : [["sh", [cliPath, "request_sharing", request]]];
+    for (const [command, args] of calls) {
+      const out = spawnSync(command, args, { encoding: "utf8", windowsHide: true });
+      assert.equal(out.status, 0, out.stderr);
+      assert.deepEqual(JSON.parse(out.stdout.trim()).slice(1), ["request_sharing", request]);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
@@ -712,6 +746,31 @@ test("adoption refused by the catalog installer leaves the member untouched", as
     assert.equal(currentTarget(root), null);
     assert.equal(existsSync(join(root, "update-state.json")), false);
     assert.equal(existsSync(join(root, "fleet-update-entry.mjs")), false);
+    // With a previous release active, a refusal puts the link back on it.
+    const prior = fakeRelease(root, "0.1.0-alpha.25", "5".repeat(64));
+    switchCurrent(root, prior.dir);
+    await assert.rejects(
+      adopt(root, config, managedRelease(root, r.name), [], {
+        health: async (_l, host) => ({ host }),
+        home,
+        schedule: () => assert.fail("no schedule after a refusal"),
+      }),
+      /unowned_mcp_entry/,
+    );
+    assert.equal(currentTarget(root), prior.dir);
+    // A `current` that is not a link fails before any catalog is written.
+    rmSync(join(root, "current"));
+    mkdirSync(join(root, "current"));
+    rmSync(join(home, ".claude.json"));
+    await assert.rejects(
+      adopt(root, config, managedRelease(root, r.name), [], {
+        health: async (_l, host) => ({ host }),
+        home,
+        schedule: () => assert.fail("no schedule"),
+      }),
+      /update_current_not_link/,
+    );
+    assert.equal(existsSync(join(home, ".claude.json")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });

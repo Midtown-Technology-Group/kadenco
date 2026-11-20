@@ -1019,28 +1019,35 @@ export async function adopt(base, config, installed, args, deps = {}) {
     version: installed.version,
     health: await health(launcher(config, installed.dir), config.host),
   };
-  // Catalogs first: they refuse entries they do not own before writing
-  // anything, so a refusal leaves the member exactly as it was. Their entries
-  // name `current`, which the switch below creates.
-  if (!args.includes("--no-catalogs")) {
-    const { installAgentTools } = await import(
-      pathToFileURL(join(installed.dir, "scripts", "install-agent-tools.mjs")).href
-    );
-    const stable = launcher(config, join(base, "current"));
-    const major = option(args, "--opencode-major");
-    const legacy = option(args, "--legacy-opencode-manifest");
-    result.catalogs = installAgentTools({
-      home,
-      host: config.host,
-      releasePath: join(base, "current"),
-      nodePath: config.node,
-      command: stable.command,
-      args: stable.args,
-      ...(major ? { opencodeMajor: Number(major) } : {}),
-      ...(legacy ? { legacyOpenCodeManifest: legacy } : {}),
-    });
-  }
+  // Switch, then write catalogs (their entries name `current`, which must
+  // resolve to this release). If the catalog installer refuses or fails, the
+  // link is restored to where it was; state, the entry point and the schedule
+  // are written only once both steps succeeded.
+  const prior = currentTarget(base);
   switchCurrent(base, installed.dir);
+  if (!args.includes("--no-catalogs")) {
+    try {
+      const { installAgentTools } = await import(
+        pathToFileURL(join(installed.dir, "scripts", "install-agent-tools.mjs")).href
+      );
+      const stable = launcher(config, join(base, "current"));
+      const major = option(args, "--opencode-major");
+      const legacy = option(args, "--legacy-opencode-manifest");
+      result.catalogs = installAgentTools({
+        home,
+        host: config.host,
+        releasePath: join(base, "current"),
+        nodePath: config.node,
+        command: stable.command,
+        args: stable.args,
+        ...(major ? { opencodeMajor: Number(major) } : {}),
+        ...(legacy ? { legacyOpenCodeManifest: legacy } : {}),
+      });
+    } catch (error) {
+      restoreLink(base, prior);
+      throw error;
+    }
+  }
   writeJson(join(base, "update.json"), config);
   const state = loadState(base);
   if (
@@ -1055,6 +1062,14 @@ export async function adopt(base, config, installed, args, deps = {}) {
   if (!args.includes("--no-schedule"))
     result.schedule = (deps.schedule ?? installSchedule)(base, config, home);
   return result;
+} /** Puts `current` back where it pointed before (or removes it if it was absent). */
+function restoreLink(base, prior) {
+  try {
+    if (prior) switchCurrent(base, prior);
+    else if (isLink(join(base, "current"))) unlinkSync(join(base, "current"));
+  } catch {
+    // Left for the next run's reconcile, which restores the recorded release.
+  }
 } /**
  * The scheduler's stable entry point. It resolves the active release from
  * update-state.json (not through `current`), so an interrupted switch cannot

@@ -8,10 +8,11 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 - Fleet update follow-ups from the first rollout: npm and the updater self-test
   use a temporary directory inside the release stage, so a full `/tmp` cannot
   truncate an install; a verifier library that fails to load is reported as
-  `update_verifier_unavailable` instead of a trust-root outage; adoption writes
-  provider catalogs before switching, so a refusal leaves the member unchanged;
-  the Windows `ask-eddie.ps1` wrapper passes arguments through to
-  `agent-tool.mjs` (restoring the sharing modes) instead of fixing a mode list.
+  `update_verifier_unavailable` instead of a trust-root outage; adoption restores the previous `current` link if the catalog installer
+  refuses, and writes state, entry point and schedule only after both succeed;
+  the Windows `ask-eddie.ps1` wrapper no longer fixes a mode list (named and
+  positional calls still work; `agent-tool.mjs` validates modes), restoring the
+  sharing modes.
 
 ## 0.1.0-alpha.26
 
