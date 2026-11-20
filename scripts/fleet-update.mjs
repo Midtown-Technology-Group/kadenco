@@ -955,7 +955,6 @@ export function newerReleases(releases, installed) {
 }
 export async function rollback(base) {
   base = canonicalPath(base);
-  loadConfig(base); // Only an adopted (committed) base is rolled back.
   const unlock = await lock(base);
   try {
     const state = reconcile(base, loadState(base));

@@ -749,7 +749,9 @@ test("an adoption the catalog installer refuses is not committed, and a re-run c
     for (const f of ["update.json", "update-state.json", "fleet-update-entry.mjs"])
       assert.equal(existsSync(join(root, f)), false, f);
     await assert.rejects(runUpdate(root), /update_not_configured/);
-    await assert.rejects(rollback(root), /update_not_configured/);
+    // Nothing to roll back to, and nothing is written.
+    await assert.rejects(rollback(root), /update_no_previous/);
+    assert.equal(existsSync(join(root, "update-state.json")), false);
     // `current` names the checked release; the refused catalog is untouched.
     assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(r.dir));
     assert.equal(
@@ -841,3 +843,22 @@ test(
     }
   },
 );
+
+test("rollback recovers an enrolled member even without its update.json", async () => {
+  const root = base();
+  try {
+    const a = fakeRelease(root, "0.1.0-alpha.26", "1".repeat(64)),
+      b = fakeRelease(root, "0.1.0-alpha.27", "2".repeat(64));
+    switchCurrent(root, b.dir);
+    writeFileSync(
+      join(root, "update-state.json"),
+      JSON.stringify({ current: record(b), previous: record(a) }),
+    );
+    const done = await rollback(root);
+    assert.equal(done.to, "0.1.0-alpha.26");
+    assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(a.dir));
+    assert.equal(existsSync(join(root, "update.hold")), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
