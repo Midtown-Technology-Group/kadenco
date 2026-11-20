@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   ISSUER,
   identityPattern,
@@ -441,6 +442,13 @@ test("adoption health-checks, switches, records state and rewrites catalogs thro
     const claude = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers
       .ask_eddie;
     assert.equal(claude.args[0], join(root, "current", "scripts", "invoke-eddie-posix.mjs"));
+    // The CLI wrapper passes every argument through, so new modes need no regeneration.
+    const cli = readFileSync(
+      join(home, ".local", "bin", process.platform === "win32" ? "ask-eddie.ps1" : "ask-eddie"),
+      "utf8",
+    );
+    assert.match(cli, process.platform === "win32" ? /@args/ : /"\$@"/);
+    assert.doesNotMatch(cli, /ValidateSet/);
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
@@ -663,5 +671,49 @@ test("recovery recognizes a switch made through another spelling of the base", (
   } finally {
     if (process.platform !== "win32") rmSync(alias, { force: true });
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("adoption refused by the catalog installer leaves the member untouched", async () => {
+  const root = base(),
+    home = base();
+  try {
+    const r = fakeRelease(root, "0.1.0-alpha.26", "4".repeat(64));
+    writeFileSync(
+      join(r.dir, "scripts", "install-agent-tools.mjs"),
+      readFileSync(new URL("../scripts/install-agent-tools.mjs", import.meta.url)),
+    );
+    mkdirSync(join(r.dir, "node_modules"), { recursive: true });
+    symlinkSync(
+      join(fileURLToPath(new URL("..", import.meta.url)), "node_modules", "jsonc-parser"),
+      join(r.dir, "node_modules", "jsonc-parser"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    // An ask_eddie entry this installer never recorded: it must refuse.
+    writeFileSync(
+      join(home, ".claude.json"),
+      JSON.stringify({ mcpServers: { ask_eddie: { type: "stdio", command: "someone-else" } } }),
+    );
+    const config = {
+      schema: 1,
+      host: "h1",
+      launcher: "posix",
+      credential: join(home, "c"),
+      node: process.execPath,
+    };
+    await assert.rejects(
+      adopt(root, config, managedRelease(root, r.name), [], {
+        health: async (_l, host) => ({ host }),
+        home,
+        schedule: () => assert.fail("no schedule after a refusal"),
+      }),
+      /unowned_mcp_entry/,
+    );
+    assert.equal(currentTarget(root), null);
+    assert.equal(existsSync(join(root, "update-state.json")), false);
+    assert.equal(existsSync(join(root, "fleet-update-entry.mjs")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   }
 });

@@ -620,6 +620,7 @@ export function isTransient(error) {
     /^update_fetch_status:(403|408|429|5\d\d)$/.test(m) ||
     m === "update_npm_failed" ||
     m === "update_trust_root_unavailable" ||
+    m === "update_verifier_unavailable" ||
     m === "update_npm_unavailable"
   );
 }
@@ -659,9 +660,16 @@ async function installRelease(base, config, candidate) {
   const bundles = await attestationBundles(digest);
   // Trust material (Sigstore TUF) is fetched once, outside the per-bundle
   // checks: its unavailability is an infrastructure failure, not a bad release.
+  let createVerifier;
+  try {
+    ({ createVerifier } = await import("sigstore"));
+  } catch {
+    // The verifier library itself did not load: a local installation fault,
+    // not a release problem and not a trust-root outage.
+    throw Error("update_verifier_unavailable");
+  }
   let verifier;
   try {
-    const { createVerifier } = await import("sigstore");
     verifier = await createVerifier({
       certificateIdentityURI: identityPattern(SIGNER),
       certificateIssuer: ISSUER,
@@ -707,6 +715,12 @@ async function installRelease(base, config, candidate) {
     const id = releaseIdentity(pkgDir);
     if (id.version !== version || id.source !== build.source)
       throw Error("update_release_identity");
+    // npm and the self-test get a temporary directory inside the stage (on the
+    // releases filesystem, removed with it): a full /tmp tmpfs must not be able
+    // to truncate what they write.
+    const scratch = join(stage, ".tmp");
+    mkdirSync(scratch);
+    const env = { ...process.env, TMPDIR: scratch, TMP: scratch, TEMP: scratch };
     const [npm, prefix] = npmCommand();
     try {
       runChecked(
@@ -720,7 +734,7 @@ async function installRelease(base, config, candidate) {
           "--no-fund",
           "--loglevel=error",
         ],
-        { cwd: pkgDir, timeout: 15 * 60 * 1000 },
+        { cwd: pkgDir, env, timeout: 15 * 60 * 1000 },
       );
     } catch {
       throw Error("update_npm_failed");
@@ -729,6 +743,7 @@ async function installRelease(base, config, candidate) {
     try {
       runChecked(config.node, [join(pkgDir, "scripts", "fleet-update.mjs"), "self-test"], {
         cwd: pkgDir,
+        env,
         timeout: 60000,
       });
     } catch {
@@ -1004,18 +1019,9 @@ export async function adopt(base, config, installed, args, deps = {}) {
     version: installed.version,
     health: await health(launcher(config, installed.dir), config.host),
   };
-  switchCurrent(base, installed.dir);
-  writeJson(join(base, "update.json"), config);
-  const state = loadState(base);
-  if (
-    state.current?.name &&
-    state.current.name !== installed.name &&
-    managedRelease(base, state.current.name)
-  )
-    state.previous = state.current;
-  state.current = record(installed);
-  writeJson(statePath(base), state);
-  writeEntry(base);
+  // Catalogs first: they refuse entries they do not own before writing
+  // anything, so a refusal leaves the member exactly as it was. Their entries
+  // name `current`, which the switch below creates.
   if (!args.includes("--no-catalogs")) {
     const { installAgentTools } = await import(
       pathToFileURL(join(installed.dir, "scripts", "install-agent-tools.mjs")).href
@@ -1034,11 +1040,22 @@ export async function adopt(base, config, installed, args, deps = {}) {
       ...(legacy ? { legacyOpenCodeManifest: legacy } : {}),
     });
   }
+  switchCurrent(base, installed.dir);
+  writeJson(join(base, "update.json"), config);
+  const state = loadState(base);
+  if (
+    state.current?.name &&
+    state.current.name !== installed.name &&
+    managedRelease(base, state.current.name)
+  )
+    state.previous = state.current;
+  state.current = record(installed);
+  writeJson(statePath(base), state);
+  writeEntry(base);
   if (!args.includes("--no-schedule"))
     result.schedule = (deps.schedule ?? installSchedule)(base, config, home);
   return result;
-}
-/**
+} /**
  * The scheduler's stable entry point. It resolves the active release from
  * update-state.json (not through `current`), so an interrupted switch cannot
  * disable updates; the release's updater then reconciles the link.

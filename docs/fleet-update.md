@@ -99,7 +99,7 @@ gh attestation verify "kadenco-$version.tgz" --repo "$repo" \
 sha256sum "kadenco-$version.tgz"
 ```
 
-Copy that verified tarball to the member; do not download it again there.
+Copy that verified tarball to the member; do not download it again there. Work in a directory under the member's home rather than `/tmp`: a full `/tmp` tmpfs silently truncates the extraction or `npm ci`.
 Before extracting it, check on the member that its SHA-256 equals the digest you
 verified (`sha256sum` on Linux, `Get-FileHash` on Windows). Then extract it and
 run `npm ci --omit=dev --ignore-scripts` in `package/`. As the user that owns

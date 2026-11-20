@@ -269,13 +269,15 @@ export function installAgentTools(plan) {
   );
   const cliText =
     process.platform === "win32"
-      ? 'param([Parameter(Mandatory)][ValidateSet("ask","get","conversation","capabilities","ack_reply","ack_delivery")][string]$Mode,[Parameter(Mandatory)][string]$RequestFile)\n& ' +
+      ? // Arguments pass through: agent-tool.mjs validates the mode, so modes
+        // added by later releases work without regenerating this wrapper.
+        "& " +
         psQuote(plan.nodePath) +
         " " +
         psQuote(join(plan.releasePath, "scripts", "agent-tool.mjs")) +
         " " +
         psQuote(connection) +
-        " $Mode $RequestFile\nexit $LASTEXITCODE\n"
+        " @args\nexit $LASTEXITCODE\n"
       : "#!/bin/sh\nexec " +
         quote(plan.nodePath) +
         " " +
