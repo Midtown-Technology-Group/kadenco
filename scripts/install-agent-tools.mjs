@@ -312,11 +312,15 @@ export function installAgentTools(plan) {
       mkdirSync(dirname(c.path), { recursive: true, mode: 0o700 });
       const temp = c.path + ".eddie-" + stamp;
       writeFileSync(temp, c.after, { mode: c.path === cli ? 0o700 : 0o600, flag: "wx" });
-      if (read(c.path) !== c.before) {
-        unlinkSync(temp);
-        throw Error("concurrent_configuration_change");
+      let renamed = false;
+      try {
+        if (read(c.path) !== c.before) throw Error("concurrent_configuration_change");
+        renameSync(temp, c.path);
+        renamed = true;
+      } finally {
+        // Never leave a staged file beside the catalog, whatever failed.
+        if (!renamed) unlinkSync(temp);
       }
-      renameSync(temp, c.path);
       applied.push(c);
     } // The ownership manifest commits last, atomically, inside the transaction:
     // if it cannot be written, the catalog changes above are rolled back.

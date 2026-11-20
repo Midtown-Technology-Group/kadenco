@@ -798,8 +798,15 @@ export function reconcile(base, state) {
     next = join(base, "current.next");
   // A link counts only if it resolves to the managed release directory itself.
   const managedAt = (target) => {
-    const m = target ? managedRelease(base, basename(target)) : null;
-    return m && samePath(target, m.dir) ? m : null;
+    let real;
+    try {
+      // Resolve first: the link may name the release by an alias (an 8.3 name).
+      real = realpathSync.native(target);
+    } catch {
+      return null;
+    }
+    const m = managedRelease(base, basename(real));
+    return m && samePath(real, m.dir) ? m : null;
   };
   if (isLink(next)) {
     const pending = managedAt(linkTarget(next, base));
