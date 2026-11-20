@@ -126,7 +126,7 @@ writes the stable entry point, rewrites the owned catalog entries through the
 existing `install-agent-tools.mjs` (it refuses entries it does not own;
 `--opencode-major 2` and `--legacy-opencode-manifest <path>` are passed
 through) and installs the schedule, all under the update lock.
-Run it while the member's provider apps are idle: the catalog installer refuses a file that changed since it read it, but a save in the instant before its replacement can still be overwritten. If `install` is refused (for example by a catalog entry it does not own) or interrupted, resolve the cause and run it again: the release was checked before anything changed, `current` only ever names a checked release, and nothing scheduled acts on the member until `install` completes and writes `update.json`. `--no-catalogs` and `--no-schedule` skip those steps. Delete the extracted
+Run it while the member's provider apps are idle: the catalog installer refuses a file that changed since it read it, but a save in the instant before its replacement can still be overwritten. If `install` is refused (for example by a catalog entry it does not own) or interrupted, resolve the cause and run it again: the release was checked before anything changed, `current` only ever names a checked release, and nothing scheduled acts on the member until `install` completes and writes `update.json`. Re-running `install` with a different `--host` or `--credential` takes effect when it completes; if it is refused, the member keeps running on its previous settings until a re-run succeeds. `--no-catalogs` and `--no-schedule` skip those steps. Delete the extracted
 bootstrap copy afterwards.
 
 ## Operate

@@ -167,9 +167,14 @@ export function installAgentTools(plan) {
     changes.push({ path, before, after });
     resources[path] = managed;
   };
-  const owned = (path, current) => {
+  // Owned: what the manifest recorded, or exactly what this run is about to
+  // write (an earlier, interrupted run already replaced it), so a retry resumes.
+  const owned = (path, current, intended) => {
     const old = manifest.resources[path];
-    return old && JSON.stringify(old) === JSON.stringify(current);
+    return (
+      (old && JSON.stringify(old) === JSON.stringify(current)) ||
+      (intended !== undefined && JSON.stringify(intended) === JSON.stringify(current))
+    );
   };
   const entry = { command: plan.command, args: plan.args };
   // Codex reads a TOML table. Only this exact owned marker block is replaced;
@@ -177,14 +182,6 @@ export function installAgentTools(plan) {
   const codex = join(home, ".codex", "config.toml"),
     rawCodex = read(codex),
     beforeCodex = rawCodex ?? "";
-  const begin = beforeCodex.indexOf(marker),
-    finish = beforeCodex.indexOf(end);
-  let block = null;
-  if (begin >= 0 || finish >= 0) {
-    if (begin < 0 || finish < begin) throw Error("invalid_managed_block");
-    block = beforeCodex.slice(begin, finish + end.length);
-    if (!owned(codex, block)) throw Error("owned_entry_drift");
-  } else if (/ask_eddie/.test(beforeCodex)) throw Error("unowned_mcp_entry");
   const nextBlock =
     marker +
     "\n[mcp_servers.ask_eddie]\ncommand = " +
@@ -193,6 +190,14 @@ export function installAgentTools(plan) {
     JSON.stringify(plan.args) +
     "\nstartup_timeout_sec = 45\n" +
     end;
+  const begin = beforeCodex.indexOf(marker),
+    finish = beforeCodex.indexOf(end);
+  let block = null;
+  if (begin >= 0 || finish >= 0) {
+    if (begin < 0 || finish < begin) throw Error("invalid_managed_block");
+    block = beforeCodex.slice(begin, finish + end.length);
+    if (!owned(codex, block, nextBlock)) throw Error("owned_entry_drift");
+  } else if (/ask_eddie/.test(beforeCodex)) throw Error("unowned_mcp_entry");
   stage(
     codex,
     rawCodex,
@@ -229,7 +234,7 @@ export function installAgentTools(plan) {
       parent = parent?.[key];
     }
     const current = parent?.[keys.at(-1)];
-    if (current !== undefined && !owned(path, current)) throw Error("unowned_mcp_entry");
+    if (current !== undefined && !owned(path, current, value)) throw Error("unowned_mcp_entry");
     const base =
       path === open && openMajor === 2
         ? removeLegacyOpenCode(home, manifest, path, before, plan.legacyOpenCodeManifest)
@@ -252,14 +257,14 @@ export function installAgentTools(plan) {
     JSON.stringify(join(root, "connection.json")) +
     ");}\n";
   const beforeExtension = read(extension);
-  if (beforeExtension !== null && !owned(extension, beforeExtension))
+  if (beforeExtension !== null && !owned(extension, beforeExtension, source))
     throw Error("owned_entry_drift");
   stage(extension, beforeExtension, source, source);
   const connection = join(root, "connection.json");
   const beforeConnection = read(connection);
-  if (beforeConnection !== null && !owned(connection, beforeConnection))
-    throw Error("owned_entry_drift");
   const connectionText = JSON.stringify({ host: plan.host, ...entry }, null, 2) + "\n";
+  if (beforeConnection !== null && !owned(connection, beforeConnection, connectionText))
+    throw Error("owned_entry_drift");
   stage(connection, beforeConnection, connectionText, connectionText);
   const cli = join(
     home,
@@ -286,7 +291,7 @@ export function installAgentTools(plan) {
         quote(connection) +
         ' "$@"\n';
   const beforeCli = read(cli);
-  if (beforeCli !== null && !owned(cli, beforeCli)) throw Error("owned_entry_drift");
+  if (beforeCli !== null && !owned(cli, beforeCli, cliText)) throw Error("owned_entry_drift");
   stage(cli, beforeCli, cliText, cliText);
   // All collisions were checked before the first write. Full-file backups remain
   // private because user configurations may contain unrelated credentials.

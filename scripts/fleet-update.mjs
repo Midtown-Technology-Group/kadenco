@@ -381,6 +381,9 @@ export function switchCurrent(base, releaseDir) {
     renameSync(temp, current);
     return;
   }
+  // A switch interrupted between removing `current` and renaming `current.next`
+  // is finished first, so `current` is never left missing by a retry.
+  if (!isLink(current) && isLink(next)) renameSync(next, current);
   if (isLink(next)) unlinkSync(next);
   symlinkSync(releaseDir, next, "junction");
   if (isLink(current)) unlinkSync(current);
@@ -864,9 +867,10 @@ const MAX_ATTEMPTS = 5,
 
 export async function runUpdate(base, { health = healthCheck, install = installRelease } = {}) {
   base = canonicalPath(base);
-  const config = loadConfig(base);
   const unlock = await lock(base);
   try {
+    // Read under the lock: a concurrent re-adoption cannot change it mid-run.
+    const config = loadConfig(base);
     // Reconcile first, so a rollback or switch interrupted by a crash is
     // settled before the hold is honored or anything is installed.
     const state = reconcile(base, loadState(base));

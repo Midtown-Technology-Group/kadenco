@@ -801,3 +801,55 @@ test("adoption refuses to replace a current link it could not restore", async ()
     rmSync(outside, { recursive: true, force: true });
   }
 });
+
+test("the catalog installer resumes a run interrupted before its manifest commit", async () => {
+  const { installAgentTools } = await import("../scripts/install-agent-tools.mjs");
+  const home = base();
+  try {
+    const plan = {
+      home,
+      host: "h",
+      releasePath: join(home, "rel", "current"),
+      nodePath: process.execPath,
+      command: process.execPath,
+      args: [
+        join(home, "rel", "current", "scripts", "invoke-eddie-posix.mjs"),
+        join(home, "cred.json"),
+      ],
+      opencodeMajor: 2,
+    };
+    installAgentTools(plan);
+    // As if the process stopped after replacing the catalogs but before the
+    // ownership manifest was written (first adoption: no manifest at all).
+    rmSync(join(home, ".config", "eddie-t3", "installation.json"));
+    assert.equal(installAgentTools(plan).installed, true);
+    // An entry that is neither recorded nor what this run would write is still refused.
+    rmSync(join(home, ".config", "eddie-t3", "installation.json"));
+    writeFileSync(
+      join(home, ".claude.json"),
+      JSON.stringify({ mcpServers: { ask_eddie: { type: "stdio", command: "someone-else" } } }),
+    );
+    assert.throws(() => installAgentTools(plan), /unowned_mcp_entry/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test(
+  "a retried Windows switch first finishes an interrupted one",
+  { skip: process.platform !== "win32" },
+  () => {
+    const root = base();
+    try {
+      const a = fakeRelease(root, "0.1.0-alpha.26", "a".repeat(64)),
+        b = fakeRelease(root, "0.1.0-alpha.27", "b".repeat(64));
+      // Interrupted after creating current.next and removing current.
+      symlinkSync(b.dir, join(root, "current.next"), "junction");
+      switchCurrent(root, a.dir);
+      assert.equal(realpathSync.native(currentTarget(root)), realpathSync.native(a.dir));
+      assert.equal(existsSync(join(root, "current.next")), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
