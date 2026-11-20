@@ -41,7 +41,11 @@ hours; a failed health check, which may be the server rather than the release,
 skips it for 2 hours and keeps its installed copy for reuse. Either way later
 runs reach older candidates, so no single release can hold the member back.
 Infrastructure failures (GitHub unreachable or rate-limited, npm registry
-errors) end the run without marking any release; the next run retries. Nothing
+errors, Sigstore trust material unavailable) and a health check whose caller
+could not be confirmed stopped end the run without marking any release; the
+next run retries. Fallback covers only installing and checking candidates: once
+the switch to a chosen release begins, a failure ends the run and the next run
+reconciles it, never falling back to an older release. Nothing
 is switched unless every check passed; each run logs a static reason. Runs are
 serialized by an operating-system lock (an abstract Unix socket or a named
 pipe) that is released when the process exits, so a crashed run never leaves a

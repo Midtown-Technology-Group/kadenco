@@ -124,10 +124,14 @@ export function checkStatement(statement, { digest, source, repository = REPOSIT
   )
     throw Error("update_provenance_source");
 }
+/** sigstore-js matches identities as regular expressions: escape and anchor. */
+export const identityPattern = (signer) =>
+  "^" + signer.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&") + "$";
 /**
- * Accepts the package when at least one attestation bundle is signed by the
- * release workflow on main (Sigstore, GitHub OIDC issuer) and its statement
- * names this package digest and source commit.
+ * Accepts the package when at least one attestation bundle verifies (signature,
+ * certificate chain, transparency log) with a certificate issued exactly to the
+ * release workflow on main by GitHub's OIDC issuer, and its statement names
+ * this package digest and source commit. `verify(bundle)` returns the signer.
  */
 export async function verifyProvenance(
   bundles,
@@ -136,14 +140,8 @@ export async function verifyProvenance(
   for (const bundle of bundles) {
     try {
       if (bundle?.dsseEnvelope?.payloadType !== "application/vnd.in-toto+json") continue;
-      // sigstore-js matches the identity as a regular expression: anchor and
-      // escape it, then also require the exact certificate identity.
-      const exact = "^" + signer.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&") + "$";
-      const identity = await verify(bundle, {
-        certificateIdentityURI: exact,
-        certificateIssuer: ISSUER,
-      });
-      if (identity?.identity?.subjectAlternativeName !== signer) continue;
+      const who = (await verify(bundle))?.identity;
+      if (who?.subjectAlternativeName !== signer || who?.extensions?.issuer !== ISSUER) continue;
       const statement = JSON.parse(
         Buffer.from(bundle.dsseEnvelope.payload, "base64").toString("utf8"),
       );
@@ -154,8 +152,7 @@ export async function verifyProvenance(
     }
   }
   throw Error("update_provenance_unverified");
-}
-/** Snappy block decoding (GitHub serves attestation bundles snappy-compressed). */
+} /** Snappy block decoding (GitHub serves attestation bundles snappy-compressed). */
 export function snappyDecode(input, max = 8 << 20) {
   const fail = () => {
     throw Error("update_bundle_encoding");
@@ -301,7 +298,13 @@ function log(base, entry) {
 }
 /** Lock name for this user and base: an abstract Unix socket or a named pipe. */
 export function lockName(base) {
-  const id = createHash("sha256").update(resolve(base)).digest("hex").slice(0, 24);
+  // One name per directory, however it is spelled: resolve links, and fold
+  // case on Windows, whose paths are case-insensitive.
+  const real = realpathSync.native(base);
+  const id = createHash("sha256")
+    .update(isWindows ? real.toLowerCase() : real)
+    .digest("hex")
+    .slice(0, 24);
   return isWindows
     ? `\\\\.\\pipe\\kadenco-fleet-update-${id}`
     : `\0kadenco-fleet-update-${process.getuid?.() ?? 0}-${id}`;
@@ -598,6 +601,7 @@ export function isTransient(error) {
     error?.name === "AbortError" ||
     /^update_fetch_status:(403|408|429|5\d\d)$/.test(m) ||
     m === "update_npm_failed" ||
+    m === "update_trust_root_unavailable" ||
     m === "update_npm_unavailable"
   );
 }
@@ -634,12 +638,24 @@ async function installRelease(base, config, candidate) {
     throw Error("update_checksum_mismatch");
   if (candidate.expectDigest && candidate.expectDigest !== digest)
     throw Error("update_checksum_unexpected");
-  const { verify } = await import("sigstore");
-  await verifyProvenance(await attestationBundles(digest), {
+  const bundles = await attestationBundles(digest);
+  // Trust material (Sigstore TUF) is fetched once, outside the per-bundle
+  // checks: its unavailability is an infrastructure failure, not a bad release.
+  let verifier;
+  try {
+    const { createVerifier } = await import("sigstore");
+    verifier = await createVerifier({
+      certificateIdentityURI: identityPattern(SIGNER),
+      certificateIssuer: ISSUER,
+      tufCachePath: join(base, "sigstore-cache"),
+    });
+  } catch {
+    throw Error("update_trust_root_unavailable");
+  }
+  await verifyProvenance(bundles, {
     digest,
     source: build.source,
-    verify: (bundle, options) =>
-      verify(bundle, { ...options, tufCachePath: join(base, "sigstore-cache") }),
+    verify: (bundle) => verifier.verify(bundle),
   });
 
   const releases = join(base, "releases"),
@@ -804,7 +820,7 @@ const MAX_ATTEMPTS = 5,
   REJECT_MS = 24 * 60 * 60 * 1000,
   DEFER_MS = 2 * 60 * 60 * 1000;
 
-export async function runUpdate(base, { health = healthCheck } = {}) {
+export async function runUpdate(base, { health = healthCheck, install = installRelease } = {}) {
   const config = loadConfig(base);
   const unlock = await lock(base);
   try {
@@ -823,33 +839,19 @@ export async function runUpdate(base, { health = healthCheck } = {}) {
     );
     state.checked_at = new Date().toISOString();
     const skipped = [];
+    // Fallback covers only installing and checking a candidate. Activation is
+    // outside it: once `current` may have moved, any failure ends the run and
+    // the next run's reconcile settles the switch; it never falls back further.
+    let chosen = null;
     for (const candidate of candidates.slice(0, MAX_ATTEMPTS)) {
       try {
-        const installed = await installRelease(base, config, candidate);
-        const result = await health(launcher(config, installed.dir), config.host);
-        // An operator may have paused while we verified: the installed copy stays
-        // for reuse once the hold is removed.
-        if (existsSync(join(base, "update.hold"))) {
-          writeJson(statePath(base), state);
-          return { result: "held", version: state.current.version, ready: installed.version };
-        }
-        switchCurrent(base, installed.dir);
-        state.previous = state.current;
-        state.current = record(installed);
-        state.updated_at = new Date().toISOString();
-        writeJson(statePath(base), state);
-        writeEntry(base);
-        prune(base, state);
-        return {
-          result: "updated",
-          from: state.previous.version,
-          to: installed.version,
-          digest: installed.digest,
-          health: result,
-          skipped,
-        };
+        const installed = await install(base, config, candidate);
+        chosen = { installed, health: await health(launcher(config, installed.dir), config.host) };
+        break;
       } catch (error) {
-        if (isTransient(error)) {
+        // Infrastructure failures, and a caller whose exit could not be
+        // confirmed (it may still be running), end the run unmarked.
+        if (isTransient(error) || error?.message === "update_health_cleanup") {
           writeJson(statePath(base), state);
           throw error;
         }
@@ -867,7 +869,27 @@ export async function runUpdate(base, { health = healthCheck } = {}) {
       }
     }
     writeJson(statePath(base), state);
-    return { result: "current", version: state.current.version, skipped };
+    if (!chosen) return { result: "current", version: state.current.version, skipped };
+    const { installed } = chosen;
+    // An operator may have paused while we verified: the installed copy stays
+    // for reuse once the hold is removed.
+    if (existsSync(join(base, "update.hold")))
+      return { result: "held", version: state.current.version, ready: installed.version };
+    switchCurrent(base, installed.dir);
+    state.previous = state.current;
+    state.current = record(installed);
+    state.updated_at = new Date().toISOString();
+    writeJson(statePath(base), state);
+    writeEntry(base);
+    prune(base, state);
+    return {
+      result: "updated",
+      from: state.previous.version,
+      to: installed.version,
+      digest: installed.digest,
+      health: chosen.health,
+      skipped,
+    };
   } finally {
     await unlock();
   }

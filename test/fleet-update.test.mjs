@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import {
   ISSUER,
+  identityPattern,
   REPOSITORY,
   SIGNER,
   checkArchiveListing,
@@ -139,28 +140,26 @@ test("provenance statement must name this package, workflow on main, hosted runn
   );
 });
 
-test("an update needs one bundle whose signature and statement both verify", async () => {
-  const calls = [];
-  // Like sigstore-js: the identity option is a regular expression, and the
-  // verified signer identity is returned.
-  const signerOf = (san) => async (_bundle, options) => {
-    calls.push(options);
-    if (
-      !new RegExp(options.certificateIdentityURI).test(san) ||
-      options.certificateIssuer !== ISSUER
-    )
-      throw Error("identity");
-    return { identity: { subjectAlternativeName: san } };
-  };
+test("an update needs one bundle whose exact signer, signature and statement all verify", async () => {
+  const signerOf =
+    (san, issuer = ISSUER) =>
+    async () => ({ identity: { subjectAlternativeName: san, extensions: { issuer } } });
   const verify = signerOf(SIGNER);
   assert.equal(await verifyProvenance([bundle(statement())], { digest, source, verify }), true);
-  assert.equal(calls[0].certificateIssuer, ISSUER);
-  assert.match(calls[0].certificateIdentityURI, /^\^.*\$$/);
-  // A workflow on another branch whose identity merely contains the expected
-  // one (or an unescaped look-alike) is refused, whatever its statement claims.
-  for (const san of [SIGNER + "-evil", SIGNER.replace("release.yml", "releaseXyml")])
+  // The pattern handed to sigstore-js is exact: no prefix or wildcard match.
+  const pattern = new RegExp(identityPattern(SIGNER));
+  assert.ok(pattern.test(SIGNER));
+  assert.ok(!pattern.test(SIGNER + "-evil"));
+  assert.ok(!pattern.test(SIGNER.replace("release.yml", "releaseXyml")));
+  // A workflow on another branch, a look-alike or another issuer is refused,
+  // whatever its statement claims.
+  for (const v of [
+    signerOf(SIGNER + "-evil"),
+    signerOf(SIGNER.replace("release.yml", "releaseXyml")),
+    signerOf(SIGNER, "https://example.invalid"),
+  ])
     await assert.rejects(
-      verifyProvenance([bundle(statement())], { digest, source, verify: signerOf(san) }),
+      verifyProvenance([bundle(statement())], { digest, source, verify: v }),
       /update_provenance_unverified/,
     );
   // A valid signature over a statement for other bytes is refused.
@@ -186,8 +185,8 @@ test("an update needs one bundle whose signature and statement both verify", asy
     await verifyProvenance([other, bundle(statement())], { digest, source, verify }),
     true,
   );
+  assert.equal(isTransient(Error("update_trust_root_unavailable")), true);
 });
-
 test("snappy decoding handles literals and back-references and refuses corrupt input", () => {
   assert.equal(
     snappyDecode(Buffer.from([0x09, 0x08, 0x61, 0x62, 0x63, 0x09, 0x03])).toString(),
@@ -354,6 +353,16 @@ test("the lock admits one process at a time and is released when its holder exit
     await new Promise((ok) => holder.once("close", ok));
     const unlock = await lock(root);
     await assert.rejects(lock(root), /update_locked/);
+    // Another spelling of the same directory is the same lock.
+    const alias =
+      process.platform === "win32"
+        ? root.replace(/^[A-Za-z]:/, (d) =>
+            d === d.toUpperCase() ? d.toLowerCase() : d.toUpperCase(),
+          )
+        : root + "-alias";
+    if (process.platform !== "win32") symlinkSync(root, alias, "dir");
+    await assert.rejects(lock(alias), /update_locked/);
+    if (process.platform !== "win32") rmSync(alias);
     await unlock();
     await (
       await lock(root)
@@ -567,4 +576,65 @@ test("health cleanup reaches the caller's descendants and fails when one escapes
       healthCheck({ command: process.execPath, args: ["-e", fake(true)] }, "h", 20000, fast),
       /update_health_cleanup/,
     );
+});
+
+test("fallback stops at the first good candidate and an unconfirmed cleanup ends the run", async () => {
+  const root = base(),
+    realFetch = globalThis.fetch;
+  try {
+    const a = fakeRelease(root, "0.1.0-alpha.26", "e".repeat(64));
+    switchCurrent(root, a.dir);
+    writeFileSync(join(root, "update-state.json"), JSON.stringify({ current: record(a) }));
+    writeFileSync(
+      join(root, "update.json"),
+      JSON.stringify({
+        schema: 1,
+        host: "h",
+        launcher: "posix",
+        credential: join(root, "c"),
+        node: process.execPath,
+      }),
+    );
+    const releases = ["v0.1.0-alpha.28", "v0.1.0-alpha.27"].map((tag_name) => ({
+      tag_name,
+      assets: [],
+    }));
+    globalThis.fetch = async (url) => {
+      const r = new Response(JSON.stringify(releases), { status: 200 });
+      Object.defineProperty(r, "url", { value: String(url) });
+      return r;
+    };
+    const built = {
+      "0.1.0-alpha.28": fakeRelease(root, "0.1.0-alpha.28", "f".repeat(64)),
+      "0.1.0-alpha.27": fakeRelease(root, "0.1.0-alpha.27", "0".repeat(64)),
+    };
+    const installs = [];
+    const install = async (_base, _config, c) => (
+      installs.push(c.version),
+      managedRelease(root, built[c.version].name)
+    );
+    // A caller that may still be running stops the run: no older candidate starts.
+    await assert.rejects(
+      runUpdate(root, {
+        install,
+        health: async () => {
+          throw Error("update_health_cleanup");
+        },
+      }),
+      /update_health_cleanup/,
+    );
+    assert.deepEqual(installs, ["0.1.0-alpha.28"]);
+    assert.equal(stateOf(root).rejected?.["v0.1.0-alpha.28"], undefined);
+    // The newest good candidate is activated and nothing older is touched.
+    installs.length = 0;
+    const done = await runUpdate(root, { install, health: async (_l, host) => ({ host }) });
+    assert.equal(done.result, "updated");
+    assert.equal(done.to, "0.1.0-alpha.28");
+    assert.deepEqual(installs, ["0.1.0-alpha.28"]);
+    assert.equal(currentTarget(root), built["0.1.0-alpha.28"].dir);
+    assert.equal(stateOf(root).previous.name, a.name);
+  } finally {
+    globalThis.fetch = realFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
