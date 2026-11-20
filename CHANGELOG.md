@@ -5,6 +5,8 @@ GitHub Release, artifact or fleet rollout exists; consult release evidence.
 
 ## Unreleased
 
+## 0.1.0-alpha.26
+
 - Add the Linux edge host files (`packages/control-plane/operator/linux/`): a
   systemd supervisor that reads its secrets from a secret-store REST endpoint at
   start and passes them to `run-edge.mjs` on private stdin, the unit (restarts
